@@ -655,35 +655,47 @@ export class GeometryFactory {
         );
       },
 
-      bezierProfile: (spec: {
-        controls: ReadonlyArray<readonly [number, number]>;
-        segmentsPerCurve?: number;
-        closed?: boolean;
-      }) => {
-        if (!Array.isArray(spec?.controls) || spec.controls.length < 4) {
-          throw new GeometryError('geom.bezierProfile needs at least four control points.');
+      /**
+       * A cubic Bézier chain through control points.
+       *
+       * Positional, matching `profile`, `path` and `splinePath`: every curve constructor in this namespace takes
+       * its points first. An API where half the curve builders take an object and half take an argument list is
+       * a spelling a generator gets wrong, and each wrong guess costs a whole generation.
+       */
+      bezierProfile: (
+        controls: ReadonlyArray<readonly [number, number]>,
+        segmentsPerCurve = 16,
+        closed = false,
+      ) => {
+        if (!Array.isArray(controls) || controls.length < 4) {
+          throw new GeometryError(
+            'geom.bezierProfile needs at least four control points, as geom.bezierProfile(points, segmentsPerCurve?, closed?).',
+          );
         }
-        const segmentsPerCurve = clampSegments(spec?.segmentsPerCurve, 16, 128);
+        const steps = clampSegments(segmentsPerCurve, 16, 128);
         return this.makeProfile(
           'bezierProfile',
-          { controls: spec.controls, segmentsPerCurve, closed: !!spec?.closed },
-          profiles.bezier(spec.controls, segmentsPerCurve, !!spec?.closed),
+          { controls, steps, closed },
+          profiles.bezier(controls, steps, closed),
         );
       },
 
-      splineProfile: (spec: {
-        points: ReadonlyArray<readonly [number, number]>;
-        segmentsPerSpan?: number;
-        closed?: boolean;
-      }) => {
-        if (!Array.isArray(spec?.points) || spec.points.length < 3) {
-          throw new GeometryError('geom.splineProfile needs at least three points.');
+      /** A Catmull–Rom spline through the given points: interpolating, so it passes through each one. */
+      splineProfile: (
+        points: ReadonlyArray<readonly [number, number]>,
+        segmentsPerSpan = 12,
+        closed = false,
+      ) => {
+        if (!Array.isArray(points) || points.length < 3) {
+          throw new GeometryError(
+            'geom.splineProfile needs at least three points, as geom.splineProfile(points, segmentsPerSpan?, closed?).',
+          );
         }
-        const segmentsPerSpan = clampSegments(spec?.segmentsPerSpan, 12, 64);
+        const steps = clampSegments(segmentsPerSpan, 12, 64);
         return this.makeProfile(
           'splineProfile',
-          { points: spec.points, segmentsPerSpan, closed: !!spec?.closed },
-          profiles.spline(spec.points, segmentsPerSpan, !!spec?.closed),
+          { points, steps, closed },
+          profiles.spline(points, steps, closed),
         );
       },
 

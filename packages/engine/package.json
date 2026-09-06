@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@edu3d/contracts": "workspace:*",
-    "three": "0.185.1"
+    "three": "0.185.1",
+    "@edu3d/sandbox": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "26.4.1",

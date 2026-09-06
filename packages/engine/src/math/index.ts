@@ -27,6 +27,44 @@ export const GRAVITY = 9.80665;
 export const DEG = Math.PI / 180;
 export const RAD = 180 / Math.PI;
 
+/**
+ * The elementary functions, re-exported onto `M`.
+ *
+ * `Math` is available to guest code (it is a frozen intrinsic, not a capability), so these are redundant in the
+ * strict sense. They are here because the reference model — written by hand against this API before any AI saw
+ * it — reached for `M.sin` and `M.sqrt` without hesitating, and a surface that makes the natural spelling wrong
+ * costs a generation to a gate rejection for no benefit. `00-GOAL.md` puts the burden on the API, not the author.
+ *
+ * Bound to `Math` rather than wrapped, so there is no call overhead in a per-frame loop.
+ */
+export const sin = Math.sin;
+export const cos = Math.cos;
+export const tan = Math.tan;
+export const asin = Math.asin;
+export const acos = Math.acos;
+export const atan = Math.atan;
+export const atan2 = Math.atan2;
+export const sqrt = Math.sqrt;
+export const cbrt = Math.cbrt;
+export const abs = Math.abs;
+export const min = Math.min;
+export const max = Math.max;
+export const pow = Math.pow;
+export const exp = Math.exp;
+export const log = Math.log;
+export const log2 = Math.log2;
+export const log10 = Math.log10;
+export const floor = Math.floor;
+export const ceil = Math.ceil;
+export const round = Math.round;
+export const trunc = Math.trunc;
+export const hypot = Math.hypot;
+export const sinh = Math.sinh;
+export const cosh = Math.cosh;
+export const tanh = Math.tanh;
+export const E = Math.E;
+export const SQRT2 = Math.SQRT2;
+
 export const deg = (radians: number): number => radians * RAD;
 export const rad = (degrees: number): number => degrees * DEG;
 

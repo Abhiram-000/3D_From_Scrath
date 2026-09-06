@@ -122,6 +122,9 @@ importers:
       '@edu3d/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@edu3d/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       three:
         specifier: 0.185.1
         version: 0.185.1

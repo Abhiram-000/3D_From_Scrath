@@ -15,6 +15,8 @@
  * scene and zero power over everything else."
  */
 import { FORBIDDEN_GLOBALS, FROZEN_INTRINSICS } from './forbidden.ts';
+// `hardeningScript` below embeds these same lists into a standalone script for the `node:vm` host, so the two
+// realms are hardened from one definition rather than two that can drift.
 
 /** What hardening actually managed to do, so a host can log a realm it could not fully seal. */
 export interface HardeningReport {
@@ -32,7 +34,9 @@ export interface HardeningReport {
  * a thrower", and calling it to find out is not an option for something like `postMessage`. A brand is
  * the cheapest honest answer.
  */
-const POISON_BRAND = Symbol.for('edu3d.sandbox.poisoned');
+/** The registry key, shared with the generated script so both hosts brand poisons identically. */
+const POISON_BRAND_KEY = 'edu3d.sandbox.poisoned';
+const POISON_BRAND = Symbol.for(POISON_BRAND_KEY);
 
 /**
  * A thrower installed in place of a capability.
@@ -163,6 +167,97 @@ export function hardenRealm(scope: Record<string, unknown>): HardeningReport {
   }
 
   return report;
+}
+
+/**
+ * The same hardening, emitted as a self-contained script.
+ *
+ * Needed because the Node audit host hardens a *different realm* — a `node:vm` context with its own intrinsics —
+ * and a function shipped across that boundary by `toString()` would arrive without its module-scoped constant
+ * lists. Generating a script that embeds the lists keeps one source of truth for *what* is removed, which is the
+ * property that matters: if the browser guest and the audit guest had different capability sets, the server would
+ * approve models the viewer cannot run.
+ *
+ * The script is generated rather than hand-written for the same reason. Adding a name to `FORBIDDEN_GLOBALS`
+ * updates both hosts at once.
+ */
+export function hardeningScript(): string {
+  // `this` at the top level of a sloppy-mode script is the realm's global object. Used deliberately instead of
+  // `globalThis`, because `globalThis` is itself on the forbidden list — a host that shadows it before hardening
+  // would leave this script dereferencing `undefined`, and every capability would survive.
+  return `(function(scope){
+  'use strict';
+  var forbidden = ${JSON.stringify(FORBIDDEN_GLOBALS)};
+  var intrinsics = ${JSON.stringify(FROZEN_INTRINSICS)};
+  var brand = Symbol.for(${JSON.stringify(POISON_BRAND_KEY)});
+
+  function poison(name) {
+    var thrower = function forbiddenCapability() {
+      throw new TypeError(name + ' is not available inside the model sandbox.');
+    };
+    try {
+      Object.defineProperty(thrower, 'prototype', { value: undefined, writable: false });
+      Object.defineProperty(thrower, brand, { value: true, enumerable: false });
+    } catch (error) { void error; }
+    return thrower;
+  }
+
+  // 1. Remove reachable capabilities.
+  for (var i = 0; i < forbidden.length; i++) {
+    var name = forbidden[i];
+    if (!(name in scope)) continue;
+    try {
+      var descriptor = Object.getOwnPropertyDescriptor(scope, name);
+      if (descriptor && !descriptor.configurable) {
+        if (descriptor.writable) scope[name] = undefined;
+      } else {
+        delete scope[name];
+      }
+    } catch (error) { void error; }
+  }
+
+  // 2. Poison the dynamic-code path. Function is reachable from every function object's constructor, so the
+  //    property is replaced rather than the global alone.
+  try {
+    Object.defineProperty(Function.prototype, 'constructor', {
+      value: poison('Function'),
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  } catch (error) { void error; }
+
+  var dynamic = ['Function', 'eval'];
+  for (var d = 0; d < dynamic.length; d++) {
+    try {
+      Object.defineProperty(scope, dynamic[d], {
+        value: poison(dynamic[d]),
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      });
+    } catch (error) { void error; }
+  }
+
+  try {
+    var asyncCtor = Object.getPrototypeOf(async function noop() {});
+    Object.defineProperty(asyncCtor, 'constructor', { value: poison('AsyncFunction'), configurable: false });
+  } catch (error) { void error; }
+  try {
+    var generatorCtor = Object.getPrototypeOf(function* noop() {});
+    Object.defineProperty(generatorCtor, 'constructor', { value: poison('GeneratorFunction'), configurable: false });
+  } catch (error) { void error; }
+
+  // 3. Freeze intrinsics last: freezing Object first would prevent the deletions above.
+  for (var k = 0; k < intrinsics.length; k++) {
+    var intrinsic = scope[intrinsics[k]];
+    if (!intrinsic) continue;
+    try {
+      if (intrinsic.prototype) Object.freeze(intrinsic.prototype);
+      Object.freeze(intrinsic);
+    } catch (error) { void error; }
+  }
+})(this);`;
 }
 
 /**

@@ -30,7 +30,7 @@ export {
   RESERVED_PREFIX,
   type InstrumentResult,
 } from './instrument.ts';
-export { hardenRealm, auditRealm, type HardeningReport } from './harden.ts';
+export { hardenRealm, hardeningScript, auditRealm, type HardeningReport } from './harden.ts';
 export {
   compileGuest,
   createGuard,

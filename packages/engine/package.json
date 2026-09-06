@@ -1,0 +1,29 @@
+{
+  "name": "@edu3d/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The 3D engine and the scene API handed to AI-written code. Framework-agnostic and DOM-free: it runs in a worker or in Node.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./authoring": {
+      "types": "./src/authoring/index.ts",
+      "default": "./src/authoring/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@edu3d/contracts": "workspace:*",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "@types/three": "0.185.4",
+    "typescript": "6.0.3"
+  }
+}

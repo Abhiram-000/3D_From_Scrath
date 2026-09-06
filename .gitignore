@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.svelte-kit/
+.vite/
+*.tsbuildinfo
+
+# Environment — never committed. Committed examples are `*.example`.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local data: the file-backed gallery fallback and rejected-generation artifacts
+.data/
+artifacts/
+
+# Test output
+coverage/
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*

@@ -1,0 +1,25 @@
+{
+  "name": "@edu3d/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The three-page frontend: landing, loading, viewer. Owns the DOM; the engine owns the canvas.",
+  "scripts": {
+    "dev": "vite dev --port 5173",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --threshold warning"
+  },
+  "dependencies": {
+    "@edu3d/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.70.3",
+    "@sveltejs/vite-plugin-svelte": "7.3.0",
+    "svelte": "5.57.0",
+    "svelte-check": "4.7.6",
+    "typescript": "6.0.3",
+    "vite": "8.2.2"
+  }
+}

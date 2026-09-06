@@ -1,0 +1,212 @@
+/**
+ * Design tokens — the only source of color, radius, shadow, easing and glow in the app.
+ *
+ * `07-UI-UX.md` makes this a hard rule: "every color, radius, shadow, easing and glow lives in one
+ * theme sheet as CSS custom properties. No hex literal in a component file, ever." The two themes are
+ * *token redefinitions*, not separate stylesheets, which is what lets the theme switch at runtime
+ * without a re-render and lets the 3D backdrop read its own color from the same source the CSS uses.
+ *
+ * The palette is the "Sunset Graphite" identity the doc specifies: one warm hue family
+ * (bronze/amber/cream) over graphite, not a default blue SaaS palette.
+ */
+
+:root {
+  /* ── Hue family ───────────────────────────────────────────────────────────
+     One accent family, used sparingly. Glows and borders live at 10–30% opacity; full saturation is
+     reserved for primary actions, because that restraint is the difference between premium and gaudy. */
+  --amber-50: #fff8ed;
+  --amber-100: #ffefd4;
+  --amber-200: #ffdba8;
+  --amber-300: #ffc071;
+  --amber-400: #ff9f38;
+  --amber-500: #f97e12;
+  --amber-600: #ea6209;
+  --amber-700: #c2490b;
+  --amber-800: #9a3a10;
+  --amber-900: #7c3210;
+
+  --bronze-300: #d9b08c;
+  --bronze-500: #b08050;
+  --bronze-700: #7a5535;
+
+  /* Graphite: the surface family everything else sits on. */
+  --graphite-950: #0b0a09;
+  --graphite-900: #131110;
+  --graphite-850: #1a1716;
+  --graphite-800: #221e1c;
+  --graphite-700: #2f2a27;
+  --graphite-600: #423b36;
+  --graphite-500: #5c5249;
+  --graphite-400: #8a7d72;
+  --graphite-300: #b6a99d;
+  --graphite-200: #d8cec5;
+  --graphite-100: #ece5de;
+  --graphite-50: #f8f4f0;
+
+  /* Semantic status hues. Each is paired with an icon and text in the UI, never used as the only signal. */
+  --status-ok: #4ea672;
+  --status-warn: #d99a2b;
+  --status-error: #d95c4a;
+  --status-info: #5b93c9;
+
+  /* ── Geometry ───────────────────────────────────────────────────────────── */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-full: 999px;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+  --space-8: 4rem;
+
+  /* ── Type ────────────────────────────────────────────────────────────────
+     One display face for headlines, one readable body face. System stacks by default so first paint
+     never waits on a font — `08` requires "fonts swap without invisible-text stalls". */
+  --font-display:
+    'Outfit', 'Segoe UI Variable Display', system-ui, -apple-system, 'Helvetica Neue', sans-serif;
+  --font-body:
+    'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+  --text-hero: clamp(2.25rem, 6vw, 4.25rem);
+
+  --leading-tight: 1.15;
+  --leading-normal: 1.55;
+
+  /* ── Motion ──────────────────────────────────────────────────────────────
+     Durations and curves are tokens so `prefers-reduced-motion` can neutralise them in one place. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 120ms;
+  --duration-base: 220ms;
+  --duration-slow: 420ms;
+  --duration-page: 500ms;
+
+  /* ── Layout constants ────────────────────────────────────────────────────
+     Panel widths live here because the canvas must resize to match them, and two numbers that must
+     agree should be one number. */
+  --panel-width: 320px;
+  --toolbar-height: 56px;
+  --statusbar-height: 28px;
+  /* 44px is the minimum comfortable touch target `08` requires; controls inherit it on touch. */
+  --touch-target: 44px;
+
+  --z-canvas: 0;
+  --z-overlay: 10;
+  --z-panel: 20;
+  --z-toolbar: 30;
+  --z-toast: 40;
+  --z-modal: 50;
+}
+
+/* ── Dark theme (the default) ───────────────────────────────────────────────
+   Dark for evening reading and vibrant emissive parts. Model contrast is held by the backdrop tokens,
+   which the engine reads directly rather than guessing from the CSS. */
+:root,
+[data-theme='dark'] {
+  --bg: var(--graphite-950);
+  --bg-raised: var(--graphite-900);
+  --bg-sunken: #060505;
+  --surface: rgb(255 255 255 / 4%);
+  --surface-strong: rgb(255 255 255 / 7%);
+  --surface-hover: rgb(255 255 255 / 10%);
+
+  --border: rgb(255 255 255 / 9%);
+  --border-strong: rgb(255 255 255 / 16%);
+  --border-luminous: rgb(255 176 92 / 24%);
+
+  --text: var(--graphite-50);
+  --text-muted: var(--graphite-300);
+  --text-subtle: var(--graphite-400);
+  --text-inverse: var(--graphite-950);
+
+  --accent: var(--amber-400);
+  --accent-hover: var(--amber-300);
+  --accent-press: var(--amber-500);
+  --accent-contrast: #2a1503;
+  --accent-soft: rgb(255 159 56 / 14%);
+  --accent-ring: rgb(255 159 56 / 45%);
+
+  --amber-glow: 0 0 32px rgb(255 159 56 / 18%);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-md: 0 8px 24px -8px rgb(0 0 0 / 55%);
+  --shadow-lg: 0 24px 60px -20px rgb(0 0 0 / 70%);
+
+  --glass-bg: rgb(26 23 22 / 62%);
+  --glass-blur: 18px;
+
+  /* The 3D backdrop. The engine reads these so the canvas follows the theme rather than fighting it. */
+  --scene-bg-top: #17130f;
+  --scene-bg-bottom: #08070a;
+  --scene-grid: rgb(255 255 255 / 6%);
+}
+
+/* ── Light theme ────────────────────────────────────────────────────────────
+   Light for bright rooms and a printed-feel diagram. Roles never change meaning between themes; only
+   their values move, which is why the accent stays in the same hue family and only darkens for contrast. */
+[data-theme='light'] {
+  --bg: var(--graphite-50);
+  --bg-raised: #ffffff;
+  --bg-sunken: var(--graphite-100);
+  --surface: rgb(20 14 8 / 3%);
+  --surface-strong: rgb(20 14 8 / 6%);
+  --surface-hover: rgb(20 14 8 / 9%);
+
+  --border: rgb(20 14 8 / 10%);
+  --border-strong: rgb(20 14 8 / 18%);
+  --border-luminous: rgb(194 73 11 / 22%);
+
+  --text: #1b1512;
+  --text-muted: #574c44;
+  --text-subtle: #7a6d63;
+  --text-inverse: var(--graphite-50);
+
+  --accent: var(--amber-700);
+  --accent-hover: var(--amber-600);
+  --accent-press: var(--amber-800);
+  --accent-contrast: #fff8ed;
+  --accent-soft: rgb(194 73 11 / 10%);
+  --accent-ring: rgb(194 73 11 / 40%);
+
+  --amber-glow: 0 0 28px rgb(194 73 11 / 12%);
+  --shadow-sm: 0 1px 2px rgb(28 20 12 / 10%);
+  --shadow-md: 0 10px 28px -12px rgb(28 20 12 / 22%);
+  --shadow-lg: 0 28px 64px -24px rgb(28 20 12 / 28%);
+
+  --glass-bg: rgb(255 255 255 / 72%);
+  --glass-blur: 16px;
+
+  --scene-bg-top: #f2ece6;
+  --scene-bg-bottom: #dcd4cc;
+  --scene-grid: rgb(20 14 8 / 8%);
+}
+
+/*
+  Reduced motion.
+
+  `07` and `08` both require this: parallax, sheen, typing and background drift go away, while the
+  informative animation (the progress bar) stays but calms. Collapsing the duration tokens achieves
+  most of it in one place; components that animate for *information* opt back in explicitly.
+*/
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 1ms;
+    --duration-base: 1ms;
+    --duration-slow: 1ms;
+    --duration-page: 1ms;
+  }
+}

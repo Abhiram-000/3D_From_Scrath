@@ -1,0 +1,25 @@
+{
+  "name": "@edu3d/sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The execution boundary for AI-written code: static gate, loop instrumentation, and the worker and node:vm hosts that run the guest realm.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@edu3d/contracts": "workspace:*",
+    "acorn": "8.18.0",
+    "acorn-walk": "8.3.5"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "typescript": "6.0.3"
+  }
+}

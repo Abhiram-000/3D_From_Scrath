@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="Type any topic and explore it as an interactive 3D model, generated for you."
+    />
+    <link rel="icon" href="%sveltekit.assets%/favicon.svg" type="image/svg+xml" />
+
+    <!--
+      Theme before first paint.
+
+      07-UI-UX.md: "A flash of wrong colors on load reads as broken, no matter how good the page is."
+      This runs synchronously in <head>, before any stylesheet applies, so `data-theme` is already
+      correct when the first pixel is painted. It is inline rather than imported for the same reason:
+      a module request would land after paint. Storage access is wrapped because private browsing
+      throws on read, and a theme script that throws would leave the page unstyled.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('edu3d.theme');
+          var theme =
+            stored === 'dark' || stored === 'light'
+              ? stored
+              : window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark';
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (_) {
+          /* Storage unavailable: the markup default (dark) stands. */
+        }
+      })();
+    </script>
+
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
+</html>

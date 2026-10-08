@@ -43,6 +43,7 @@ import {
   type MeshData,
   type RealizedModel,
 } from '@edu3d/engine';
+import { PhysicsWorld } from './physics-world.ts';
 
 /** Messages the page sends into the worker. */
 export type WorkerRequest =
@@ -205,6 +206,9 @@ interface WorkerState {
   manifest: ModelManifest | null;
   verdict: AdmissionVerdict | null;
   guard: GuardHandle | null;
+  /** The simulation, when the model declares one. Null until loaded; `simFailed` says why not. */
+  physics: PhysicsWorld | null;
+  simFailed: boolean;
 
   paused: boolean;
   timeScale: number;
@@ -217,6 +221,8 @@ interface WorkerState {
   frameTimes: number[];
   /** Consecutive frames where the guest's callback overran its budget. */
   overruns: number;
+  /** Milliseconds the last physics step cost, for the status bar's budget line (`02`). */
+  physicsMillis: number;
   /** True once the model has been paused for repeated overruns, so the notice is sent once. */
   frameDisabled: boolean;
 
@@ -401,6 +407,8 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     manifest: null,
     verdict: null,
     guard: null,
+    physics: null,
+    simFailed: false,
 
     paused: false,
     timeScale: 1,
@@ -412,6 +420,7 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     frameTimes: [],
     overruns: 0,
     frameDisabled: false,
+    physicsMillis: 0,
 
     ladder: { applied: new Set(), pressureFrames: 0, headroomFrames: 0, basePixelRatio: request.pixelRatio },
 
@@ -530,6 +539,8 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
     target.scene.remove(target.model.root);
     target.model.dispose();
   }
+  target.physics?.dispose();
+  target.physics = null;
   if (target.builder) target.builder.dispose();
 
   target.builder = builder;
@@ -554,6 +565,25 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
   target.ladder.basePixelRatio = target.pixelRatio;
 
   target.scene.add(realized.root);
+
+  // Physics is progressive enhancement (`02` R1): the WASM loads async; on failure the model animates
+  // and the status bar says simulation is off — never a crash, never a fake.
+  if (manifest.physics) {
+    target.simFailed = false;
+    PhysicsWorld.create(manifest, target.tier)
+      .then((world) => {
+        // A newer load may have replaced the model while the WASM was loading.
+        if (target.builder === builder && world) target.physics = world;
+        else if (world) world.dispose();
+        if (!world && target.builder === builder) {
+          target.simFailed = true;
+          post({ type: 'notice', message: 'Physics simulation is unavailable on this device; the model animates instead.' });
+        }
+      })
+      .catch(() => {
+        if (target.builder === builder) target.simFailed = true;
+      });
+  }
 
   // Apply the authored opening frame. `00`: "every model opens with the full concept in view."
   const pose = manifest.camera.initial;
@@ -687,6 +717,16 @@ function renderFrame(target: WorkerState, timestamp: number): void {
 
   const frameStart = now();
 
+  // The simulation steps on its own fixed clock, before guest logic so the last step's probes are
+  // already published to `ctx.probes` when the model's own code reads them (`02` R4, R6).
+  if (target.physics && !target.paused) {
+    const stepped = target.physics.step(delta, target.builder?.motorTargets ?? new Map());
+    target.physicsMillis = stepped.millis;
+    if (Object.keys(stepped.probes).length > 0 && target.builder) {
+      target.builder.publishProbes(stepped.probes);
+    }
+  }
+
   // Guest frame logic, budgeted. A callback that overruns repeatedly gets the model paused with an explanation
   // rather than being killed: `SANDBOX_LIMITS.frameOverrunLimit`.
   if (target.builder && target.guard && !target.frameDisabled) {
@@ -771,6 +811,14 @@ function syncTransforms(target: WorkerState): void {
   for (const node of manifest.parts) {
     const object = model.parts.get(node.id);
     if (!object) continue;
+    // A simulated dynamic body drives its part; everything else follows the authored transform.
+    const simulated = target.physics?.simulatedParts.get(node.id);
+    if (simulated) {
+      object.position.set(...simulated.position);
+      object.rotation.set(...simulated.rotation);
+      object.visible = node.visible;
+      continue;
+    }
     object.position.set(...node.transform.position);
     if (node.transform.rotation) object.rotation.set(...node.transform.rotation);
     object.scale.set(...node.transform.scale);
@@ -914,7 +962,7 @@ function monitorLadder(target: WorkerState, frameTimeMs: number): void {
       frameMillis: average,
       drawCalls: info.render.calls,
       triangles: info.render.triangles,
-      physicsMillis: 0,
+      physicsMillis: target.physicsMillis,
       cacheHitRate: cacheTotal > 0 ? (geometryStats?.hits ?? 0) / cacheTotal : 1,
       quality: target.tier === 'low' ? 'low' : target.tier === 'mid' ? 'medium' : 'high',
       effectiveTier: target.tier,
@@ -931,6 +979,7 @@ function disposeAll(): void {
     state.scene.remove(state.model.root);
     state.model.dispose();
   }
+  state.physics?.dispose();
   state.builder?.dispose();
   state.renderer.dispose();
   // Forcing context loss releases the GPU allocation immediately rather than at the browser's discretion, which is
@@ -995,6 +1044,8 @@ function loop(timestamp: number): void {
       case 'setParameter': {
         if (!state?.builder) return;
         state.builder.setParameter(request.id, request.value);
+        // A sleeping body must hear a parameter change (`02` R5).
+        state.physics?.wakeAll();
         // Run one frame immediately so the change is visible within a frame rather than at the next tick (`03` R4).
         if (!state.frameDisabled && state.guard) {
           state.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
@@ -1023,6 +1074,7 @@ function loop(timestamp: number): void {
       case 'resetTime': {
         if (!state) return;
         state.elapsed = 0;
+        if (state.manifest) state.physics?.reset(state.manifest);
         break;
       }
 

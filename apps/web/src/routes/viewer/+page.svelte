@@ -52,6 +52,8 @@
   let chatOpen = $state(false);
   let quizQuestions = $state<import('@edu3d/contracts').QuizQuestion[]>([]);
   let quizSource = $state<'authored' | 'generated'>('authored');
+  /** Set when the worker reported the physics WASM could not load (`02`: say so, never fake it). */
+  let simUnavailable = $state(false);
   /** Svelte 5 component instance: an object carrying its exported methods. */
   let chatPanel = $state<{ seedFromModel: (context: import('@edu3d/contracts').ModelContext) => void } | null>(null);
 
@@ -97,6 +99,7 @@
       parameterValues = defaults;
       // A model swap unloads the previous model's modes (`05`).
       unloadModes();
+      simUnavailable = false;
       chatPanel?.seedFromModel(toContext(loadedManifest));
     },
     onLoadFailed: (message, timedOut, logs) => {
@@ -120,7 +123,10 @@
     onLog: (level, message) => {
       guestLogs = [...guestLogs.slice(-99), { level, message }];
     },
-    onNotice: (message) => toast(message),
+    onNotice: (message) => {
+      toast(message);
+      if (/physics simulation is unavailable/i.test(message)) simUnavailable = true;
+    },
     onKilled: (reason) => {
       loading = false;
       manifest = null;
@@ -715,8 +721,10 @@
         quality adapted
       </span>
     {/if}
-    {#if manifest?.physics}
+    {#if manifest?.physics && !simUnavailable}
       <span title="Physics is simulated">physics on</span>
+    {:else if manifest?.physics}
+      <span class="muted" title="The solver could not load on this device; the model animates instead">physics unavailable</span>
     {:else}
       <span class="muted" title="This model animates rather than simulating">physics off</span>
     {/if}

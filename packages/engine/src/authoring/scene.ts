@@ -349,6 +349,17 @@ export class SceneBuilder {
     for (const callback of this.callbacks.frame) callback(ctx);
   }
 
+  /**
+   * Publish solver measurements, so `ctx.probes` in the next frame carries what the solver actually
+   * did (`02` R6: "numbers on screen and motion on screen must never disagree").
+   */
+  publishProbes(probes: Readonly<Record<string, number>>): void {
+    this.publishedProbes = { ...probes };
+  }
+
+  /** Probes from the most recent solver step; read into every frame context. */
+  private publishedProbes: Readonly<Record<string, number>> = {};
+
   /** Parts whose channels were written during any frame — the audit's liveliness evidence. */
   touchedParts(): Map<string, Set<string>> {
     const result = new Map<string, Set<string>>();
@@ -432,7 +443,7 @@ export class SceneBuilder {
       dt,
       paused,
       params,
-      probes: Object.freeze({}),
+      probes: this.publishedProbes,
       part: (id: string) => {
         const cached = partRefCache.get(id);
         if (cached) return cached;

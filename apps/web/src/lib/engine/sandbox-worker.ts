@@ -67,6 +67,7 @@ export type WorkerRequest =
   | { type: 'zoom'; delta: number }
   | { type: 'pan'; deltaX: number; deltaY: number }
   | { type: 'focusPart'; partId: string | null }
+  | { type: 'viewPreset'; preset: 'front' | 'back' | 'left' | 'right' | 'top' | 'iso' }
   | { type: 'setViewMode'; mode: 'normal' | 'xray' | 'wireframe' | 'explode' }
   | { type: 'setTheme'; theme: { top: string; bottom: string } }
   | { type: 'snapshot'; width: number; height: number }
@@ -1147,6 +1148,29 @@ function loop(timestamp: number): void {
         }
         const object = state.model.parts.get(request.partId);
         if (object) frameObject(state, object, 1.6);
+        break;
+      }
+
+      case 'viewPreset': {
+        if (!state) return;
+        // Presets keep the current distance and target, so the framing holds while the angle snaps.
+        state.autoRotate = false;
+        const distance = state.orbit.distance;
+        const presets = {
+          front: [Math.PI / 2, Math.PI / 2],
+          back: [-Math.PI / 2, Math.PI / 2],
+          left: [Math.PI, Math.PI / 2],
+          right: [0, Math.PI / 2],
+          top: [0, 0.001],
+          iso: [Math.PI / 4, Math.PI / 3],
+        } as const;
+        const pair = presets[request.preset] ?? presets.iso;
+        const theta = pair[0];
+        const phi = pair[1];
+        state.orbit.theta = theta;
+        state.orbit.phi = phi;
+        state.orbit.distance = distance;
+        updateCamera(state);
         break;
       }
 

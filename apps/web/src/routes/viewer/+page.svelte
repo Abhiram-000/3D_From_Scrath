@@ -213,6 +213,24 @@
         case 'd':
           showDiagnostics = !showDiagnostics;
           break;
+        case 't':
+          toggleTheme();
+          break;
+        case 'z':
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            undo();
+          }
+          break;
+        case 'y':
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            redo();
+          }
+          break;
+        case '?':
+          showHelp = !showHelp;
+          break;
         case 'escape':
           // `05`: Escape exits any mode back to free exploration.
           if (activeMode !== 'none') {
@@ -318,12 +336,89 @@
     host?.setParameter(id, value);
   }
 
+  // ── Undo/redo: one step per gesture (`03` R4) ────────────────────────────────
+
+  type ParamSnapshot = Record<string, number | boolean | string>;
+  let undoStack = $state<ParamSnapshot[]>([]);
+  let redoStack = $state<ParamSnapshot[]>([]);
+  /** Set on the first change of a drag gesture; the pre-change snapshot is what lands on the stack. */
+  let gestureOpen = false;
+  /** Coalescing window: one pointer gesture = one undo step, whatever the event rate. */
+  let gestureTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function noteParameterGesture() {
+    if (!gestureOpen) {
+      gestureOpen = true;
+      undoStack = [...undoStack.slice(-49), { ...parameterValues }];
+      redoStack = [];
+    }
+    if (gestureTimer) clearTimeout(gestureTimer);
+    // A gesture closes after a quiet period, so a pause-and-resume on the same slider is two steps.
+    gestureTimer = setTimeout(() => (gestureOpen = false), 600);
+  }
+
+  function undo() {
+    const previous = undoStack[undoStack.length - 1];
+    if (!previous) return;
+    undoStack = undoStack.slice(0, -1);
+    redoStack = [...redoStack, { ...parameterValues }];
+    applySnapshot(previous);
+  }
+
+  function redo() {
+    const next = redoStack[redoStack.length - 1];
+    if (!next) return;
+    redoStack = redoStack.slice(0, -1);
+    undoStack = [...undoStack, { ...parameterValues }];
+    applySnapshot(next);
+  }
+
+  /** A snapshot flows through the one owner so widgets, engine and metrics agree (`03` R4). */
+  function applySnapshot(snapshot: ParamSnapshot) {
+    parameterValues = { ...snapshot };
+    for (const [id, value] of Object.entries(snapshot)) host?.setParameter(id, value);
+  }
+
+  // ── Theme, fullscreen, help ─────────────────────────────────────────────────
+
+  function toggleTheme() {
+    const next = (document.documentElement.dataset.theme as 'dark' | 'light') === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    document.documentElement.style.colorScheme = next;
+    try {
+      localStorage.setItem('edu3d.theme', next);
+    } catch {
+      /* session-only */
+    }
+    host?.setTheme(readThemeColors());
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen().catch(() => toast('Fullscreen is not available here.'));
+  }
+
+  let showHelp = $state(false);
+
+  const SHORTCUTS: ReadonlyArray<[string, string]> = [
+    ['Space', 'Play / pause'],
+    ['R', 'Reset to the authored state'],
+    ['X / W / E', 'X-ray / wireframe / explode'],
+    ['F', 'Focus the selected part'],
+    ['D', 'Diagnostics panel'],
+    ['T', 'Toggle theme'],
+    ['Ctrl+Z / Ctrl+Y', 'Undo / redo a parameter change'],
+    ['Esc', 'Exit any mode, deselect'],
+    ['?', 'This list'],
+  ];
+
   function setViewMode(mode: typeof viewMode) {
     viewMode = mode;
     host?.setViewMode(mode);
   }
 
   function onParameterInput(id: string, value: number | boolean | string) {
+    noteParameterGesture();
     parameterValues = { ...parameterValues, [id]: value };
     host?.setParameter(id, value);
   }
@@ -425,6 +520,23 @@
     <button class="chip" onclick={() => host?.focusPart(selectedPart)}>Focus</button>
     <button class="chip" onclick={() => host?.requestSnapshot()}>Snapshot</button>
 
+    <select
+      class="chip presets"
+      aria-label="View preset"
+      onchange={(event) => {
+        host?.viewPreset(event.currentTarget.value as 'front' | 'back' | 'left' | 'right' | 'top' | 'iso');
+        event.currentTarget.selectedIndex = 0;
+      }}
+    >
+      <option value="" disabled selected>Views</option>
+      <option value="front">Front</option>
+      <option value="back">Back</option>
+      <option value="left">Left</option>
+      <option value="right">Right</option>
+      <option value="top">Top</option>
+      <option value="iso">Isometric</option>
+    </select>
+
     <button
       class="chip"
       class:active={activeMode === 'story'}
@@ -442,6 +554,33 @@
     >
       Quiz
     </button>
+
+    <button
+      class="chip"
+      onclick={undo}
+      disabled={undoStack.length === 0}
+      title="Undo a parameter change (Ctrl+Z)"
+    >
+      Undo
+    </button>
+    <button
+      class="chip"
+      onclick={redo}
+      disabled={redoStack.length === 0}
+      title="Redo an undone change (Ctrl+Y)"
+    >
+      Redo
+    </button>
+
+    <button class="chip" onclick={toggleTheme} title="Toggle theme (T)">Theme</button>
+    <button
+      class="chip"
+      onclick={toggleFullscreen}
+      title="Fullscreen (F11)"
+    >
+      Full
+    </button>
+    <button class="chip" onclick={() => (showHelp = !showHelp)} title="Keyboard shortcuts (?)">?</button>
 
     <button class="icon" onclick={() => (rightOpen = !rightOpen)} aria-label="Toggle info panel">
       ⓘ
@@ -730,6 +869,21 @@
     {/if}
     <button class="link" onclick={() => (showDiagnostics = !showDiagnostics)}>diagnostics</button>
   </footer>
+
+  {#if showHelp}
+    <section class="help glass" role="dialog" aria-label="Keyboard shortcuts">
+      <header class="help-head">
+        <h2>Keyboard shortcuts</h2>
+        <button class="chip" onclick={() => (showHelp = false)}>Close</button>
+      </header>
+      <dl class="shortcut-list">
+        {#each SHORTCUTS as [keys, action] (keys)}
+          <dt><kbd>{keys}</kbd></dt>
+          <dd>{action}</dd>
+        {/each}
+      </dl>
+    </section>
+  {/if}
 
   {#if showDiagnostics}
     <section class="diagnostics glass" aria-label="Diagnostics">
@@ -1107,6 +1261,49 @@
 
   .link:hover {
     color: var(--accent);
+  }
+
+  .presets {
+    padding-right: var(--space-2);
+  }
+
+  .help {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    width: min(26rem, calc(100vw - 2 * var(--space-4)));
+    height: fit-content;
+    padding: var(--space-5);
+    z-index: var(--z-modal);
+  }
+
+  .help-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-3);
+  }
+
+  .shortcut-list {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-2) var(--space-4);
+    margin: 0;
+    font-size: var(--text-sm);
+  }
+
+  .shortcut-list kbd {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 0.0625rem 0.5rem;
+    color: var(--text-muted);
+  }
+
+  .shortcut-list dd {
+    margin: 0;
+    color: var(--text-muted);
   }
 
   .diagnostics {

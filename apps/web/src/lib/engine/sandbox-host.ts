@@ -441,6 +441,11 @@ export class SandboxHost {
     this.send({ type: 'focusPart', partId });
   }
 
+  /** Standard camera angles (`03`): "show me it from the side" without fumbling an orbit. */
+  viewPreset(preset: 'front' | 'back' | 'left' | 'right' | 'top' | 'iso'): void {
+    this.send({ type: 'viewPreset', preset });
+  }
+
   setViewMode(mode: 'normal' | 'xray' | 'wireframe' | 'explode'): void {
     this.send({ type: 'setViewMode', mode });
   }

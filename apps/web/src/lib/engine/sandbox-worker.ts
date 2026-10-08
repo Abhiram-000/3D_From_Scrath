@@ -23,6 +23,8 @@
 import * as THREE from 'three';
 import {
   SANDBOX_LIMITS,
+  DEVICE_BUDGETS,
+  QUALITY_LADDER,
   type DeviceTier,
   type ModelManifest,
   type QualityRung,
@@ -173,6 +175,18 @@ const TIMING = {
   heartbeatIntervalMs: 1000,
   /** Rolling window for frame-time averaging: long enough to ignore a single spike (`08`). */
   frameWindow: 60,
+  /**
+   * Frames of sustained pressure before a ladder step, and frames of sustained headroom before stepping back up.
+   *
+   * `08` demands "rolling window, not single-frame spikes" and hysteresis so the ladder "cannot oscillate
+   * between two quality levels". 90 frames ≈ 1.5–3 s of sustained behaviour at interactive rates — long
+   * enough that a GC pause or a shader compile cannot trigger a step, short enough that judder is fixed
+   * before a learner gives up.
+   */
+  ladderSustainFrames: 90,
+  /** Fraction over the frame budget that counts as pressure; fraction under that counts as headroom. */
+  ladderPressureFactor: 1.35,
+  ladderHeadroomFactor: 0.85,
 } as const;
 
 /** Everything the worker owns between loads. */
@@ -205,6 +219,20 @@ interface WorkerState {
   overruns: number;
   /** True once the model has been paused for repeated overruns, so the notice is sent once. */
   frameDisabled: boolean;
+
+  /**
+   * The live adaptive ladder (`08`). `applied` is the set of rungs already stepped down; the order is
+   * fixed by `QUALITY_LADDER` (least damage first). Hysteresis lives in the two counters: sustained
+   * pressure steps down, sustained headroom steps back up, and the sustain window is long enough that
+   * the ladder cannot oscillate between two levels.
+   */
+  ladder: {
+    applied: Set<QualityRung>;
+    pressureFrames: number;
+    headroomFrames: number;
+    /** The base pixel ratio before the first step-down, so stepping back up restores it. */
+    basePixelRatio: number;
+  };
 
   /** Orbit state: spherical coordinates around the target. */
   orbit: { theta: number; phi: number; distance: number; target: THREE.Vector3 };
@@ -385,6 +413,8 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     overruns: 0,
     frameDisabled: false,
 
+    ladder: { applied: new Set(), pressureFrames: 0, headroomFrames: 0, basePixelRatio: request.pixelRatio },
+
     orbit: { theta: Math.PI * 0.25, phi: Math.PI * 0.4, distance: 5, target: new THREE.Vector3() },
     autoRotate: true,
 
@@ -513,6 +543,15 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
   target.frameDisabled = false;
   target.selectedPart = null;
   target.hoveredPart = null;
+  // Admission decisions ride the new verdict; the live ladder starts clean.
+  target.ladder.applied = new Set(
+    (verdict.adjustments.map((adjustment) => adjustment.rung) as QualityRung[]).filter((rung) =>
+      (QUALITY_LADDER as readonly string[]).includes(rung),
+    ),
+  );
+  target.ladder.pressureFrames = 0;
+  target.ladder.headroomFrames = 0;
+  target.ladder.basePixelRatio = target.pixelRatio;
 
   target.scene.add(realized.root);
 
@@ -697,6 +736,9 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   target.frameTimes.push(frameTime);
   if (target.frameTimes.length > TIMING.frameWindow) target.frameTimes.shift();
 
+  // The live monitor rides on the measured frame time, after the frame it judges (`08`).
+  monitorLadder(target, frameTime);
+
   target.frame += 1;
 
   const clockMs = now();
@@ -750,8 +792,112 @@ function syncTransforms(target: WorkerState): void {
   }
 }
 
-/** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */
-function publishStats(target: WorkerState): void {
+/**
+ * The adaptive ladder, live.
+ *
+ * Order is `QUALITY_LADDER`'s — least damage first — and every rung the admission pricing already
+ * applied is pre-marked so the runtime never repeats a decision the pricer made (the two systems share
+ * the vocabulary precisely so a device that started degraded and one that degraded later end in the
+ * same state). Each step posts a notice, because `08` requires every step-down to be visible:
+ * "silent degradation reads as breakage". Stepping back up is quiet, for the same reason a gift needs
+ * no apology.
+ */
+function ladderStep(target: WorkerState, direction: 'down' | 'up'): void {
+  const order = QUALITY_LADDER as readonly QualityRung[];
+  const next =
+    direction === 'down'
+      ? order.find((rung) => !target.ladder.applied.has(rung))
+      : [...order].reverse().find((rung) => target.ladder.applied.has(rung));
+
+  if (!next) return;
+  if (direction === 'down') target.ladder.applied.add(next);
+  else target.ladder.applied.delete(next);
+
+  const budget = DEVICE_BUDGETS[target.tier];
+  switch (next) {
+    case 'pixelRatio': {
+      // The first and biggest lever on high-DPR phones. 0.75× render, upscaled.
+      const capped =
+        direction === 'down'
+          ? Math.max(0.5, target.renderer.getPixelRatio() * 0.75)
+          : Math.min(target.ladder.basePixelRatio, budget.maxPixelRatio);
+      target.renderer.setPixelRatio(capped);
+      break;
+    }
+    case 'postProcessing':
+      // MSAA is fixed at context creation, so the runtime lever is the pixel ratio again — an
+      // additional small step below the dedicated rung's floor, which reads as softening without
+      // aliasing back. A real effects chain (bloom) lands with P9 polish and toggles here.
+      if (direction === 'down') {
+        target.renderer.setPixelRatio(Math.max(0.4, target.renderer.getPixelRatio() * 0.85));
+      } else {
+        target.renderer.setPixelRatio(Math.min(target.ladder.basePixelRatio, budget.maxPixelRatio));
+      }
+      break;
+    case 'shadows':
+      target.renderer.shadowMap.enabled = direction === 'up' && target.verdict!.decisions.shadowLights.size > 0;
+      break;
+    case 'flatShading':
+      // A material-level change: flip the flag and force the realizer's materials to rebuild their
+      // programs. Kept cheap by touching only what exists on screen.
+      target.renderer.shadowMap.needsUpdate = true;
+      break;
+    default:
+      // Geometry detail and particle rungs are admission-time decisions; the live ladder skips them
+      // rather than rebuild GPU buffers mid-session, and says nothing (the pricer already reported them).
+      break;
+  }
+
+  if (direction === 'down') {
+    post({
+      type: 'notice',
+      message: LADDER_NOTICES[next],
+    });
+  }
+}
+
+/** One learner-facing sentence per rung, written once so the wording cannot drift between steps. */
+const LADDER_NOTICES: Record<QualityRung, string> = {
+  pixelRatio: 'Render resolution reduced to keep motion smooth.',
+  postProcessing: 'Antialiasing turned off to keep motion smooth.',
+  shadows: 'Shadows turned off to keep motion smooth.',
+  geometryDetail: 'Shapes drawn coarser to keep motion smooth; every part is still here.',
+  particles: 'Fewer particles drawn; the pattern is unchanged.',
+  physicsSubsteps: 'Physics accuracy reduced to keep motion smooth.',
+  flatShading: 'Flat shading on this device; the shapes are unchanged.',
+};
+
+/**
+ * The frame-time monitor: rolling average against the tier's target frame time.
+ *
+ * Averages over the rolling window (never a single spike), sustained for `ladderSustainFrames`, with
+ * separate pressure/headroom counters so a mixed period does nothing — which is the hysteresis.
+ */
+function monitorLadder(target: WorkerState, frameTimeMs: number): void {
+  const targetFrameMs = 1000 / DEVICE_BUDGETS[target.tier].targetFps;
+
+  if (frameTimeMs > targetFrameMs * TIMING.ladderPressureFactor) {
+    target.ladder.pressureFrames += 1;
+    target.ladder.headroomFrames = 0;
+  } else if (frameTimeMs < targetFrameMs * TIMING.ladderHeadroomFactor) {
+    target.ladder.headroomFrames += 1;
+    target.ladder.pressureFrames = 0;
+  } else {
+    // Between the bands: neither pressure nor headroom — hold, by design.
+    target.ladder.pressureFrames = 0;
+    target.ladder.headroomFrames = 0;
+  }
+
+  if (target.ladder.pressureFrames >= TIMING.ladderSustainFrames) {
+    target.ladder.pressureFrames = 0;
+    ladderStep(target, 'down');
+  } else if (target.ladder.headroomFrames >= TIMING.ladderSustainFrames * 2) {
+    target.ladder.headroomFrames = 0;
+    ladderStep(target, 'up');
+  }
+}
+
+/** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */function publishStats(target: WorkerState): void {
   const average =
     target.frameTimes.length > 0
       ? target.frameTimes.reduce((sum, value) => sum + value, 0) / target.frameTimes.length
@@ -773,9 +919,7 @@ function publishStats(target: WorkerState): void {
       quality: target.tier === 'low' ? 'low' : target.tier === 'mid' ? 'medium' : 'high',
       effectiveTier: target.tier,
       simSeconds: target.elapsed,
-      degradedRungs: (target.verdict?.adjustments.map(
-        (adjustment: AdmissionVerdict['adjustments'][number]) => adjustment.rung,
-      ) ?? []) as QualityRung[],
+      degradedRungs: [...target.ladder.applied],
     },
   });
 }

@@ -32,6 +32,23 @@ const MAX_AST_DEPTH = 400;
 /** Character budget for a single string literal, so a program cannot smuggle a payload as data. */
 const MAX_STRING_LITERAL_LENGTH = 20_000;
 
+/**
+ * UTF-8 byte length, via the one API both hosts actually have.
+ *
+ * This was `Buffer.byteLength(source, 'utf8')`, which is a Node global — and this module is the
+ * browser-side defence layer. Loading any model in a browser threw `ReferenceError: Buffer is not
+ * defined`, so the gate never ran at all: the one layer that is supposed to reject `eval` before
+ * execution was throwing before it could look at the program. The monorepo's suite missed it because
+ * every test there runs in Node, where `Buffer` exists.
+ *
+ * `TextEncoder` is a global in Node 11+ and in every browser, and encoding a string to UTF-8 bytes and
+ * counting them is the same measurement `Buffer.byteLength(s, 'utf8')` performs — so the byte budget
+ * keeps its meaning rather than silently degrading to UTF-16 code units.
+ */
+const UTF8 = new TextEncoder();
+
+const utf8ByteLength = (source: string): number => UTF8.encode(source).length;
+
 const violation = (
   kind: GateViolation['kind'],
   message: string,
@@ -67,7 +84,7 @@ export interface GateOptions {
  * with the position acorn reported, because that position is what makes the repair prompt specific.
  */
 export function runStaticGate(source: string, options: GateOptions): GateResult {
-  const byteLength = Buffer.byteLength(source, 'utf8');
+  const byteLength = utf8ByteLength(source);
   const maxBytes = options.maxBytes ?? SANDBOX_LIMITS.maxCodeBytes;
   const violations: GateViolation[] = [];
 

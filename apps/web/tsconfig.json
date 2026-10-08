@@ -13,6 +13,12 @@
     "moduleResolution": "bundler",
     "module": "esnext",
     "target": "es2022",
+    // Workspace packages are consumed as source and import each other with explicit `.ts` extensions, so Node's
+    // native type stripping and Vite resolve the same paths. The flag has to be set here too, because svelte-check
+    // type-checks that imported source rather than a built `.d.ts`.
+    "allowImportingTsExtensions": true,
+    // `webworker` is present because the sandbox worker lives in this app: it needs OffscreenCanvas and the worker
+    // globals, which the engine package deliberately does not declare so it stays runnable in plain Node.
     "lib": ["es2023", "dom", "dom.iterable", "webworker"],
     "types": ["vite/client"]
   }

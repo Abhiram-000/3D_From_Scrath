@@ -142,7 +142,7 @@ export const DEVICE_GLOBALS = Object.freeze([
   'performance',
 ]);
 
-/** The union, deduplicated and frozen. This is what the gate, the compiler and the realm all consult. */
+/** The union, deduplicated and frozen. This is what the gate and the compiler consult. */
 export const FORBIDDEN_GLOBALS: readonly string[] = Object.freeze([
   ...new Set([
     ...NETWORK_GLOBALS,
@@ -153,6 +153,41 @@ export const FORBIDDEN_GLOBALS: readonly string[] = Object.freeze([
     ...DEVICE_GLOBALS,
   ]),
 ]);
+
+/**
+ * Names denied to the guest but **retained by the host realm**.
+ *
+ * This distinction is load-bearing, and getting it wrong broke the viewer once: the sandbox worker *is* the host of
+ * the render loop, so deleting `requestAnimationFrame` and `performance` from its global stopped the engine one
+ * frame after the first model loaded. Three.js needs them too.
+ *
+ * These names are still completely unavailable to guest code — the static gate rejects the identifier (layer 1) and
+ * the compiler binds it as an `undefined` parameter (layer 3) — so nothing is conceded. What changes is only *how*
+ * they are denied: by lexical shadowing rather than by realm deletion.
+ *
+ * The list is deliberately short, and every entry is a scheduler or a clock rather than a capability: none of them
+ * can reach the network, storage, another realm, or the page. `fetch` will never appear here.
+ */
+export const HOST_RETAINED_GLOBALS: readonly string[] = Object.freeze([
+  ...SCHEDULING_GLOBALS,
+  // A clock. The guest gets authored time through `ctx.time`, so it has no reason to ask for this one — but the
+  // renderer measures frame cost with it, and `03` R9 requires every number on screen to be measured.
+  'performance',
+  // The renderer holds its `OffscreenCanvas` instance already; the constructor is what gets removed. `ImageBitmap`
+  // and `createImageBitmap` stay because snapshot capture uses them on the host side.
+  'createImageBitmap',
+  'ImageBitmap',
+]);
+
+/**
+ * Capabilities actually deleted from the realm.
+ *
+ * Everything genuinely dangerous — network, storage, realm escape, DOM, dynamic code, device access — with the
+ * host-retained schedulers and clocks removed. This is what `hardenRealm` and `hardeningScript` operate on.
+ */
+export const REALM_DELETIONS: readonly string[] = Object.freeze(
+  FORBIDDEN_GLOBALS.filter((name) => !HOST_RETAINED_GLOBALS.includes(name)),
+);
 
 /**
  * Property names that reach the intrinsics from an ordinary object.

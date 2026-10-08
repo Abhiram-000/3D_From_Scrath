@@ -14,7 +14,10 @@
  * `00-GOAL.md` frames the intent: "Containment, not prohibition. Give the AI full power over its own
  * scene and zero power over everything else."
  */
-import { FORBIDDEN_GLOBALS, FROZEN_INTRINSICS } from './forbidden.ts';
+import { FROZEN_INTRINSICS, HOST_RETAINED_GLOBALS, REALM_DELETIONS } from './forbidden.ts';
+// `REALM_DELETIONS` rather than `FORBIDDEN_GLOBALS`: the host half of the sandbox worker runs the render loop in
+// this same realm, so it must keep its scheduler and its clock. Those names are still denied to guest code by the
+// static gate and by the compiler's lexical shadowing — see `HOST_RETAINED_GLOBALS`.
 // `hardeningScript` below embeds these same lists into a standalone script for the `node:vm` host, so the two
 // realms are hardened from one definition rather than two that can drift.
 
@@ -71,7 +74,7 @@ export function hardenRealm(scope: Record<string, unknown>): HardeningReport {
   const report: HardeningReport = { deleted: [], poisoned: [], frozen: [], resisted: [] };
 
   // ── 1. Remove reachable capabilities ──────────────────────────────────────
-  for (const name of FORBIDDEN_GLOBALS) {
+  for (const name of REALM_DELETIONS) {
     if (!(name in scope)) continue;
     try {
       const descriptor = Object.getOwnPropertyDescriptor(scope, name);
@@ -178,7 +181,7 @@ export function hardenRealm(scope: Record<string, unknown>): HardeningReport {
  * property that matters: if the browser guest and the audit guest had different capability sets, the server would
  * approve models the viewer cannot run.
  *
- * The script is generated rather than hand-written for the same reason. Adding a name to `FORBIDDEN_GLOBALS`
+ * The script is generated rather than hand-written for the same reason. Adding a name to `REALM_DELETIONS`
  * updates both hosts at once.
  */
 export function hardeningScript(): string {
@@ -187,7 +190,7 @@ export function hardeningScript(): string {
   // would leave this script dereferencing `undefined`, and every capability would survive.
   return `(function(scope){
   'use strict';
-  var forbidden = ${JSON.stringify(FORBIDDEN_GLOBALS)};
+  var forbidden = ${JSON.stringify(REALM_DELETIONS)};
   var intrinsics = ${JSON.stringify(FROZEN_INTRINSICS)};
   var brand = Symbol.for(${JSON.stringify(POISON_BRAND_KEY)});
 
@@ -270,7 +273,7 @@ export function hardeningScript(): string {
 export function auditRealm(scope: Record<string, unknown>): string[] {
   const leaks: string[] = [];
 
-  for (const name of FORBIDDEN_GLOBALS) {
+  for (const name of REALM_DELETIONS) {
     const value = scope[name];
     // A poisoned stand-in is the intended end state, not a leak: it throws on use and reports the attempt.
     if (isPoisoned(value)) continue;

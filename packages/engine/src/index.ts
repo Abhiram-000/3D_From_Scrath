@@ -77,5 +77,38 @@ export {
   type ApiMember,
 } from './authoring/api-surface.ts';
 
+// Hosts. The Node host is the headless audit path; the browser worker entry lives in the web app, because it
+// needs DOM-worker globals (`OffscreenCanvas`, `requestAnimationFrame`) that this package deliberately does not
+// declare — the engine must stay runnable in plain Node.
+export {
+  authorInNodeVm,
+  type NodeHostOptions,
+  type NodeHostResult,
+  type NodeHostSuccess,
+  type NodeHostFailure,
+} from './hosts/node-host.ts';
+
+export {
+  authorModel,
+  runFrame,
+  type AuthorOptions,
+  type AuthorResult,
+  type GuestLogEntry,
+} from './authoring/guest.ts';
+
+// Runtime: admission pricing runs anywhere; the realizer runs only on the learner's device.
+export {
+  priceModel,
+  remainingRungs,
+  summarizeCost,
+  type AdmissionAdjustment,
+  type AdmissionVerdict,
+  type RealizationDecisions,
+} from './runtime/admission.ts';
+export { realize, type RealizedModel, type RealizeOptions } from './runtime/realize.ts';
+
+// The hand-authored reference model: the on-disk fallback, the few-shot exemplar, and the test fixture.
+export { REFERENCE_MODEL_SOURCE, MINIMAL_MODEL_SOURCE } from './reference/turbofan.ts';
+
 // Pure math, exported both for the guest namespace and for host-side geometry work.
 export * as M from './math/index.ts';

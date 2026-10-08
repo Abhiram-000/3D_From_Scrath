@@ -12,7 +12,11 @@
 <script lang="ts">
   import type { QuizQuestion } from '@edu3d/contracts';
 
-  let { questions, onclose }: { questions: QuizQuestion[]; onclose: () => void } = $props();
+  const {
+    questions,
+    onclose,
+    source = 'authored',
+  }: { questions: QuizQuestion[]; onclose: () => void; source?: 'authored' | 'generated' } = $props();
 
   const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'] as const;
 
@@ -36,7 +40,6 @@
 </script>
 
 <div class="backdrop" role="presentation" onclick={onclose}>
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <section
     class="modal glass"
     role="dialog"
@@ -48,7 +51,12 @@
     }}
   >
     <header class="head">
-      <h2>Quiz — {questions.length} question{questions.length === 1 ? '' : 's'}</h2>
+      <h2>
+        Quiz — {questions.length} question{questions.length === 1 ? '' : 's'}
+        <span class="source" title={source === 'authored' ? 'Written for this exact model' : 'Generated for this model'}>
+          {source === 'authored' ? 'authored' : 'generated'}
+        </span>
+      </h2>
       <button class="close" onclick={onclose} aria-label="Close quiz">✕</button>
     </header>
 
@@ -130,6 +138,19 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: var(--space-4);
+  }
+
+  .source {
+    font-size: 0.625rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-full);
+    margin-left: var(--space-2);
+    vertical-align: middle;
   }
 
   .close {

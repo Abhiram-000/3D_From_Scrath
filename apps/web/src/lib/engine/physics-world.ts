@@ -21,9 +21,8 @@
  * flagged, so one poisoned body cannot write garbage into the whole scene graph.
  */
 import RAPIER from '@dimforge/rapier3d-compat';
-import type { BodyDecl, JointDecl, ModelManifest, PhysicsDecl } from '@edu3d/contracts';
+import type { BodyDecl, JointDecl, ModelManifest } from '@edu3d/contracts';
 import { DEVICE_BUDGETS, type DeviceTier } from '@edu3d/contracts';
-import type { MeshData } from '@edu3d/engine';
 
 /** Real densities, kg/m³ — the values `02` names ("steel ~7850, foam ~30"). */
 const DENSITIES: Record<string, number> = {

@@ -14,7 +14,6 @@
   import { Ambient, getTheme, setTheme } from '$lib/ambient.ts';
 
   const HEADLINE = 'Any topic,';
-  const HEADLINE_2 = 'in three dimensions.';
 
   let topic = $state('');
   let typed = $state('');

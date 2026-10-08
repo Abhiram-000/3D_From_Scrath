@@ -46,7 +46,8 @@ export interface StoreAnnouncement {
   backend: 'postgres' | 'file';
   /** The one-time, plainly-worded notice `06` requires. Empty when everything is first-best. */
   notice: string | null;
-  warnings: readonly string[];
+  /** Mutable on purpose: the file store appends runtime discoveries (corrupt-file quarantine). */
+  warnings: string[];
 }
 
 /** The ceiling that keeps an unattended file store from filling a disk. Oldest rows evict first. */
@@ -463,10 +464,9 @@ export async function openGalleryStore(config: ServerConfig): Promise<GallerySto
       max: 8,
     });
     // An idle pool client dying must be a warning and a replacement, never a crash (`06`).
-    pool.on('error', (error) => {
-      config; // logged by the caller via the store announcement if it recurs; pool replaces clients.
-      void error;
-    });
+    // The pool replaces dead clients itself; this handler exists so an idle-client death is a logged
+    // non-event rather than an unhandled 'error' emission (which would crash the process).
+    pool.on('error', (error) => console.warn('[pg pool]', error.message));
     const client = pool as unknown as PgClient;
     // `SELECT 1` proves reachability before we claim the durable backend.
     await client.query('SELECT 1');
@@ -477,6 +477,7 @@ export async function openGalleryStore(config: ServerConfig): Promise<GallerySto
     if (config.isProduction) {
       throw new Error(
         `DATABASE_URL is set but unreachable (${(error as Error).message}). Refusing to start in production — fix the database or set EDU3D_ALLOW_EPHEMERAL_STORE=true.`,
+        { cause: error },
       );
     }
     const store = new FileStore(config, 'unreachable');

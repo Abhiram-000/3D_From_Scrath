@@ -14,7 +14,7 @@
  * `00-GOAL.md` frames the intent: "Containment, not prohibition. Give the AI full power over its own
  * scene and zero power over everything else."
  */
-import { FROZEN_INTRINSICS, HOST_RETAINED_GLOBALS, REALM_DELETIONS } from './forbidden.ts';
+import { FROZEN_INTRINSICS, REALM_DELETIONS } from './forbidden.ts';
 // `REALM_DELETIONS` rather than `FORBIDDEN_GLOBALS`: the host half of the sandbox worker runs the render loop in
 // this same realm, so it must keep its scheduler and its clock. Those names are still denied to guest code by the
 // static gate and by the compiler's lexical shadowing — see `HOST_RETAINED_GLOBALS`.

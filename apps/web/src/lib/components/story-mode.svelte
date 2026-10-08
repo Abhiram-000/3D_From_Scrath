@@ -10,7 +10,7 @@
 <script lang="ts">
   import type { StoryBeat } from '@edu3d/contracts';
 
-  let {
+  const {
     story,
     onsetParameter,
     onfocus,
@@ -24,16 +24,16 @@
   } = $props();
 
   let index = $state(0);
-  let beat = $derived(story[index]);
+  const beat = $derived(story[index]);
   const HOLD_SECONDS = 6;
   let advanceTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** Voice narration: optional, and never able to strand the story (`05`). */
-  let speech: SpeechSynthesis | null =
+  const speech: SpeechSynthesis | null =
     typeof speechSynthesis !== 'undefined' ? speechSynthesis : null;
 
   $effect(() => {
-    index;
+    void index; // re-run the effect whenever the beat index moves
     play();
     return () => stop();
   });

@@ -18,6 +18,7 @@
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
   import { apiFetch, takeBundle } from '$lib/core/api.ts';
+  import type { ModelContext, QuizQuestion } from '@edu3d/contracts';
   import { toContext } from '$lib/core/model-context.ts';
   import ChatPanel from '$lib/components/chat-panel.svelte';
   import QuizModal from '$lib/components/quiz-modal.svelte';
@@ -50,12 +51,12 @@
   /** The conversation layer (`05`): one mode at a time; Escape exits any mode back to exploration. */
   let activeMode = $state<'none' | 'story' | 'quiz'>('none');
   let chatOpen = $state(false);
-  let quizQuestions = $state<import('@edu3d/contracts').QuizQuestion[]>([]);
+  let quizQuestions = $state<QuizQuestion[]>([]);
   let quizSource = $state<'authored' | 'generated'>('authored');
   /** Set when the worker reported the physics WASM could not load (`02`: say so, never fake it). */
   let simUnavailable = $state(false);
   /** Svelte 5 component instance: an object carrying its exported methods. */
-  let chatPanel = $state<{ seedFromModel: (context: import('@edu3d/contracts').ModelContext) => void } | null>(null);
+  let chatPanel = $state<{ seedFromModel: (context: ModelContext) => void } | null>(null);
 
   /** Toasts. `07`: the viewer speaks in short sentences, not dialogs. */
   let toasts = $state<Array<{ id: number; message: string }>>([]);
@@ -732,7 +733,11 @@
       {/if}
 
       {#if activeMode === 'quiz' && quizQuestions.length > 0}
-        <QuizModal questions={quizQuestions} onclose={() => (activeMode = 'none')} />
+        <QuizModal
+          questions={quizQuestions}
+          source={quizSource}
+          onclose={() => (activeMode = 'none')}
+        />
       {/if}
 
       <!-- Toasts -->

@@ -7,7 +7,7 @@
  * previous version's bug — the two entries behaving differently for the same action — cannot recur
  * here.
  */
-import { STALL_HEARTBEATS, HEARTBEAT_INTERVAL_MS, isTerminalEvent, type GenerationEvent, type ModelBundle } from '@edu3d/contracts';
+import { STALL_HEARTBEATS, HEARTBEAT_INTERVAL_MS, type GenerationEvent, type ModelBundle } from '@edu3d/contracts';
 
 /** Where the API lives. The dev proxy and production same-origin both answer at `/api`. */
 export const API_BASE = '/api';

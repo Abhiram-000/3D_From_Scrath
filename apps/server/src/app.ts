@@ -20,7 +20,7 @@ import {
   type ErrorCode,
 } from '@edu3d/contracts';
 import type { ServerConfig } from './config/config.ts';
-import { AiClient } from './services/ai-client.ts';
+import { type AiClient } from './services/ai-client.ts';
 import { runPipeline } from './services/pipeline.ts';
 import { buildChatPrompt, buildQuizPrompt } from './services/prompts.ts';
 import type { GalleryStore } from './services/gallery-store.ts';
@@ -203,7 +203,7 @@ export function buildApp(state: AppState): Hono<AppContext> {
           } else {
             write({ type: 'error', code: result.failure.code, message: result.failure.message, requestId, ...(result.failure.retryAfterSeconds ? { retryAfterSeconds: result.failure.retryAfterSeconds } : {}), at: Date.now() });
           }
-        } catch (error) {
+        } catch {
           // The catch-all the client depends on: a stream must end with exactly one terminal event.
           write({ type: 'error', code: 'internal', message: DEFAULT_ERROR_MESSAGE.internal, requestId, at: Date.now() });
         } finally {
@@ -363,7 +363,7 @@ export function buildApp(state: AppState): Hono<AppContext> {
       name: parsed.data.bundle.manifest?.name ?? 'Untitled model',
       subject: parsed.data.bundle.manifest?.domain ?? 'other',
       tags: [],
-      bundle: parsed.data.bundle,
+      bundle: { ...parsed.data.bundle, snapshotUrl },
     });
     return context.json({ id: record.id, shareUrl: `/viewer?model=${record.id}`, requestId }, 201);
   });

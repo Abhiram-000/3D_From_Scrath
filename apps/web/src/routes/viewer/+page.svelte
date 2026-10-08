@@ -17,6 +17,7 @@
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
+  import { apiFetch, takeBundle } from '$lib/core/api.ts';
 
   /** Canvas container, handed to the host so it can own the element. */
   let canvasHolder = $state<HTMLElement | null>(null);
@@ -148,10 +149,20 @@
     const observer = new ResizeObserver(() => host?.resize());
     observer.observe(canvasHolder);
 
-    // Load the reference model immediately, so the viewer is never an empty room. It is also the fallback when no
-    // AI key is configured (`04`), which is exactly this path.
+    // The load priority order `03` R2 fixes: shared link → session spec → on-disk fallback. A gallery
+    // pick is the shared-link path; the freshly generated bundle is the session spec; the reference
+    // model is the fallback that means the viewer is never an empty room.
     loading = true;
-    host.load(REFERENCE_MODEL_SOURCE, 7);
+    const sharedId = new URLSearchParams(window.location.search).get('model');
+    const generated = takeBundle();
+
+    if (sharedId) {
+      void loadFromGallery(sharedId);
+    } else if (generated) {
+      host.load(generated, 7);
+    } else {
+      host.load(REFERENCE_MODEL_SOURCE, 7);
+    }
 
     const onKeyDown = (event: KeyboardEvent) => {
       // Shortcuts never fire while typing in a field (`03` R10).
@@ -206,6 +217,20 @@
   function togglePaused() {
     paused = !paused;
     host?.setPaused(paused);
+  }
+
+  /**
+   * Resolve a shared/gallery link. `03` R2: a deep link to a dead id is "honest message + fallback
+   * model, never a blank viewer" — the fallback is the reference model and the notice says what died.
+   */
+  async function loadFromGallery(id: string) {
+    const result = await apiFetch<{ bundle: { code?: string } }>(`/gallery/${encodeURIComponent(id)}`);
+    if (result.ok && result.data.bundle?.code) {
+      host?.load(result.data.bundle.code, 7);
+      return;
+    }
+    toast('That shared model could not be loaded; showing the reference model instead.');
+    host?.load(REFERENCE_MODEL_SOURCE, 7);
   }
 
   function setViewMode(mode: typeof viewMode) {

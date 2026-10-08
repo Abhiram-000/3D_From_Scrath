@@ -129,7 +129,7 @@ a {
 
 /* Gradient text is allowed on the hero statement only; body text never shimmers (`07`). */
 .gradient-text {
-  background: linear-gradient(112deg, var(--amber-200), var(--amber-400) 45%, var(--bronze-300));
+  background: var(--gradient-accent);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -139,4 +139,202 @@ a {
 .decorative {
   pointer-events: none;
   user-select: none;
+}
+
+/*
+  ── Ambient cursor system (the V1 layered effects, shared by landing and loading) ──────────────
+
+  One rAF loop drives five effects: the reactive dot grid revealed around the pointer (--gx/--gy
+  drive the mask), the trailing spotlight, per-element parallax (`data-parallax`), magnetic pull
+  (`data-magnetic`) and the glass sheen (`has-sheen`/`has-glow-border`). Everything is transform and
+  custom properties only, per `08`'s "nothing animates layout properties". Touch devices get the calm
+  idle grid and drifting blobs instead of a mask that would never move, and `prefers-reduced-motion`
+  disables the whole system.
+*/
+.ambient-grid {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1.6px);
+  background-size: 34px 34px;
+  -webkit-mask-image: radial-gradient(
+    circle 320px at var(--gx, 50%) var(--gy, 45%),
+    #000 0%,
+    rgb(0 0 0 / 55%) 45%,
+    transparent 72%
+  );
+  mask-image: radial-gradient(
+    circle 320px at var(--gx, 50%) var(--gy, 45%),
+    #000 0%,
+    rgb(0 0 0 / 55%) 45%,
+    transparent 72%
+  );
+  opacity: 0;
+  animation: ambient-grid-in 1.2s var(--ease-out) 0.2s forwards;
+}
+
+@keyframes ambient-grid-in {
+  to {
+    opacity: 1;
+  }
+}
+
+/* No pointer (touch): an evenly-lit grid drifting slowly, not a mask that never moves. */
+.ambient-grid.is-idle {
+  -webkit-mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 78%);
+  mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 78%);
+  animation:
+    ambient-grid-in 1.2s var(--ease-out) 0.2s forwards,
+    ambient-grid-drift 60s linear infinite;
+}
+
+@keyframes ambient-grid-drift {
+  to {
+    background-position: 340px 340px;
+  }
+}
+
+.ambient-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 1s ease;
+}
+
+.ambient-layer.is-visible {
+  opacity: 1;
+}
+
+.ambient-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  will-change: transform;
+}
+
+.ambient-blob-a {
+  top: -18%;
+  right: -8%;
+  width: min(70vmin, 780px);
+  height: min(70vmin, 780px);
+  background: radial-gradient(circle at 35% 35%, var(--glow-core) 0%, transparent 68%);
+  animation: ambient-blob-a 32s var(--ease-out) infinite alternate;
+}
+
+.ambient-blob-b {
+  bottom: -22%;
+  left: -12%;
+  width: min(64vmin, 700px);
+  height: min(64vmin, 700px);
+  background: radial-gradient(circle at 60% 40%, var(--glow-edge) 0%, transparent 68%);
+  animation: ambient-blob-b 38s var(--ease-out) infinite alternate;
+}
+
+@keyframes ambient-blob-a {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  100% {
+    transform: translate3d(-12vw, 16vh, 0) scale(1.18);
+  }
+}
+
+@keyframes ambient-blob-b {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1.05);
+  }
+  100% {
+    transform: translate3d(14vw, -14vh, 0) scale(0.9);
+  }
+}
+
+.ambient-spot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: min(58vmin, 680px);
+  height: min(58vmin, 680px);
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--glow-core) 0%, var(--glow-edge) 42%, transparent 70%);
+  opacity: 0;
+  transition: opacity 0.7s ease;
+  will-change: transform;
+}
+
+.ambient-active .ambient-spot {
+  opacity: 1;
+}
+
+/* Sheen: a light sweep across glass that follows the cursor. */
+.has-sheen {
+  position: relative;
+  isolation: isolate;
+}
+
+.has-sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(circle 260px at var(--sx, 50%) var(--sy, 50%), var(--sheen-color) 0%, transparent 68%);
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.has-sheen:hover::after,
+.has-sheen:focus-within::after {
+  opacity: 1;
+}
+
+/* Hairline border that brightens under the cursor. */
+.has-glow-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(circle 220px at var(--sx, 50%) var(--sy, 50%), var(--accent-ring), transparent 72%);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  pointer-events: none;
+}
+
+.has-glow-border:hover::before,
+.has-glow-border:focus-within::before {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  [data-magnetic] {
+    transition: transform var(--duration-base) var(--ease-out);
+    will-change: transform;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-blob,
+  .ambient-grid,
+  .ambient-grid.is-idle {
+    animation: none;
+  }
+
+  .ambient-grid {
+    opacity: 1;
+    -webkit-mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 75%);
+    mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 75%);
+  }
 }

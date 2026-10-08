@@ -11,43 +11,47 @@
  */
 
 :root {
-  /* ── Hue family ───────────────────────────────────────────────────────────
-     One accent family, used sparingly. Glows and borders live at 10–30% opacity; full saturation is
-     reserved for primary actions, because that restraint is the difference between premium and gaudy. */
-  --amber-50: #fff8ed;
-  --amber-100: #ffefd4;
-  --amber-200: #ffdba8;
-  --amber-300: #ffc071;
-  --amber-400: #ff9f38;
-  --amber-500: #f97e12;
-  --amber-600: #ea6209;
-  --amber-700: #c2490b;
-  --amber-800: #9a3a10;
-  --amber-900: #7c3210;
+  /* ── Hue family — the exact V1 "Sunset Graphite" palette ───────────────────
+     One warm accent family (bronze/amber/cream) over graphite, matched to the previous version's
+     theme.css so the platform keeps its identity. Glows and borders live at 10–30% opacity; full
+     saturation is reserved for primary actions, because that restraint is the difference between
+     premium and gaudy. */
+  --cream-100: #faf6ee;
+  --cream-200: #f4ecd8;
+  --cream-300: #ebe1ca;
+  --cream-400: #ddd0b6;
 
-  --bronze-300: #d9b08c;
-  --bronze-500: #b08050;
-  --bronze-700: #7a5535;
+  --bronze-400: #d4a07a;
+  --bronze-500: #c2885c;
+  --bronze-600: #a56f3f;
+  --bronze-700: #8a5a2e;
 
-  /* Graphite: the surface family everything else sits on. */
-  --graphite-950: #0b0a09;
-  --graphite-900: #131110;
-  --graphite-850: #1a1716;
-  --graphite-800: #221e1c;
-  --graphite-700: #2f2a27;
-  --graphite-600: #423b36;
-  --graphite-500: #5c5249;
-  --graphite-400: #8a7d72;
-  --graphite-300: #b6a99d;
-  --graphite-200: #d8cec5;
-  --graphite-100: #ece5de;
-  --graphite-50: #f8f4f0;
+  --amber-400: #e8c882;
+  --amber-500: #d4a055;
+  --amber-600: #b5842f;
+
+  /* Graphite: the surface family everything else sits on. Warm undertones throughout. */
+  --graphite-950: #0a0b0e;
+  --graphite-900: #111215;
+  --graphite-850: #1a1b20;
+  --graphite-800: #232428;
+  --graphite-700: #2d2e34;
+  --graphite-600: #3a3b42;
+  --graphite-500: #54555e;
+  --graphite-400: #76726a;
+  --graphite-300: #96918a;
+  --graphite-200: #b0aaa0;
+  --graphite-100: #d4cec4;
+  --graphite-50: #e8e4dc;
 
   /* Semantic status hues. Each is paired with an icon and text in the UI, never used as the only signal. */
-  --status-ok: #4ea672;
-  --status-warn: #d99a2b;
-  --status-error: #d95c4a;
+  --status-ok: #7ba888;
+  --status-warn: #d4a055;
+  --status-error: #c76a6a;
   --status-info: #5b93c9;
+
+  /* The brand gradient: cream → amber → bronze, one warm sweep. Headlines only (`07`). */
+  --gradient-accent: linear-gradient(135deg, #f4ecd8 0%, #d4a055 45%, #c2885c 100%);
 
   /* ── Geometry ───────────────────────────────────────────────────────────── */
   --radius-sm: 6px;
@@ -134,14 +138,18 @@
   --text-subtle: var(--graphite-400);
   --text-inverse: var(--graphite-950);
 
-  --accent: var(--amber-400);
-  --accent-hover: var(--amber-300);
-  --accent-press: var(--amber-500);
-  --accent-contrast: #2a1503;
-  --accent-soft: rgb(255 159 56 / 14%);
-  --accent-ring: rgb(255 159 56 / 45%);
+  --accent: var(--bronze-500);
+  --accent-hover: var(--bronze-400);
+  --accent-press: var(--bronze-600);
+  --accent-contrast: #0e0805;
+  --accent-soft: rgb(194 136 92 / 14%);
+  --accent-ring: rgb(194 136 92 / 45%);
 
-  --amber-glow: 0 0 32px rgb(255 159 56 / 18%);
+  --amber-glow: 0 0 32px rgb(212 160 85 / 18%);
+  --glow-core: rgb(194 136 92 / 20%);
+  --glow-edge: rgb(212 160 85 / 10%);
+  --grid-dot: rgb(212 206 196 / 20%);
+  --sheen-color: rgb(212 160 85 / 10%);
   --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
   --shadow-md: 0 8px 24px -8px rgb(0 0 0 / 55%);
   --shadow-lg: 0 24px 60px -20px rgb(0 0 0 / 70%);
@@ -175,14 +183,18 @@
   --text-subtle: #7a6d63;
   --text-inverse: var(--graphite-50);
 
-  --accent: var(--amber-700);
-  --accent-hover: var(--amber-600);
-  --accent-press: var(--amber-800);
-  --accent-contrast: #fff8ed;
-  --accent-soft: rgb(194 73 11 / 10%);
-  --accent-ring: rgb(194 73 11 / 40%);
+  --accent: var(--bronze-600);
+  --accent-hover: var(--bronze-500);
+  --accent-press: var(--bronze-700);
+  --accent-contrast: #fffcf6;
+  --accent-soft: rgb(165 111 63 / 10%);
+  --accent-ring: rgb(165 111 63 / 40%);
 
-  --amber-glow: 0 0 28px rgb(194 73 11 / 12%);
+  --amber-glow: 0 0 28px rgb(165 111 63 / 12%);
+  --glow-core: rgb(165 111 63 / 14%);
+  --glow-edge: rgb(165 111 63 / 7%);
+  --grid-dot: rgb(26 22 18 / 22%);
+  --sheen-color: rgb(212 160 85 / 14%);
   --shadow-sm: 0 1px 2px rgb(28 20 12 / 10%);
   --shadow-md: 0 10px 28px -12px rgb(28 20 12 / 22%);
   --shadow-lg: 0 28px 64px -24px rgb(28 20 12 / 28%);
@@ -190,9 +202,9 @@
   --glass-bg: rgb(255 255 255 / 72%);
   --glass-blur: 16px;
 
-  --scene-bg-top: #f2ece6;
-  --scene-bg-bottom: #dcd4cc;
-  --scene-grid: rgb(20 14 8 / 8%);
+  --scene-bg-top: #f4ecd8;
+  --scene-bg-bottom: #ddd0b6;
+  --scene-grid: rgb(26 22 18 / 8%);
 }
 
 /*

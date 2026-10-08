@@ -18,6 +18,10 @@
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
   import { apiFetch, takeBundle } from '$lib/core/api.ts';
+  import { toContext } from '$lib/core/model-context.ts';
+  import ChatPanel from '$lib/components/chat-panel.svelte';
+  import QuizModal from '$lib/components/quiz-modal.svelte';
+  import StoryMode from '$lib/components/story-mode.svelte';
 
   /** Canvas container, handed to the host so it can own the element. */
   let canvasHolder = $state<HTMLElement | null>(null);
@@ -42,6 +46,14 @@
   let leftOpen = $state(true);
   let rightOpen = $state(true);
   let showDiagnostics = $state(false);
+
+  /** The conversation layer (`05`): one mode at a time; Escape exits any mode back to exploration. */
+  let activeMode = $state<'none' | 'story' | 'quiz'>('none');
+  let chatOpen = $state(false);
+  let quizQuestions = $state<import('@edu3d/contracts').QuizQuestion[]>([]);
+  let quizSource = $state<'authored' | 'generated'>('authored');
+  /** Svelte 5 component instance: an object carrying its exported methods. */
+  let chatPanel = $state<{ seedFromModel: (context: import('@edu3d/contracts').ModelContext) => void } | null>(null);
 
   /** Toasts. `07`: the viewer speaks in short sentences, not dialogs. */
   let toasts = $state<Array<{ id: number; message: string }>>([]);
@@ -83,6 +95,9 @@
       const defaults: Record<string, number | boolean | string> = {};
       for (const parameter of loadedManifest.parameters) defaults[parameter.id] = parameter.default;
       parameterValues = defaults;
+      // A model swap unloads the previous model's modes (`05`).
+      unloadModes();
+      chatPanel?.seedFromModel(toContext(loadedManifest));
     },
     onLoadFailed: (message, timedOut, logs) => {
       loading = false;
@@ -193,6 +208,11 @@
           showDiagnostics = !showDiagnostics;
           break;
         case 'escape':
+          // `05`: Escape exits any mode back to free exploration.
+          if (activeMode !== 'none') {
+            activeMode = 'none';
+            break;
+          }
           selectedPart = null;
           setViewMode('normal');
           break;
@@ -231,6 +251,65 @@
     }
     toast('That shared model could not be loaded; showing the reference model instead.');
     host?.load(REFERENCE_MODEL_SOURCE, 7);
+  }
+
+  // ── The conversation layer (`05`) ────────────────────────────────────────────
+
+  /** Model swap unloads the previous model's story and quiz — a quiz answering the previous model
+   *  is a betrayal. Everything mode-related resets here. */
+  function unloadModes() {
+    activeMode = 'none';
+    quizQuestions = [];
+  }
+
+  function enterStory() {
+    if (!manifest?.story.length) {
+      toast('This model has no story beats.');
+      return;
+    }
+    activeMode = activeMode === 'story' ? 'none' : 'story';
+  }
+
+  /** Authored-first: the model's own questions are used before any are generated (`05`). */
+  async function enterQuiz() {
+    if (activeMode === 'quiz') {
+      activeMode = 'none';
+      return;
+    }
+    if (manifest && manifest.quiz.length > 0) {
+      quizSource = 'authored';
+      quizQuestions = manifest.quiz;
+      activeMode = 'quiz';
+      return;
+    }
+    // The fallback path: generation is the fallback, and its failure leaves the viewer untouched.
+    if (!manifest) return;
+    quizSource = 'generated';
+    activeMode = 'quiz';
+    const result = await apiFetch<{ questions: typeof quizQuestions; dropped: number }>('/quiz', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        context: toContext(manifest, selectedPart),
+        count: 5,
+        difficulty: 'mixed',
+      }),
+    });
+    if (result.ok && result.data.questions.length > 0) {
+      quizQuestions = result.data.questions;
+      if (result.data.dropped > 0) {
+        toast(`${result.data.dropped} unusable question${result.data.dropped === 1 ? '' : 's'} were dropped.`);
+      }
+    } else {
+      activeMode = 'none';
+      toast('Quiz generation is unavailable right now.');
+    }
+  }
+
+  /** A story beat's parameter change flows through the same owner as manual changes (`05`). */
+  function beatSetParameter(id: string, value: number | boolean | string) {
+    parameterValues = { ...parameterValues, [id]: value };
+    host?.setParameter(id, value);
   }
 
   function setViewMode(mode: typeof viewMode) {
@@ -339,6 +418,24 @@
 
     <button class="chip" onclick={() => host?.focusPart(selectedPart)}>Focus</button>
     <button class="chip" onclick={() => host?.requestSnapshot()}>Snapshot</button>
+
+    <button
+      class="chip"
+      class:active={activeMode === 'story'}
+      onclick={enterStory}
+      disabled={!manifest?.story.length}
+      title={manifest?.story.length ? 'Play the guided tour' : 'This model has no story beats'}
+    >
+      Story
+    </button>
+    <button
+      class="chip"
+      class:active={activeMode === 'quiz'}
+      onclick={() => void enterQuiz()}
+      title={manifest?.quiz.length ? `${manifest.quiz.length} authored questions` : 'Questions will be generated for this model'}
+    >
+      Quiz
+    </button>
 
     <button class="icon" onclick={() => (rightOpen = !rightOpen)} aria-label="Toggle info panel">
       ⓘ
@@ -477,6 +574,22 @@
         <div class="hover-hint">{manifest?.parts.find((p) => p.id === hoveredPart)?.name}</div>
       {/if}
 
+      {#if activeMode === 'story' && manifest?.story.length}
+        <StoryMode
+          story={manifest.story}
+          onsetParameter={beatSetParameter}
+          onfocus={(partId) => host?.focusPart(partId)}
+          onclose={() => {
+            activeMode = 'none';
+            host?.focusPart(null);
+          }}
+        />
+      {/if}
+
+      {#if activeMode === 'quiz' && quizQuestions.length > 0}
+        <QuizModal questions={quizQuestions} onclose={() => (activeMode = 'none')} />
+      {/if}
+
       <!-- Toasts -->
       <div class="toasts" aria-live="polite">
         {#each toasts as entry (entry.id)}
@@ -485,10 +598,31 @@
       </div>
     </main>
 
-    <!-- Right: part info and structure -->
+    <!-- Right: part info, structure, and the tutor -->
     {#if rightOpen}
       <aside class="panel glass" aria-label="Model information">
-        {#if activePart}
+        <div class="panel-tabs" role="tablist" aria-label="Panel content">
+          <button
+            role="tab"
+            aria-selected={!chatOpen}
+            class:active={!chatOpen}
+            onclick={() => (chatOpen = false)}
+          >
+            Info
+          </button>
+          <button
+            role="tab"
+            aria-selected={chatOpen}
+            class:active={chatOpen}
+            onclick={() => (chatOpen = true)}
+          >
+            Tutor
+          </button>
+        </div>
+
+        {#if chatOpen}
+          <ChatPanel bind:this={chatPanel} />
+        {:else if activePart}
           <h2>{activePart.info?.title ?? activePart.name}</h2>
           {#if activePart.info?.summary}
             <p>{activePart.info.summary}</p>
@@ -714,6 +848,27 @@
   .panel h2 {
     font-size: var(--text-lg);
     margin: 0;
+  }
+
+  /* The Info/Tutor tabs: one mode at a time inside the right panel (`05`). */
+  .panel-tabs {
+    display: flex;
+    gap: 2px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: var(--space-2);
+  }
+
+  .panel-tabs button {
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-full);
+    font-size: var(--text-sm);
+    color: var(--text-subtle);
+    font-weight: 600;
+  }
+
+  .panel-tabs button.active {
+    background: var(--accent-soft);
+    color: var(--accent);
   }
 
   .panel h3 {

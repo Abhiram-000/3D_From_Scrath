@@ -80,9 +80,10 @@ export interface PathHandle {
 
 /** Thrown when guest code asks for something the engine refuses. Message is written for the model to read. */
 export class GeometryError extends Error {
+  /** Class field ([[Define]] semantics): survives the frozen Error.prototype after realm hardening, where a constructor assignment ([[Set]]) throws. */
+  override name = 'GeometryError';
   constructor(message: string) {
     super(message);
-    this.name = 'GeometryError';
   }
 }
 

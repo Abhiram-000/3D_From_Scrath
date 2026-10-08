@@ -45,9 +45,10 @@ import { clamp } from '../math/index.ts';
 
 /** Thrown when a program declares something the engine must refuse. Messages address the generator. */
 export class SceneError extends Error {
+  /** Class field ([[Define]] semantics): survives the frozen Error.prototype after realm hardening, where a constructor assignment ([[Set]]) throws. */
+  override name = 'SceneError';
   constructor(message: string) {
     super(message);
-    this.name = 'SceneError';
   }
 }
 

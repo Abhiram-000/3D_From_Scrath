@@ -29,9 +29,10 @@ export interface MaterialHandle {
 
 /** Thrown when guest code asks for a material the engine cannot make. Message written for the model. */
 export class MaterialError extends Error {
+  /** Class field ([[Define]] semantics): survives the frozen Error.prototype after realm hardening, where a constructor assignment ([[Set]]) throws. */
+  override name = 'MaterialError';
   constructor(message: string) {
     super(message);
-    this.name = 'MaterialError';
   }
 }
 

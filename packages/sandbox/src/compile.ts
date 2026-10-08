@@ -24,17 +24,19 @@ import { GUARD_IDENTIFIER } from './instrument.ts';
 
 /** Thrown when guest code exceeds its wall-clock budget. Distinguished so the host can say "ran too long". */
 export class GuestTimeoutError extends Error {
+  /** Class field: thrown inside the hardened realm, so it must not assign through the frozen prototype. */
+  override name = 'GuestTimeoutError';
   constructor(message: string) {
     super(message);
-    this.name = 'GuestTimeoutError';
   }
 }
 
 /** Thrown when guest code exceeds its iteration budget — a runaway loop that is fast but unbounded. */
 export class GuestBudgetError extends Error {
+  /** Class field: thrown inside the hardened realm, so it must not assign through the frozen prototype. */
+  override name = 'GuestBudgetError';
   constructor(message: string) {
     super(message);
-    this.name = 'GuestBudgetError';
   }
 }
 

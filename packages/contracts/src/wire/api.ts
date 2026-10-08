@@ -12,12 +12,16 @@ import { DeviceTier } from '../budgets.ts';
 import { QuizQuestion } from '../manifest/behavior.ts';
 
 /**
- * Topic length ceiling.
+ * Topic length bounds.
  *
- * 500 characters matches the landing page's visible counter (`07`). The server clamps at the same
+ * 500 characters matches the landing page's visible counter (`07`); the server clamps at the same
  * number rather than a larger private one, because two different limits is how a UI ends up lying.
+ * The minimum matches the landing page's "a few words is enough" rule — a one-character topic would
+ * sail past schema validation and spend a whole AI call to produce nothing, so it dies at the door
+ * with the 400 `04` requires instead.
  */
 export const MAX_TOPIC_LENGTH = 500;
+export const MIN_TOPIC_LENGTH = 5;
 
 /** How ambitious the model should be. Bounds what the prompt asks for; never lowers the quality bar. */
 export const ComplexityPreference = z.enum(['simple', 'balanced', 'detailed', 'maximum']);
@@ -28,7 +32,9 @@ export const GenerateRequest = z.object({
    * The learner's words. Wrapped and labelled untrusted data before it reaches the model (`04`) — it is
    * never concatenated into the instruction section of a prompt.
    */
-  topic: shortText(MAX_TOPIC_LENGTH),
+  topic: shortText(MAX_TOPIC_LENGTH).refine((topic) => topic.trim().length >= MIN_TOPIC_LENGTH, {
+    message: `Describe the topic in at least ${MIN_TOPIC_LENGTH} characters.`,
+  }),
   complexity: ComplexityPreference.default('detailed'),
   /** Hint only. The AI classifies the domain itself; this biases nothing more than the opening guess. */
   domain: Domain.optional(),

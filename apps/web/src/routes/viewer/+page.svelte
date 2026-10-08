@@ -998,6 +998,10 @@
   .body {
     display: grid;
     grid-template-columns: auto 1fr auto;
+    /* One definite row: without it the row grows to content height, the panels overflow the viewport,
+       and the part list's clicks land on the panel chrome instead of the buttons — the row must be
+       exactly the space the toolbar and status bar leave. */
+    grid-template-rows: minmax(0, 1fr);
     gap: var(--space-2);
     padding: var(--space-2);
     min-height: 0;
@@ -1007,6 +1011,9 @@
     width: var(--panel-width);
     padding: var(--space-4);
     overflow-y: auto;
+    /* Constrain to the grid row so the panel scrolls internally instead of stretching it. */
+    min-height: 0;
+    max-height: 100%;
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
@@ -1220,8 +1227,9 @@
     margin: 0;
     display: grid;
     gap: 2px;
-    max-height: 18rem;
-    overflow-y: auto;
+    /* No inner max-height: the panel itself owns scrolling now, and a nested scroller here both
+       collapsed the list's height (children clipped out of layout) and fought the panel's scroll —
+       one scroller per column, the panel's. */
   }
 
   .part-button {

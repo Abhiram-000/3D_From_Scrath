@@ -77,16 +77,15 @@ export {
   type ApiMember,
 } from './authoring/api-surface.ts';
 
-// Hosts. The Node host is the headless audit path; the browser worker entry lives in the web app, because it
-// needs DOM-worker globals (`OffscreenCanvas`, `requestAnimationFrame`) that this package deliberately does not
-// declare — the engine must stay runnable in plain Node.
-export {
-  authorInNodeVm,
-  type NodeHostOptions,
-  type NodeHostResult,
-  type NodeHostSuccess,
-  type NodeHostFailure,
-} from './hosts/node-host.ts';
+// Hosts. The browser worker entry lives in the web app, because it needs DOM-worker globals
+// (`OffscreenCanvas`, `requestAnimationFrame`) that this package deliberately does not declare — the
+// engine must stay runnable in plain Node.
+//
+// The Node host (`./hosts/node-host.ts`) is deliberately NOT re-exported here: it imports `node:vm`,
+// and a barrel that reaches it poisons every browser bundle that imports anything from this package —
+// in dev, Vite externalises `node:vm` and the import throws; the worker dies before rendering a
+// frame. The server imports the host directly from '@edu3d/engine/src/hosts/node-host.ts' instead.
+// A subpath import keeps the same one-source-of-truth without a browser-facing barrel entry.
 
 export {
   authorModel,

@@ -20,7 +20,8 @@ import {
   type DimensionScore,
   type ModelManifest,
 } from '@edu3d/contracts';
-import { authorInNodeVm } from '@edu3d/engine';
+// Direct subpath: the Node host imports `node:vm` and must stay out of any browser-reachable barrel.
+import { authorInNodeVm } from '@edu3d/engine/node-host';
 
 /** Sweep samples per parameter: min, quarter, default, three-quarters, max. Enough to catch a dead binding. */
 const SWEEP_FRACTIONS = [0, 0.25, 0.5, 0.75, 1] as const;

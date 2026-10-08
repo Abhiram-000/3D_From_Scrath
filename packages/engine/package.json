@@ -12,6 +12,10 @@
     "./authoring": {
       "types": "./src/authoring/index.ts",
       "default": "./src/authoring/index.ts"
+    },
+    "./node-host": {
+      "types": "./src/hosts/node-host.ts",
+      "default": "./src/hosts/node-host.ts"
     }
   },
   "scripts": {

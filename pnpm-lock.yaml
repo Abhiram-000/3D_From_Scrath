@@ -50,6 +50,12 @@ importers:
       '@edu3d/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@edu3d/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      '@edu3d/sandbox':
+        specifier: workspace:*
+        version: link:../../packages/sandbox
       '@hono/node-server':
         specifier: 2.1.1
         version: 2.1.1(hono@4.13.7)

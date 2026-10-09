@@ -29,6 +29,8 @@
   import StoryMode from '$lib/components/story-mode.svelte';
   import ShareModal from '$lib/components/share-modal.svelte';
   import CodeViewModal from '$lib/components/code-view-modal.svelte';
+  import GalleryModal from '$lib/components/gallery-modal.svelte';
+  import GenerateDialog from '$lib/components/generate-dialog.svelte';
 
   // ── View state ────────────────────────────────────────────────────────────
   let canvasHolder = $state<HTMLElement | null>(null);
@@ -36,6 +38,8 @@
 
   let support = $state<{ supported: boolean; reason?: string }>({ supported: true });
   let engineReady = $state(false);
+  /** A mid-session model swap: the engine is up, a new model is authoring + realizing. */
+  let modelLoading = $state(false);
   let loadError = $state<string | null>(null);
 
   let manifest = $state<ModelManifest | null>(null);
@@ -67,6 +71,8 @@
   let quizModalOpen = $state(false);
   let shortcutsModalOpen = $state(false);
   let shareModalOpen = $state(false);
+  let galleryOpen = $state(false);
+  let generateOpen = $state(false);
   let codeViewModalOpen = $state(false);
   let codeViewTab = $state<'raw' | 'spec'>('raw');
   let quizQuestions = $state<QuizQuestion[]>([]);
@@ -100,6 +106,7 @@
       engineReady = true;
     },
     onLoaded: (loadedManifest, loadedVerdict) => {
+      modelLoading = false;
       manifest = loadedManifest;
       verdict = loadedVerdict;
       
@@ -112,6 +119,7 @@
       unloadModes();
     },
     onLoadFailed: (message, timedOut) => {
+      modelLoading = false;
       
       loadError = timedOut ? `${message} (it ran too long and was stopped)` : message;
     },
@@ -219,8 +227,9 @@
           if (event.ctrlKey || event.metaKey) { event.preventDefault(); redo(); }
           break;
         case 'escape':
-          if (quizModalOpen || shortcutsModalOpen || shareModalOpen || codeViewModalOpen) {
+          if (quizModalOpen || shortcutsModalOpen || shareModalOpen || codeViewModalOpen || galleryOpen || generateOpen) {
             quizModalOpen = shortcutsModalOpen = shareModalOpen = codeViewModalOpen = false;
+            galleryOpen = generateOpen = false;
           } else if (activeMode !== 'none') {
             activeMode = 'none';
           } else {
@@ -370,6 +379,16 @@
   async function shareModel() {
     if (!manifest) return;
     shareModalOpen = true;
+  }
+
+  /** A generated or gallery model lands through the same atomic swap as every load (`03` R2). */
+  function swapInModel(code: string, name: string) {
+    modelLoading = true;
+    loadError = null;
+    topicName = name;
+    generateOpen = false;
+    galleryOpen = false;
+    host?.load(code, Math.floor(Math.random() * 0xffffffff));
   }
 
   // ── Derived data ──────────────────────────────────────────────────────────
@@ -529,11 +548,11 @@
 
       <!-- Content -->
       <div class="control-group">
-        <button class="toolbar-btn primary-action" title="Generate a model with AI (G)" onclick={() => (window.location.href = '/')}>
+        <button class="toolbar-btn primary-action" title="Generate a model with AI (G)" onclick={() => (generateOpen = true)}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l1.6 3.9L13.5 6.5 9.6 8.1 8 12 6.4 8.1 2.5 6.5 6.4 4.9 8 1z" /><circle cx="12.5" cy="12.5" r="1.5" /></svg>
           <span>Generate</span>
         </button>
-        <button class="toolbar-btn" title="Browse the gallery (Ctrl+G)" onclick={shareModel}>
+        <button class="toolbar-btn" title="Browse the gallery (Ctrl+G)" onclick={() => (galleryOpen = true)}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="5" height="5" /><rect x="9" y="3" width="5" height="5" /><rect x="2" y="10" width="5" height="3" /><rect x="9" y="10" width="5" height="3" /></svg>
           <span>Gallery</span>
         </button>
@@ -795,7 +814,15 @@
       {/if}
 
       <!-- Loading overlay -->
-      {#if !engineReady && !loadError}
+      {#if modelLoading}
+        <div class="loading-overlay">
+          <div class="loading-content">
+            <div class="spinner-large"></div>
+            <h2>Building {topicName}</h2>
+            <p>Authoring and realizing on this device…</p>
+          </div>
+        </div>
+      {:else if !engineReady && !loadError}
         <div class="loading-overlay">
           <div class="loading-content">
             <div class="spinner-large"></div>
@@ -987,6 +1014,14 @@
   {/if}
 
   <!-- ── Share Modal ──────────────────────────────────────────────────────── -->
+  {#if galleryOpen}
+    <GalleryModal onclose={() => (galleryOpen = false)} onload={swapInModel} />
+  {/if}
+
+  {#if generateOpen}
+    <GenerateDialog onclose={() => (generateOpen = false)} ongenerated={swapInModel} />
+  {/if}
+
   {#if shareModalOpen}
     <ShareModal {manifest} onclose={() => (shareModalOpen = false)} />
   {/if}

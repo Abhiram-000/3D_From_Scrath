@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import type { ModelManifest } from '@edu3d/contracts';
   import { apiFetch } from '$lib/core/api.ts';
 
@@ -14,6 +15,7 @@
   let publishing = $state(false);
   let publishError = $state<string | null>(null);
   let copied = $state(false);
+  let published = $state(false);
 
   onMount(() => {
     // A local-only share still resolves: the model is in session storage, so the link opens this
@@ -25,23 +27,23 @@
   async function publish() {
     if (!manifest) return;
     publishing = true;
-    const code = (sessionStorage.getItem('edu3d.bundle.code') ?? '').trim();
-    const manifestRaw = sessionStorage.getItem('edu3d.bundle.manifest');
 
-    if (!code || !manifestRaw) {
-      publishing = false;
-      publishError = 'There is no generated model in this session to publish — the share link opens the viewer only.';
-      return;
-    }
+    // The generated bundle when this session made one; the reference source otherwise — publishing
+    // the reference model is legitimate (it is a real model) and previously failed silently.
+    const code =
+      (sessionStorage.getItem('edu3d.bundle.code') ?? '').trim() ||
+      REFERENCE_MODEL_SOURCE;
+    const manifestToStore = manifest;
 
     try {
       const response = await apiFetch<{ id: string; shareUrl: string }>('/gallery', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ bundle: { manifest: JSON.parse(manifestRaw), code } }),
+        body: JSON.stringify({ bundle: { manifest: manifestToStore, code } }),
       });
       if (response.ok) {
         shareUrl = `${window.location.origin}${response.data.shareUrl}`;
+        published = true;
       } else {
         publishError = response.message;
       }
@@ -89,6 +91,7 @@
         </div>
         <div class="share-copy-feedback visible-when-copied" class:visible={copied}>Copied to clipboard!</div>
         {#if publishing}<p class="share-status">Publishing…</p>{/if}
+        {#if published}<p class="share-status published">Published to the gallery — the link below opens this exact model anywhere.</p>{/if}
         {#if publishError}<p class="share-status error">{publishError}</p>{/if}
       </div>
 

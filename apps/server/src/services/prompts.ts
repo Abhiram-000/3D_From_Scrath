@@ -1,25 +1,30 @@
 /**
- * The prompt architecture: the platform's primary production tool (`00`).
+ * The prompt architecture — the platform's primary production tool (`00`).
  *
- * "The difference between a six-box disappointment and a 300-part cutaway rocket is mostly the prompting
- * architecture. Engineer them like code, not like a wish." Three properties this file is built for:
+ * "The difference between a six-box disappointment and a 300-part cutaway rocket is mostly the
+ * prompting architecture. Engineer them like code, not like a wish." This module is engineered
+ * around five techniques, each chosen because a live model run demonstrated its need:
  *
- *  1. **Phased planning before code.** The prompt forces classify → entities → causality → representation
- *     → hierarchy → code, because "a model that plans produces coherent assemblies; one that starts typing
- *     produces scattered geometry".
- *  2. **The API contract is generated, never hand-written.** The surface section is built from
- *     `describeApiSurface()`, the same descriptor the static gate validates against — the documented surface
- *     and the enforced surface are one string, so they cannot drift.
- *  3. **The topic is data, never instruction.** The learner's words are wrapped and labelled untrusted,
- *     which is the prompt-injection defence `04` stage 1 exists to provide.
+ *  1. **A complete, correct exemplar.** Models imitate structure they have seen far more faithfully
+ *     than they follow rules they have read — the single highest-leverage technique for *runnable*
+ *     code. The exemplar below is a real program that passes this exact gate.
+ *  2. **The API as a copyable reference table**, generated from the engine's own registry, never
+ *     hand-written — so the documented surface and the enforced surface are one string.
+ *  3. **Negative examples from observed failures.** Every "NEVER" line below is a real mistake a
+ *     live model made: `geom.box({width, height, length})` from habit, `.position.set()` on a
+ *     handle, ids that collide. Naming the trap prevents the trap.
+ *  4. **Plan-first scaffolding.** A short block comment the model fills before coding — chain of
+ *     thought made structural rather than hoped-for.
+ *  5. **A self-check the model runs before answering.** The last thing in the prompt is the first
+ *     thing the model does with its draft.
  *
- * Versioned, because a prompt change is a code change: the version rides in every bundle's provenance so
- * analytics can attribute model quality to the prompt that produced it.
+ * Versioned, because a prompt change is a code change: the version rides in every bundle's
+ * provenance so model quality is attributable to the prompt that produced it.
  */
 import { describeApiSurface } from '@edu3d/engine';
 import type { ComplexityPreference } from '@edu3d/contracts';
 
-export const PROMPT_VERSION = '2026-10-v1';
+export const PROMPT_VERSION = '2026-10-v2-exemplar';
 
 /** The domain grammar table from `00`, compressed to the rows the model can act on. */
 const DOMAIN_GRAMMARS: ReadonlyArray<{ domain: string; entities: string; motion: string }> = [
@@ -47,11 +52,73 @@ const COMPLEXITY_GUIDANCE: Readonly<Record<ComplexityPreference, string>> = {
 };
 
 /**
+ * The exemplar: a small, complete, correct program that exercises the API's core.
+ *
+ * Sliced from the reference turbofan's patterns but small enough to keep the prompt cheap: describe →
+ * colorRole → param → metric → materials → groups → profile/revolve geometry → instancing →
+ * onFrame → story → quiz. Every line is gate-clean; the model copies these shapes verbatim.
+ */
+const EXEMPLAR = `// A pendulum clock. Units: metres, radians, seconds.
+// PLAN: concept = pendulum period depends on length, not mass.
+// ENTITIES: pivot, rod, bob, dial. CAUSALITY: gravity -> torque -> swing -> tick.
+// REPRESENTATION: rod = slim revolve, bob = sphere, motion = oscillate + onFrame physics.
+scene.describe({
+  name: 'Pendulum',
+  description: 'A swinging pendulum showing why the period depends on length, not mass.',
+  domain: 'physics',
+  concept: 'A pendulum is a harmonic oscillator: T = 2*pi*sqrt(L/g).',
+  objectives: ['Predict how length changes the period', 'Explain why mass does not matter'],
+  level: 'secondary',
+  principles: ['Restoring torque is proportional to sin(angle) for small angles'],
+  simplifications: ['Damping ignored; real clocks need an escapement to keep swinging'],
+});
+scene.colorRole({ id: 'metal', label: 'Metal', color: '#c2885c', meaning: 'Structural parts' });
+scene.colorRole({ id: 'energy', label: 'Motion', color: '#d4a055', meaning: 'The swinging mass' });
+scene.param({ id: 'length', label: 'Rod length', kind: 'number', min: 0.5, max: 3, default: 1.5, unit: 'm', affects: [{ partId: 'bob', channel: 'transform' }] });
+scene.param({ id: 'gravity', label: 'Gravity', kind: 'number', min: 1.6, max: 20, default: 9.81, unit: 'm/s2', affects: [{ partId: 'bob', channel: 'transform' }] });
+scene.metric({ id: 'period', label: 'Period', unit: 's', formula: 'T = 2*pi*sqrt(L/g)' });
+var steel = mat.metal({ role: 'metal', roughness: 0.3 });
+var brass = mat.metal({ role: 'energy', roughness: 0.25 });
+scene.group({ id: 'clock', name: 'Pendulum clock' });
+scene.mesh({
+  id: 'pivot', name: 'Pivot', parentId: 'clock',
+  geometry: geom.cylinder({ radius: 0.05, height: 0.08 }),
+  material: steel, position: [0, 0, 0],
+  info: { title: 'Pivot', summary: 'The fixed point the rod swings from.' },
+});
+var bob = scene.mesh({
+  id: 'bob', name: 'Bob', parentId: 'clock', hero: true,
+  geometry: geom.sphere({ radius: 0.16, segments: 32 }),
+  material: brass, position: [0, -1.5, 0],
+  info: { title: 'Bob', summary: 'The swinging mass.', bullets: ['Mass does not change the period'] },
+});
+// The period read-out recomputed from the same parameters the physics uses.
+scene.onFrame(function (ctx) {
+  var L = ctx.params.length;
+  var g = ctx.params.gravity;
+  var T = 2 * Math.PI * Math.sqrt(L / g);
+  ctx.metric('period', T);
+  var theta = 0.35 * Math.cos(ctx.time * ((2 * Math.PI) / T));
+  ctx.part('bob').setPosition(0, -L, 0);
+  ctx.part('bob').setRotation(0, 0, theta);
+});
+scene.story([
+  { id: 'b1', title: 'The setup', narration: 'Gravity pulls the bob down; the rod forces it to arc.', targetPartId: 'pivot' },
+  { id: 'b2', title: 'The swing', narration: 'Length alone sets the tempo — drag the slider and watch.', targetPartId: 'bob' },
+]);
+scene.quiz([{
+  id: 'q1', question: 'Double the rod length. The period...',
+  options: ['Doubles', 'Increases by sqrt(2)', 'Halves', 'Stays the same'],
+  correctIndex: 1, explanation: 'T scales with sqrt(L): double length, ~1.41x period.',
+}]);
+scene.camera({ position: [3, -0.5, 4], target: [0, -1, 0], fov: 40 });`;
+
+/**
  * Assemble the generation system prompt.
  *
- * One message, structured in the phases the model must think in. Token-expensive on purpose: this is the
- * production tool, and `00` is explicit that quality wins over token cost — but nothing here restates
- * itself, so every token is load-bearing.
+ * Structure order matters as much as content: exemplar FIRST (primacy), reference table second
+ * (where it can be found), contract third, negative examples fourth (recency — the last thing
+ * before the model writes), self-check last of all.
  */
 export function buildGenerationPrompt(options: {
   complexity: ComplexityPreference;
@@ -60,80 +127,71 @@ export function buildGenerationPrompt(options: {
   const surface = describeApiSurface();
   const budget =
     options.tier === 'low'
-      ? 'The requesting device is LOW tier: stay under ~120k triangles and ~80 draw calls.'
+      ? 'LOW tier device: stay under ~120k triangles and ~80 draw calls.'
       : options.tier === 'mid'
-        ? 'The requesting device is MID tier: stay under ~500k triangles and ~350 draw calls.'
-        : 'The requesting device is HIGH tier: up to ~1.8M triangles and ~1200 draw calls.';
+        ? 'MID tier device: stay under ~500k triangles and ~350 draw calls.'
+        : 'HIGH tier device: up to ~1.8M triangles and ~1200 draw calls.';
 
-  return `You are building an interactive 3D educational model as a real JavaScript program.
-You are a programmer with three expertises, applied in order: a domain scientist (what is true),
-an instructional designer (what teaches), and a 3D engineer (what builds). Think in the phases below
-inside a single block comment at the top of your program — plan in writing before any scene.* call.
+  return `You write a complete JavaScript program that builds an interactive 3D educational model.
+The program runs ONCE against a scene API and must be correct on the first execution — there is no
+browser console, no retry at runtime. Study the complete working example below; copy its call
+shapes exactly.
 
-PHASE 1 — CLASSIFY. Decide the domain and its visual grammar:
-${DOMAIN_GRAMMARS.map((row) => `  - ${row.domain}: ${row.entities}; what moves: ${row.motion}`).join('\n')}
+=== COMPLETE WORKING EXAMPLE (your program must have this structure) ===
+${EXEMPLAR}
 
-PHASE 2 — ENTITIES. List every entity the concept requires: source, mechanism, boundary, carrier,
-output, return path. Omit none the phenomenon requires; add none that does not teach.
-
-PHASE 3 — CAUSALITY. What connects to what, which way does cause flow, what exchanges what.
-
-PHASE 4 — REPRESENTATION. For each entity choose a shape whose BEHAVIOR matches the concept's
-behavior, not whose outline looks similar: gears must be involute (geom.gear), springs must be true
-helical sweeps, flow must be particles traveling a declared path (geom.path + onFrame), a wave must be
-a surface whose vertices follow the function. A static lookalike is the canonical defect.
-
-PHASE 5 — HIERARCHY. Group parts by FUNCTION (stage → subassembly → part) so selecting a group
-selects a concept. Name every part; give every part info text.
-
-PHASE 6 — CODE. Write the program.
-
-THE CONTRACT (hard rules — the platform enforces these and rejects violations):
-1. scene.describe({...}) first, with concept, objectives, principles, and honest simplifications.
-2. Units are real: meters, kilograms, seconds. Declare exaggerations in 'simplifications'.
-3. Every parameter must visibly change behavior — bind motion, emissive, color or geometry to it.
-   A parameter that changes nothing is rejected before it ships.
-4. Repetition is instanced: define once, place many (scene.defineComponent + place, scene.instances,
-   geom.pattern.*). A 300-part model authored part-by-part is a token failure.
-5. Materials are semantic: mat.metal, mat.glass, mat.emissive, mat.organic... Declare color roles with
-   scene.colorRole and use them consistently — the learner learns to read color as category.
-6. Motion by default: the model must be alive. Use scene.motion for auditable motion and
-   scene.onFrame for state machines and custom laws.
-7. Declare 3–6 story beats following the causal arc, quiz questions with real misconception
-   distractors, and metrics whose formulas agree with the motion.
-8. No imports, no eval, no globals outside the provided API. You are inside a sandbox.
-9. Set the opening camera with scene.camera({ position, target }) — framing the concept is authoring.
-10. ${budget}
-
-AVAILABLE API (generated from the engine — the gate validates against exactly this list):
+=== API REFERENCE (every name your program may call) ===
 ${surface}
 
-EXACT CALL SHAPES — copy these argument names precisely; every field named here is required:
-scene.colorRole({ id: 'carrier', label: 'Carrier', color: '#c2885c', meaning: 'What this colour means' });
-scene.param({ id: 'length', label: 'Pendulum length', kind: 'number', min: 0.5, max: 3, default: 1.5, unit: 'm', affects: [{ partId: 'bob', channel: 'transform' }] });
-scene.mesh({ id: 'bob', name: 'Bob', geometry: geom.sphere({ radius: 0.15 }), material: mat.metal({ color: '#c2885c' }), position: [0, -1.5, 0], info: { title: 'Bob', summary: 'What it is.', bullets: ['A fact'] } });
-scene.motion({ id: 'swing', partId: 'bob', kind: 'oscillate', axis: [0, 0, 1], rate: { param: 'speed' }, amplitude: 0.4 });
-scene.metric({ id: 'period', label: 'Period', unit: 's', formula: 'T = 2*pi*sqrt(L/g)' });
-scene.onFrame((ctx) => { const t = ctx.time; ctx.part('bob').setRotation(0.4 * Math.sin(t * 3), 0, 0); });
-scene.story([{ id: 'beat1', title: 'Setup', narration: 'One or two sentences.', targetPartId: 'bob' }]);
-scene.quiz([{ id: 'q1', question: 'A question?', options: ['A', 'B', 'C', 'D'], correctIndex: 0, explanation: 'Why.' }]);
+Rules for geometry arguments (the example shows each correct form):
+- Vectors are arrays: position: [x, y, z]. size: [w, h, d].
+- geom.box takes { size: [w, h, d] } or [w, h, d] — never {width, height, length}.
+- Round shapes take { radius, height?/halfHeight?, segments? }.
+- scene.mesh returns a part id string, NOT an object: never write bob.position.set(...) — use
+  ctx.part('bob').setPosition(...) inside onFrame instead.
+- Every part needs a unique id. Every param needs a unique id.
 
-CORRECT OPENING — your program MUST begin exactly like this (fill in your own content):
-scene.describe({
-  name: 'The Model Name',
-  description: 'Two or three sentences describing what this model shows and how to explore it.',
-  domain: 'mechanical-engineering',
-  concept: 'One sentence stating the core idea the model teaches.',
-  objectives: ['Something the learner will be able to do', '...3-4 total'],
-  level: 'secondary',
-  principles: ['A physical law or rule the model demonstrates'],
-  simplifications: ['Any liberty taken with scale or detail, stated honestly'],
-});
-Then declare color roles, parameters, geometry, parts, motion, story beats and quiz.
+NEVER (each of these broke a real generated model):
+- bob.position.set / .rotation.set — part ids are strings, not objects
+- geom.box({ width, height, length }) — use { size: [w, h, d] }
+- import statements, eval, fetch, document, window — the sandbox rejects them
+- calling scene.anything before scene.describe
+- duplicate part or parameter ids
+- forgetting info text on selectable parts
 
-AMBIITION: ${COMPLEXITY_GUIDANCE[options.complexity]}
-Spend your output budget on planning and a complete program, not on comments or restating these rules.
-Output one fenced JavaScript block containing the complete, self-contained program.`;
+AUTHORING METHOD — inside a block comment at the top, write four lines before any code:
+// PLAN: the core idea in one sentence.
+// ENTITIES: every part the concept requires (source, mechanism, boundary, output).
+// CAUSALITY: what drives what, and which parameter exposes it.
+// REPRESENTATION: the shape whose BEHAVIOR matches each entity's behavior.
+
+Then, in order: describe → colorRole → param → metric → materials → groups → parts → motion →
+onFrame → story → quiz → camera. Choose shapes whose motion is correct: gears must be involute
+(geom.gear), springs true helical sweeps, flow particles along a declared path. A static lookalike
+is the canonical defect. Domain grammar for classification:
+${DOMAIN_GRAMMARS.map((row) => `  - ${row.domain}: ${row.entities}; moves by: ${row.motion}`).join('\n')}
+
+HARD CONTRACT:
+1. scene.describe({...}) first, with concept, objectives, principles, honest simplifications.
+2. Real units: metres, kilograms, seconds. Declare any exaggeration in simplifications.
+3. Every parameter visibly changes behavior (bind it in onFrame — the example shows how).
+4. Repeated structure is instanced (scene.instances + geom.pattern.*) or a component
+   (scene.defineComponent + scene.place) — never copy-pasted parts.
+5. Semantic materials (mat.metal, mat.glass, mat.emissive, mat.organic) and declared color roles.
+6. The model must move by default. Metrics must agree with the motion (see the example's period).
+7. 3–6 story beats along the causal arc; quiz questions with real-misconception distractors.
+8. Set the opening camera: scene.camera({ position, target, fov }).
+9. Triangle budget for this run: ${budget}
+10. Ambition for this run: ${COMPLEXITY_GUIDANCE[options.complexity]}
+
+BEFORE YOU ANSWER — verify your draft against this checklist, then fix anything that fails:
+[ ] starts with scene.describe (name, description, concept, objectives all non-empty strings)
+[ ] every geometry call matches the reference table's argument names exactly
+[ ] every parameter is read somewhere in onFrame via ctx.params.<id>
+[ ] every part id is unique; every part has a name
+[ ] no imports, no host globals, no object methods on part ids
+[ ] story beats and quiz included
+Output ONE fenced JavaScript block containing the complete, self-contained program.`;
 }
 
 /**
@@ -154,14 +212,17 @@ export function wrapTopic(topic: string): string {
  *
  * "Targeted revision beats re-rolling: a fresh attempt produces a different first draft, not a fixed
  * one" (`04`). The full code is echoed rather than diffed because the model has no other way to see
- * its own output, and the errors are numbered so a fix for one cannot silently drop another.
+ * its own output, and the errors are numbered so a fix for one cannot silently drop another. The
+ * exemplar rides along: repair imitates the same way generation does.
  */
 export function buildRepairPrompt(code: string, errors: readonly string[]): string {
-  return `Your program was rejected by the platform's static gate. Here is your code followed by the
-specific, numbered errors. Return the COMPLETE corrected program in one fenced block. Fix every error;
-do not restructure what already passed.
+  return `Your program was rejected. Fix it and return the COMPLETE corrected program in one fenced
+block. Change only what the errors name — everything else already passed.
 
-ERRORS:
+THE CORRECT CALL SHAPES (compare your failing lines against these):
+${EXEMPLAR}
+
+NUMBERED ERRORS TO FIX:
 ${errors.map((error, index) => `${index + 1}. ${error}`).join('\n')}
 
 YOUR CODE:
@@ -177,11 +238,13 @@ ${code}
  * the acceptance rule — genuinely better, or the first version stands.
  */
 export function buildRefinementPrompt(code: string, deficiencies: readonly string[]): string {
-  return `The platform audited your model and found it short of the teaching bar. Here is your program
-followed by the specific, numbered deficiencies. Return the COMPLETE improved program in one fenced
-block. Every deficiency is fixable; fix all of them without dropping what already works. Do not remove
-parts, parameters or beats to dodge a finding — the audit re-runs on the revision and a revision that
-is not genuinely better is discarded.
+  return `The platform audited your model and found it short of the teaching bar. Return the COMPLETE
+improved program in one fenced block. Fix every deficiency without dropping what already works; do
+not remove parts, parameters or beats to dodge a finding — the audit re-runs on the revision and a
+revision that is not genuinely better is discarded.
+
+STRUCTURE TO MATCH (your program already follows it — keep following it):
+${EXEMPLAR}
 
 DEFICIENCIES:
 ${deficiencies.map((deficiency, index) => `${index + 1}. ${deficiency}`).join('\n')}
@@ -197,10 +260,10 @@ export function buildChatPrompt(persona: string, contextSummary: string): string
   const personas: Record<string, string> = {
     teacher: 'Warm, wise, analogy-driven, encouraging. The classic explanation.',
     buddy: 'Casual peer, supportive, plain words. Intimidated learners breathe out.',
-    engineer: 'Technical and precise: cite this model\'s actual parameter values, materials and forces.',
+    engineer: "Technical and precise: cite this model's actual parameter values, materials and forces.",
     eli5: 'Tiny words, toys/animals/food metaphors. For a complete newcomer.',
     socratic:
-      'Never answer directly. Ask guiding questions that use this model\'s own parts as evidence, one step at a time.',
+      "Never answer directly. Ask guiding questions that use this model's own parts as evidence, one step at a time.",
   };
   return `You are the tutor for an interactive 3D educational model the learner has open on screen.
 ${personas[persona] ?? personas.teacher}

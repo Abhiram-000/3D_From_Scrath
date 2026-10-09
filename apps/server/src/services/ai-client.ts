@@ -47,13 +47,17 @@ export type AiFailureCode =
 const MAX_ATTEMPTS = 3;
 
 /**
- * The model cascade, tried in order when a provider failure is model-shaped (quota, demand, retired).
+ * Per-provider model cascades, tried in order when a failure is model-shaped (quota, demand, or
+ * the model being retired — free tiers rotate names often).
  *
- * Gemini's free tier throttles per-model: a demand spike on the newest flash should not kill a
- * generation when the previous flash still has headroom. The configured model always goes first;
- * these are the fallbacks, newest to oldest.
+ * A cascade must only contain models that exist ON THAT PROVIDER: when FreeInference was made
+ * primary, the old global list sent Gemini-only names there and every call died to a 404 — the
+ * exact bug this table fixes. The configured model always goes first; these follow, newest first.
  */
-const MODEL_FALLBACKS = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-2.5-flash'] as const;
+const MODEL_CASCADES: Readonly<Record<string, readonly string[]>> = {
+  'freeinference.org': ['deepseek-v4-flash', 'glm-5.1', 'qwen3.6-35b'],
+  'generativelanguage.googleapis.com': ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+};
 const BASE_BACKOFF_MS = 1_500;
 /** Per-call timeout for generation-sized requests. A deep-reasoning model writing a full program
  *  over the complete API surface routinely takes 4-8 minutes on a free tier; 180s aborted the
@@ -82,6 +86,12 @@ function classifyStatus(status: number, bodyText: string): AiFailure {
       true,
       60,
     );
+  }
+  if (status === 404) {
+    // Free tiers rotate model names constantly; a 404 means THIS model is retired/absent, not that
+    // the request was wrong. Classified `status` so the model cascade advances to the next entry
+    // instead of dying here (the generic 4xx branch would mark it non-retryable and stop everything).
+    return failure('status', 'The AI service no longer offers that model; trying the next one.', true);
   }
   if (status >= 500) {
     return failure('status', 'The AI service failed to answer. Try again in a moment.', true);
@@ -115,33 +125,43 @@ export class AiClient {
   }
 
   async complete(request: CompletionRequest): Promise<CompletionResult> {
-    // The cascade starts with the configured model; each model-shaped failure moves to the next.
-    const models = [this.config.ai.model, ...MODEL_FALLBACKS.filter((m) => m !== this.config.ai.model)];
+    // The cascade starts with the configured model and continues with models that exist on the
+    // SAME provider (a cross-provider name is a guaranteed 404 — see MODEL_CASCADES).
+    const cascade = this.cascadeFor(this.config.ai.baseUrl);
+    const models = [this.config.ai.model, ...cascade.filter((m) => m !== this.config.ai.model)];
     let lastFailure: CompletionResult | null = null;
 
     for (const model of models) {
       const result = await this.completeWithModel(model, request);
       if (result.ok) return result;
       lastFailure = result;
-      // Only quota/demand failures justify switching models; anything else is request-shaped or fatal.
-      if (result.code !== 'quota') break;
+      // Quota/demand and retired-model 404s justify moving to the next model; request-shaped
+      // failures (auth, refusal, malformed) do not — another model would fail the same way.
+      if (result.code !== 'quota' && result.code !== 'status') break;
     }
 
-    // The cross-provider fallback: an independent service with its own quota. Reached only when
-    // every model of the primary provider is throttled or down — the learner's minutes-long wait
-    // must not die because one free tier had a bad afternoon (`04`: degraded modes are real modes).
+    // The cross-provider fallback: an independent service with its own quota AND its own model
+    // names. Reached when every model of the primary provider is throttled, down, or retired —
+    // the learner's minutes-long wait must not die because one free tier had a bad afternoon
+    // (`04`: degraded modes are real modes).
     const fallback = this.config.ai.fallback;
     if (fallback?.apiKey && lastFailure && !lastFailure.ok) {
-      const crossed = await this.completeWithProvider(
-        fallback.baseUrl,
-        fallback.apiKey,
-        fallback.model,
-        request,
-      );
-      if (crossed.ok) return crossed;
+      for (const model of [fallback.model, ...this.cascadeFor(fallback.baseUrl)]) {
+        const crossed = await this.completeWithProvider(fallback.baseUrl, fallback.apiKey, model, request);
+        if (crossed.ok) return crossed;
+        if (crossed.code !== 'quota' && crossed.code !== 'status') break;
+      }
     }
 
     return lastFailure as CompletionResult;
+  }
+
+  /** The same-provider model cascade for a base URL; empty when the provider is unknown. */
+  private cascadeFor(baseUrl: string): readonly string[] {
+    for (const [host, models] of Object.entries(MODEL_CASCADES)) {
+      if (baseUrl.includes(host)) return models;
+    }
+    return [];
   }
 
   private async completeWithProvider(

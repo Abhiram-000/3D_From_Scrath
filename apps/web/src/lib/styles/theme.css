@@ -1,0 +1,498 @@
+/* ============================================================
+   EDU-3D · Shared Design Tokens & Ambient Effects
+   One source of truth for color / spacing / type / motion
+   across landing, loading and the viewer.
+   ============================================================ */
+
+/* ---------- Primitive palette (not used directly in markup) ----------
+   Sunset Graphite — premium warm-neutral palette. Inspired by editorial
+   print design: warm cream highlights, deep charcoal neutrals, and a
+   single bronze/amber accent for warmth. No cool blue-purple ramp. */
+:root {
+    --graphite-950: #0A0B0E;     /* near-black, warm undertones */
+    --graphite-900: #111215;     /* base canvas */
+    --graphite-850: #1A1B20;     /* surface */
+    --graphite-800: #232428;     /* elevated */
+    --graphite-700: #2D2E34;     /* hover */
+    --graphite-600: #3A3B42;     /* border */
+    --graphite-500: #54555E;     /* muted text */
+    --graphite-400: #76726A;     /* dim text */
+    --graphite-300: #96918A;     /* secondary text */
+    --graphite-200: #B0AAA0;     /* secondary text (alt) */
+    --graphite-100: #D4CEC4;     /* near-primary */
+    --graphite-50:  #E8E4DC;     /* warm white (primary text on dark) */
+
+    --cream-100: #FAF6EE;       /* warm cream highlight */
+    --cream-200: #F4ECD8;       /* soft cream */
+    --cream-300: #EBE1CA;       /* muted cream */
+    --cream-400: #DDD0B6;       /* warm border on light */
+
+    --bronze-700: #8A5A2E;      /* deep bronze */
+    --bronze-600: #A56F3F;      /* mid bronze */
+    --bronze-500: #C2885C;      /* brand bronze — main accent */
+    --bronze-400: #D4A07A;      /* lighter bronze */
+    --amber-600: #B5842F;       /* deep amber */
+    --amber-500: #D4A055;       /* warm gold */
+    --amber-400: #E8C882;       /* light gold */
+
+    --sage-500: #7BA888;        /* muted success */
+    --rust-500: #C76A6A;        /* muted danger */
+    --slate-700: #3A3B42;       /* (legacy compat) */
+
+    /* Accent steps (AA-safe on dark canvas / light canvas) */
+    --accent-050: #FAF6EE;
+    --accent-100: #F4ECD8;
+    --accent-600: #A56F3F;
+    --accent-700: #8A5A2E;
+    --violet-100: #F4ECD8;
+    --violet-600: #C2885C;
+
+    /* Native form controls / scrollbars match the theme */
+    color-scheme: dark;
+}
+
+/* ---------- Semantic tokens · DARK (default) ----------
+   Sunset Graphite: deep charcoal base + bronze/amber accents.
+   Editorial, premium, distinctive. */
+:root,
+:root[data-theme="dark"] {
+    --bg-canvas: var(--graphite-900);
+    --bg-surface: rgba(26, 27, 32, 0.78);
+    --bg-surface-solid: #1A1B20;
+    --bg-elevated: rgba(45, 46, 52, 0.6);
+    --bg-subtle: rgba(58, 59, 66, 0.4);
+    --bg-hover: rgba(58, 59, 66, 0.6);
+    --bg-active: rgba(84, 85, 94, 0.65);
+
+    --text-primary: var(--graphite-50);
+    --text-secondary: var(--graphite-200);
+    --text-muted: var(--graphite-300);
+    --text-dim: var(--graphite-400);
+
+    --border-subtle: rgba(212, 206, 196, 0.10);
+    --border-medium: rgba(212, 206, 196, 0.20);
+    --border-strong: rgba(212, 206, 196, 0.36);
+
+    /* Bronze — the single brand accent */
+    --accent: var(--bronze-500);
+    --accent-hover: var(--bronze-400);
+    --accent-strong: var(--bronze-600);
+    --accent-ink: #0E0805;       /* deep text on bronze fills */
+    --accent-muted: rgba(194, 136, 92, 0.14);
+    --accent-glow: rgba(194, 136, 92, 0.32);
+
+    /* Amber — secondary highlight (gradients, glows) */
+    --amber: var(--amber-500);
+    --amber-muted: rgba(212, 160, 85, 0.14);
+    --amber-glow: rgba(212, 160, 85, 0.28);
+
+    /* Cream — soft warm highlight */
+    --cream: var(--cream-200);
+    --cream-muted: rgba(244, 236, 216, 0.10);
+    --cream-glow: rgba(244, 236, 216, 0.20);
+
+    /* Violet — used for gradient tail (deep cool accent) */
+    --violet: #6B5B7A;
+    --violet-muted: rgba(107, 91, 122, 0.14);
+
+    /* Legacy alias — keeps old `--coral-*` references working */
+    --coral: var(--bronze-500);
+    --coral-300: var(--bronze-400);
+    --coral-muted: rgba(194, 136, 92, 0.14);
+    --coral-glow: rgba(194, 136, 92, 0.32);
+    --coral-border: rgba(194, 136, 92, 0.28);
+    --coral-glass: rgba(194, 136, 92, 0.08);
+    --indigo: #6B5B7A;
+    --indigo-muted: rgba(107, 91, 122, 0.14);
+
+    --success: var(--sage-500);
+    --success-muted: rgba(123, 168, 136, 0.14);
+    --warning: var(--amber-500);
+    --warning-muted: rgba(212, 160, 85, 0.14);
+    --danger: var(--rust-500);
+    --danger-muted: rgba(199, 106, 106, 0.14);
+
+    /* Prompt bar — warm glass, single accent border */
+    --prompt-bg: linear-gradient(180deg,
+            rgba(45, 38, 28, 0.72) 0%,
+            rgba(20, 18, 16, 0.80) 100%);
+    --prompt-border: rgba(194, 136, 92, 0.20);
+    --prompt-highlight: rgba(255, 255, 255, 0.05);
+
+    --chip-bg: rgba(35, 33, 30, 0.6);
+    --chip-border: rgba(212, 206, 196, 0.12);
+
+    /* Brand gradient: cream → amber → bronze — single warm hue family */
+    --gradient-accent: linear-gradient(135deg,
+            var(--cream-200) 0%,
+            var(--amber-500) 45%,
+            var(--bronze-500) 100%);
+
+    /* Background: two warm radial glows + dark base */
+    --gradient-bg: radial-gradient(1200px 800px at 78% -12%, rgba(212, 160, 85, 0.10) 0%, transparent 55%),
+                   radial-gradient(900px 700px at 0% 110%, rgba(194, 136, 92, 0.10) 0%, transparent 55%),
+                   radial-gradient(600px 500px at 50% 50%, rgba(244, 236, 216, 0.03) 0%, transparent 70%),
+                   var(--bg-canvas);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.40);
+    --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
+
+    /* Ambient cursor system */
+    --glow-core: rgba(194, 136, 92, 0.20);
+    --glow-edge: rgba(212, 160, 85, 0.10);
+    --blob-a: rgba(194, 136, 92, 0.18);
+    --blob-b: rgba(212, 160, 85, 0.14);
+    --grid-dot: rgba(212, 206, 196, 0.20);
+    --sheen-color: rgba(212, 160, 85, 0.10);
+}
+
+/* ---------- Semantic tokens · LIGHT ----------
+   Warm cream base + deep bronze accents. Editorial print feel. */
+:root[data-theme="light"] {
+    color-scheme: light;
+
+    --bg-canvas: var(--cream-200);
+    --bg-surface: rgba(255, 253, 248, 0.92);
+    --bg-surface-solid: #FFFFFF;
+    --bg-elevated: rgba(250, 246, 238, 0.94);
+    --bg-subtle: rgba(221, 208, 182, 0.5);
+    --bg-hover: rgba(204, 188, 158, 0.5);
+    --bg-active: rgba(180, 161, 128, 0.4);
+
+    --text-primary: #1A1612;       /* deep warm black */
+    --text-secondary: #4A4138;     /* warm charcoal */
+    --text-muted: #6B5F50;         /* warm brown-gray */
+    --text-dim: #8A7E6E;           /* warm taupe */
+
+    --border-subtle: rgba(26, 22, 18, 0.08);
+    --border-medium: rgba(26, 22, 18, 0.16);
+    --border-strong: rgba(26, 22, 18, 0.28);
+
+    /* Deep bronze for light mode (better contrast on cream) */
+    --accent: var(--bronze-600);
+    --accent-hover: var(--bronze-500);
+    --accent-strong: var(--bronze-700);
+    --accent-ink: #FFFCF6;
+    --accent-muted: rgba(165, 111, 63, 0.10);
+    --accent-glow: rgba(165, 111, 63, 0.22);
+
+    --amber: var(--amber-600);
+    --amber-muted: rgba(181, 132, 47, 0.10);
+    --amber-glow: rgba(181, 132, 47, 0.22);
+
+    --cream: var(--cream-300);
+    --cream-muted: rgba(235, 225, 202, 0.5);
+    --cream-glow: rgba(235, 225, 202, 0.7);
+
+    --violet: #5A4768;
+    --violet-muted: rgba(90, 71, 104, 0.10);
+
+    /* Legacy alias */
+    --coral: var(--bronze-600);
+    --coral-300: var(--bronze-500);
+    --coral-muted: rgba(165, 111, 63, 0.10);
+    --coral-glow: rgba(165, 111, 63, 0.22);
+    --coral-border: rgba(165, 111, 63, 0.22);
+    --coral-glass: rgba(165, 111, 63, 0.06);
+    --indigo: #5A4768;
+    --indigo-muted: rgba(90, 71, 104, 0.10);
+
+    --success: #3F6B4C;
+    --success-muted: rgba(63, 107, 76, 0.10);
+    --warning: var(--amber-600);
+    --warning-muted: rgba(181, 132, 47, 0.10);
+    --danger: #8E3A3A;
+    --danger-muted: rgba(142, 58, 58, 0.10);
+
+    --prompt-bg: linear-gradient(180deg,
+            rgba(255, 253, 248, 0.96) 0%,
+            rgba(250, 246, 238, 0.96) 100%);
+    --prompt-border: rgba(165, 111, 63, 0.20);
+    --prompt-highlight: rgba(255, 255, 255, 0.95);
+
+    --chip-bg: rgba(255, 253, 248, 0.78);
+    --chip-border: rgba(26, 22, 18, 0.10);
+
+    --gradient-accent: linear-gradient(135deg,
+            var(--cream-100) 0%,
+            var(--amber-500) 50%,
+            var(--bronze-500) 100%);
+
+    --gradient-bg: radial-gradient(1100px 700px at 82% -10%, rgba(212, 160, 85, 0.10) 0%, transparent 55%),
+                   radial-gradient(800px 600px at 0% 110%, rgba(165, 111, 63, 0.10) 0%, transparent 55%),
+                   radial-gradient(600px 500px at 50% 50%, rgba(244, 236, 216, 0.5) 0%, transparent 70%),
+                   var(--bg-canvas);
+
+    --shadow-sm: 0 1px 2px rgba(26, 22, 18, 0.08);
+    --shadow-md: 0 6px 20px rgba(26, 22, 18, 0.10);
+    --shadow-lg: 0 16px 40px rgba(26, 22, 18, 0.14);
+
+    /* Ambient cursor system — warm light */
+    --glow-core: rgba(165, 111, 63, 0.14);
+    --glow-edge: rgba(90, 71, 104, 0.06);
+    --blob-a: rgba(212, 160, 85, 0.18);
+    --blob-b: rgba(194, 136, 92, 0.16);
+    --grid-dot: rgba(26, 22, 18, 0.14);
+    --sheen-color: rgba(165, 111, 63, 0.08);
+}
+
+/* ---------- Spacing & type scale (shared across pages) ---------- */
+:root {
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-10: 40px;
+    --space-12: 48px;
+    --space-16: 64px;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+    --radius-pill: 999px;
+
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'SF Mono', 'JetBrains Mono', 'Roboto Mono', Consolas, monospace;
+
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-snap: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --dur-fast: 150ms;
+    --dur-base: 300ms;
+}
+
+/* ---------- Base ---------- */
+html,
+body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* Focus visibility (WCAG 2.4.7 · 3:1 non-text contrast) */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+/* Suppress transitions for one frame while theme tokens swap, so the
+   toggle never shows a half-transitioned "wrong color" state. */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+    transition: none !important;
+}
+
+/* ============================================================
+   AMBIENT CURSOR SYSTEM
+   Layer order (landing/loading): 3D canvas < grid < glow < content
+   ============================================================ */
+
+/* --- 1. Reactive dot grid ------------------------------------ */
+.ambient-grid {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background-image: radial-gradient(var(--grid-dot) 1px, transparent 1.6px);
+    background-size: 34px 34px;
+    /* Only the region around the cursor is revealed. */
+    -webkit-mask-image: radial-gradient(circle 320px at var(--gx, 50%) var(--gy, 45%),
+            #000 0%, rgba(0, 0, 0, 0.55) 45%, transparent 72%);
+    mask-image: radial-gradient(circle 320px at var(--gx, 50%) var(--gy, 45%),
+            #000 0%, rgba(0, 0, 0, 0.55) 45%, transparent 72%);
+    opacity: 0;
+    animation: gridFadeIn 1.2s var(--ease-out) 0.2s forwards;
+}
+
+@keyframes gridFadeIn {
+    to { opacity: 1; }
+}
+
+/* No pointer (touch) — show a calm, evenly-lit grid that drifts slowly
+   instead of a mask that would never move. */
+.ambient-grid.is-idle {
+    -webkit-mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 78%);
+    mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 78%);
+    animation: gridFadeIn 1.2s var(--ease-out) 0.2s forwards,
+               gridDrift 60s linear infinite;
+    opacity: 0;
+}
+
+@keyframes gridDrift {
+    to { background-position: 340px 340px; }
+}
+
+/* --- 2. Glow layer (blobs + cursor spotlight) ----------------- */
+.ambient-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity 1s ease;
+}
+
+.ambient-layer.is-visible {
+    opacity: 1;
+}
+
+.ambient-blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(60px);
+    will-change: transform;
+}
+
+.ambient-blob-a {
+    top: -18%;
+    right: -8%;
+    width: min(70vmin, 780px);
+    height: min(70vmin, 780px);
+    background: radial-gradient(circle at 35% 35%, var(--blob-a) 0%, transparent 68%);
+    animation: blobDriftA 32s var(--ease-out) infinite alternate;
+}
+
+.ambient-blob-b {
+    bottom: -22%;
+    left: -12%;
+    width: min(64vmin, 700px);
+    height: min(64vmin, 700px);
+    background: radial-gradient(circle at 60% 40%, var(--blob-b) 0%, transparent 68%);
+    animation: blobDriftB 38s var(--ease-out) infinite alternate;
+}
+
+@keyframes blobDriftA {
+    0%   { transform: translate3d(0, 0, 0) scale(1); }
+    100% { transform: translate3d(-12vw, 16vh, 0) scale(1.18); }
+}
+
+@keyframes blobDriftB {
+    0%   { transform: translate3d(0, 0, 0) scale(1.05); }
+    100% { transform: translate3d(14vw, -14vh, 0) scale(0.9); }
+}
+
+/* The cursor spotlight itself — pure transform, stays on the compositor. */
+.ambient-spot {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: min(58vmin, 680px);
+    height: min(58vmin, 680px);
+    border-radius: 50%;
+    background: radial-gradient(circle,
+            var(--glow-core) 0%,
+            var(--glow-edge) 42%,
+            transparent 70%);
+    opacity: 0;
+    transition: opacity 0.7s ease;
+    will-change: transform;
+}
+
+/* Only light up once the pointer has actually moved. */
+.ambient-active .ambient-spot {
+    opacity: 1;
+}
+
+/* --- 3. Sheen: light sweep across glass surfaces -------------- */
+.has-sheen {
+    position: relative;
+    isolation: isolate;
+}
+
+.has-sheen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: radial-gradient(circle 260px at var(--sx, 50%) var(--sy, 50%),
+            var(--sheen-color) 0%, transparent 68%);
+    opacity: 0;
+    transition: opacity 0.45s ease;
+    pointer-events: none;
+    z-index: -1;
+}
+
+.has-sheen:hover::after,
+.has-sheen:focus-within::after {
+    opacity: 1;
+}
+
+/* Hairline that brightens under the cursor (Linear-style card edge). */
+.has-glow-border {
+    position: relative;
+}
+
+.has-glow-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: radial-gradient(circle 220px at var(--sx, 50%) var(--sy, 50%),
+            var(--accent-glow), transparent 72%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 0.45s ease;
+    pointer-events: none;
+}
+
+.has-glow-border:hover::before,
+.has-glow-border:focus-within::before {
+    opacity: 1;
+}
+
+/* ---------- Magnetic micro-interaction (fine pointers only) ---------- */
+@media (hover: hover) and (pointer: fine) {
+    [data-magnetic] {
+        transition: transform var(--dur-base) var(--ease-out);
+        will-change: transform;
+    }
+}
+
+/* ---------- Reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+    .ambient-blob,
+    .ambient-grid,
+    .ambient-grid.is-idle {
+        animation: none;
+    }
+
+    .ambient-grid {
+        opacity: 1;
+        -webkit-mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 75%);
+        mask-image: radial-gradient(circle at 50% 40%, #000 0%, transparent 75%);
+    }
+
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}

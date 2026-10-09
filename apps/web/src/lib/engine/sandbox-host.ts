@@ -442,7 +442,7 @@ export class SandboxHost {
   }
 
   /** Standard camera angles (`03`): "show me it from the side" without fumbling an orbit. */
-  viewPreset(preset: 'front' | 'back' | 'left' | 'right' | 'top' | 'iso'): void {
+  viewPreset(preset: 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso'): void {
     this.send({ type: 'viewPreset', preset });
   }
 

@@ -61,6 +61,16 @@ function classifyStatus(status: number, bodyText: string): AiFailure {
       60,
     );
   }
+  if (status === 503) {
+    // Gemini's free tier reports demand spikes as 503 UNAVAILABLE. Treated as quota-shaped: the
+    // capacity will return, and "wait a minute" is the actionable instruction (`04`).
+    return failure(
+      'quota',
+      'The AI service is busy right now (high demand). Wait a minute and try again.',
+      true,
+      60,
+    );
+  }
   if (status >= 500) {
     return failure('status', 'The AI service failed to answer. Try again in a moment.', true);
   }

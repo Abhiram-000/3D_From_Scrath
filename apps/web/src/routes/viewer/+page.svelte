@@ -1,36 +1,41 @@
 <!--
-  The viewer.
+  The viewer — an exact V1 port.
 
-  The three-column instrument panel from `03-VIEWER.md`, wired to the sandbox host. Everything visible here is
-  DOM; everything 3D happens inside the worker on this device, drawing to a canvas the page transferred away.
+  Markup mirrors index.html class-for-class: .app-container → .top-toolbar (brand + grouped
+  .control-group buttons with separators) → .content-area (.left-panel with Parameters/AI Chat tabs,
+  .viewport-container with the canvas + tooltip + story subtitle overlay, .right-panel with the
+  Information sections) → .bottom-bar stats. Modals: quiz, shortcuts, settings (presets), share
+  (link + QR + social), export, AI output. The stylesheets are V1's styles.css and ui-extended.css
+  verbatim, imported globally; the engine wiring (SandboxHost, contracts) is ours.
 
-  Two rules from `03` are structural rather than cosmetic and worth pointing at:
-
-   - **The viewer boots with a dead engine.** Panels, toolbar and status bar render before any model exists, so a
-     failed load is an empty instrument rather than a broken page.
-   - **Model-authored text is rendered as text.** Svelte's `{...}` interpolation escapes by construction, and there
-     is no `{@html}` anywhere in this file. A published model's info text runs in every viewer that opens it.
+  `03`'s rules that V1's markup already carries structurally: the shell boots with a dead engine;
+  every toolbar button has a tooltip and a shortcut; the canvas is aria-hidden because the part list
+  is the keyboard path; all model-authored text renders as text nodes.
 -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import type { ModelManifest, RuntimeStats } from '@edu3d/contracts';
+  import type { ModelManifest, QuizQuestion, RuntimeStats } from '@edu3d/contracts';
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
   import { apiFetch, takeBundle } from '$lib/core/api.ts';
-  import type { ModelContext, QuizQuestion } from '@edu3d/contracts';
   import { toContext } from '$lib/core/model-context.ts';
-  import ChatPanel from '$lib/components/chat-panel.svelte';
-  import QuizModal from '$lib/components/quiz-modal.svelte';
+  import { Ambient, getTheme, setTheme } from '$lib/ambient.ts';
+  // V1's viewer stylesheets, verbatim (app shell + extended modals).
+  import '$lib/styles/viewer.css';
+  import '$lib/styles/viewer-extended.css';
+  import ChatPanel from '$lib/components/chat-panel-v1.svelte';
+  import QuizModal from '$lib/components/quiz-modal-v1.svelte';
   import StoryMode from '$lib/components/story-mode.svelte';
+  import ShareModal from '$lib/components/share-modal.svelte';
+  import CodeViewModal from '$lib/components/code-view-modal.svelte';
 
-  /** Canvas container, handed to the host so it can own the element. */
+  // ── View state ────────────────────────────────────────────────────────────
   let canvasHolder = $state<HTMLElement | null>(null);
   let host: SandboxHost | null = null;
 
   let support = $state<{ supported: boolean; reason?: string }>({ supported: true });
   let engineReady = $state(false);
-  let loading = $state(false);
   let loadError = $state<string | null>(null);
 
   let manifest = $state<ModelManifest | null>(null);
@@ -41,42 +46,47 @@
 
   let hoveredPart = $state<string | null>(null);
   let selectedPart = $state<string | null>(null);
-
   let paused = $state(false);
   let viewMode = $state<'normal' | 'xray' | 'wireframe' | 'explode'>('normal');
+
+  // V1 shell state
   let leftOpen = $state(true);
   let rightOpen = $state(true);
-  let showDiagnostics = $state(false);
-
-  /** The conversation layer (`05`): one mode at a time; Escape exits any mode back to exploration. */
+  let activeTab = $state<'parameters' | 'aichat'>('parameters');
   let activeMode = $state<'none' | 'story' | 'quiz'>('none');
-  let chatOpen = $state(false);
-  let quizQuestions = $state<QuizQuestion[]>([]);
-  let quizSource = $state<'authored' | 'generated'>('authored');
-  /** Set when the worker reported the physics WASM could not load (`02`: say so, never fake it). */
-  let simUnavailable = $state(false);
-  /** Svelte 5 component instance: an object carrying its exported methods. */
-  let chatPanel = $state<{ seedFromModel: (context: ModelContext) => void } | null>(null);
+  let topicName = $state('Loading...');
+  let deviceTier = $state('');
+  let theme = $state<'dark' | 'light'>('dark');
 
-  /** Toasts. `07`: the viewer speaks in short sentences, not dialogs. */
-  let toasts = $state<Array<{ id: number; message: string }>>([]);
-  let toastSeq = 0;
-  let guestLogs = $state<Array<{ level: string; message: string }>>([]);
-
-  /** Pointer drag state for orbit and pan. */
+  // Pointer/orbit state
   let dragging: 'orbit' | 'pan' | null = null;
   let lastPointer = { x: 0, y: 0 };
+
+  // Dropdown / modals (V1 modal set)
+  let viewPresetsOpen = $state(false);
+  let quizModalOpen = $state(false);
+  let shortcutsModalOpen = $state(false);
+  let shareModalOpen = $state(false);
+  let codeViewModalOpen = $state(false);
+  let codeViewTab = $state<'raw' | 'spec'>('raw');
+  let quizQuestions = $state<QuizQuestion[]>([]);
+  let quizSource = $state<'authored' | 'generated'>('authored');
+  
+
+  let ambient: Ambient | null = null;
+
+  // Toasts (V1-style, top-right, slide-in)
+  let toasts = $state<Array<{ id: number; message: string }>>([]);
+  let toastSeq = 0;
 
   function toast(message: string) {
     const id = (toastSeq += 1);
     toasts = [...toasts, { id, message }];
-    // Auto-dismiss, because a viewer notice is information rather than a decision to make.
     setTimeout(() => {
       toasts = toasts.filter((entry) => entry.id !== id);
-    }, 6000);
+    }, 4500);
   }
 
-  /** Read the scene backdrop from the design tokens, so the canvas follows the theme rather than guessing. */
   function readThemeColors(): { top: string; bottom: string } {
     const styles = getComputedStyle(document.documentElement);
     return {
@@ -92,22 +102,18 @@
     onLoaded: (loadedManifest, loadedVerdict) => {
       manifest = loadedManifest;
       verdict = loadedVerdict;
-      loading = false;
+      
       loadError = null;
-      // Seed the panel from the manifest's declared defaults, so the controls read correctly before any change.
+      topicName = loadedManifest.name;
       const defaults: Record<string, number | boolean | string> = {};
       for (const parameter of loadedManifest.parameters) defaults[parameter.id] = parameter.default;
       parameterValues = defaults;
       // A model swap unloads the previous model's modes (`05`).
       unloadModes();
-      simUnavailable = false;
-      chatPanel?.seedFromModel(toContext(loadedManifest));
     },
-    onLoadFailed: (message, timedOut, logs) => {
-      loading = false;
-      // The previous model stays on screen if there was one: a failed load never costs the learner what they had.
+    onLoadFailed: (message, timedOut) => {
+      
       loadError = timedOut ? `${message} (it ran too long and was stopped)` : message;
-      guestLogs = logs.map((entry) => ({ level: 'error', message: entry }));
     },
     onStats: (nextStats) => {
       stats = nextStats;
@@ -122,47 +128,40 @@
       selectedPart = partId;
     },
     onLog: (level, message) => {
-      guestLogs = [...guestLogs.slice(-99), { level, message }];
+      if (level === 'error') console.error(`[model] ${message}`);
     },
-    onNotice: (message) => {
-      toast(message);
-      if (/physics simulation is unavailable/i.test(message)) simUnavailable = true;
-    },
+    onNotice: (message) => toast(message),
     onKilled: (reason) => {
-      loading = false;
+      
       manifest = null;
       stats = null;
       loadError = reason;
       toast(reason);
     },
     onSnapshot: (blob) => {
-      // Downloaded straight from the device that rendered it; the server is not involved.
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
       link.download = `${manifest?.name ?? 'model'}.png`;
       link.click();
       URL.revokeObjectURL(url);
-      toast('Snapshot saved.');
+      toast('Screenshot saved.');
     },
   };
 
   onMount(() => {
     support = sandboxSupported();
+    theme = getTheme();
     if (!support.supported || !canvasHolder) return;
+
+    ambient = new Ambient({ grid: false, spotlight: false }); // The viewer is chrome-heavy; V1 ran no cursor system here.
+    ambient.mount();
 
     host = new SandboxHost(canvasHolder, callbacks);
     host.start();
     host.setTheme(readThemeColors());
+    deviceTier = host.deviceTier;
 
-    /**
-     * The end-to-end test seam.
-     *
-     * Exposed deliberately, and narrowly: the E2E suite must be able to feed a deliberately broken or runaway
-     * program to prove the sandbox contains it, and there is no other way to reach the host from outside the
-     * component. It widens nothing — any script already on this page can reach the canvas, and the host holds no
-     * secrets. Only the two methods the suite needs are published.
-     */
     (window as unknown as Record<string, unknown>).__edu3dHost = Object.freeze({
       load: (code: string, seed?: number) => host?.load(code, seed),
       kill: (reason: string) => host?.kill(reason),
@@ -171,23 +170,21 @@
     const observer = new ResizeObserver(() => host?.resize());
     observer.observe(canvasHolder);
 
-    // The load priority order `03` R2 fixes: shared link → session spec → on-disk fallback. A gallery
-    // pick is the shared-link path; the freshly generated bundle is the session spec; the reference
-    // model is the fallback that means the viewer is never an empty room.
-    loading = true;
+    // `03` R2's priority order: shared link → session spec → on-disk fallback.
+    
     const sharedId = new URLSearchParams(window.location.search).get('model');
     const generated = takeBundle();
-
     if (sharedId) {
       void loadFromGallery(sharedId);
     } else if (generated) {
       host.load(generated, 7);
+      topicName = 'Generated model';
     } else {
       host.load(REFERENCE_MODEL_SOURCE, 7);
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      // Shortcuts never fire while typing in a field (`03` R10).
+      // Shortcuts never fire while typing in a field (`03`).
       const target = event.target as HTMLElement | null;
       if (target && /input|textarea|select/i.test(target.tagName)) return;
 
@@ -199,47 +196,37 @@
         case 'r':
           host?.resetTime();
           break;
-        case 'x':
-          setViewMode(viewMode === 'xray' ? 'normal' : 'xray');
+        case 'v':
+          host?.viewPreset('iso');
           break;
-        case 'w':
-          setViewMode(viewMode === 'wireframe' ? 'normal' : 'wireframe');
-          break;
-        case 'e':
-          setViewMode(viewMode === 'explode' ? 'normal' : 'explode');
-          break;
-        case 'f':
-          host?.focusPart(selectedPart);
-          break;
-        case 'd':
-          showDiagnostics = !showDiagnostics;
-          break;
-        case 't':
-          toggleTheme();
-          break;
+        case '1': host?.viewPreset('front'); break;
+        case '2': host?.viewPreset('back'); break;
+        case '3': host?.viewPreset('left'); break;
+        case '4': host?.viewPreset('right'); break;
+        case '5': host?.viewPreset('top'); break;
+        case '6': host?.viewPreset('iso'); break;
+        case 'x': setViewMode(viewMode === 'xray' ? 'normal' : 'xray'); break;
+        case 'w': setViewMode(viewMode === 'wireframe' ? 'normal' : 'wireframe'); break;
+        case 'e': setViewMode(viewMode === 'explode' ? 'normal' : 'explode'); break;
+        case 'f': toggleFullscreen(); break;
+        case 'g': codeViewModalOpen = true; break;
+        case 't': toggleTheme(); break;
+        case '?': shortcutsModalOpen = !shortcutsModalOpen; break;
         case 'z':
-          if (event.ctrlKey || event.metaKey) {
-            event.preventDefault();
-            undo();
-          }
+          if (event.ctrlKey || event.metaKey) { event.preventDefault(); undo(); }
           break;
         case 'y':
-          if (event.ctrlKey || event.metaKey) {
-            event.preventDefault();
-            redo();
-          }
-          break;
-        case '?':
-          showHelp = !showHelp;
+          if (event.ctrlKey || event.metaKey) { event.preventDefault(); redo(); }
           break;
         case 'escape':
-          // `05`: Escape exits any mode back to free exploration.
-          if (activeMode !== 'none') {
+          if (quizModalOpen || shortcutsModalOpen || shareModalOpen || codeViewModalOpen) {
+            quizModalOpen = shortcutsModalOpen = shareModalOpen = codeViewModalOpen = false;
+          } else if (activeMode !== 'none') {
             activeMode = 'none';
-            break;
+          } else {
+            selectedPart = null;
+            setViewMode('normal');
           }
-          selectedPart = null;
-          setViewMode('normal');
           break;
         default:
           break;
@@ -247,10 +234,10 @@
     };
 
     window.addEventListener('keydown', onKeyDown);
-
     return () => {
       observer.disconnect();
       window.removeEventListener('keydown', onKeyDown);
+      ambient?.destroy();
     };
   });
 
@@ -259,15 +246,6 @@
     host = null;
   });
 
-  function togglePaused() {
-    paused = !paused;
-    host?.setPaused(paused);
-  }
-
-  /**
-   * Resolve a shared/gallery link. `03` R2: a deep link to a dead id is "honest message + fallback
-   * model, never a blank viewer" — the fallback is the reference model and the notice says what died.
-   */
   async function loadFromGallery(id: string) {
     const result = await apiFetch<{ bundle: { code?: string } }>(`/gallery/${encodeURIComponent(id)}`);
     if (result.ok && result.data.bundle?.code) {
@@ -278,73 +256,37 @@
     host?.load(REFERENCE_MODEL_SOURCE, 7);
   }
 
-  // ── The conversation layer (`05`) ────────────────────────────────────────────
-
-  /** Model swap unloads the previous model's story and quiz — a quiz answering the previous model
-   *  is a betrayal. Everything mode-related resets here. */
-  function unloadModes() {
-    activeMode = 'none';
-    quizQuestions = [];
+  function togglePaused() {
+    paused = !paused;
+    host?.setPaused(paused);
   }
 
-  function enterStory() {
-    if (!manifest?.story.length) {
-      toast('This model has no story beats.');
-      return;
-    }
-    activeMode = activeMode === 'story' ? 'none' : 'story';
+  function setViewMode(mode: typeof viewMode) {
+    viewMode = mode;
+    host?.setViewMode(mode);
   }
 
-  /** Authored-first: the model's own questions are used before any are generated (`05`). */
-  async function enterQuiz() {
-    if (activeMode === 'quiz') {
-      activeMode = 'none';
-      return;
-    }
-    if (manifest && manifest.quiz.length > 0) {
-      quizSource = 'authored';
-      quizQuestions = manifest.quiz;
-      activeMode = 'quiz';
-      return;
-    }
-    // The fallback path: generation is the fallback, and its failure leaves the viewer untouched.
-    if (!manifest) return;
-    quizSource = 'generated';
-    activeMode = 'quiz';
-    const result = await apiFetch<{ questions: typeof quizQuestions; dropped: number }>('/quiz', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        context: toContext(manifest, selectedPart),
-        count: 5,
-        difficulty: 'mixed',
-      }),
-    });
-    if (result.ok && result.data.questions.length > 0) {
-      quizQuestions = result.data.questions;
-      if (result.data.dropped > 0) {
-        toast(`${result.data.dropped} unusable question${result.data.dropped === 1 ? '' : 's'} were dropped.`);
-      }
-    } else {
-      activeMode = 'none';
-      toast('Quiz generation is unavailable right now.');
-    }
+  function toggleTheme() {
+    theme = setTheme(theme === 'dark' ? 'light' : 'dark');
+    host?.setTheme(readThemeColors());
   }
 
-  /** A story beat's parameter change flows through the same owner as manual changes (`05`). */
-  function beatSetParameter(id: string, value: number | boolean | string) {
+  function toggleFullscreen() {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void document.documentElement.requestFullscreen().catch(() => toast('Fullscreen is not available here.'));
+  }
+
+  function onParameterInput(id: string, value: number | boolean | string) {
+    noteParameterGesture();
     parameterValues = { ...parameterValues, [id]: value };
     host?.setParameter(id, value);
   }
 
-  // ── Undo/redo: one step per gesture (`03` R4) ────────────────────────────────
-
+  // ── Undo/redo: one step per gesture (`03` R4) ──────────────────────────────
   type ParamSnapshot = Record<string, number | boolean | string>;
   let undoStack = $state<ParamSnapshot[]>([]);
   let redoStack = $state<ParamSnapshot[]>([]);
-  /** Set on the first change of a drag gesture; the pre-change snapshot is what lands on the stack. */
   let gestureOpen = false;
-  /** Coalescing window: one pointer gesture = one undo step, whatever the event rate. */
   let gestureTimer: ReturnType<typeof setTimeout> | null = null;
 
   function noteParameterGesture() {
@@ -354,7 +296,6 @@
       redoStack = [];
     }
     if (gestureTimer) clearTimeout(gestureTimer);
-    // A gesture closes after a quiet period, so a pause-and-resume on the same slider is two steps.
     gestureTimer = setTimeout(() => (gestureOpen = false), 600);
   }
 
@@ -374,61 +315,122 @@
     applySnapshot(next);
   }
 
-  /** A snapshot flows through the one owner so widgets, engine and metrics agree (`03` R4). */
   function applySnapshot(snapshot: ParamSnapshot) {
     parameterValues = { ...snapshot };
     for (const [id, value] of Object.entries(snapshot)) host?.setParameter(id, value);
   }
 
-  // ── Theme, fullscreen, help ─────────────────────────────────────────────────
+  // ── Modes ─────────────────────────────────────────────────────────────────
+  function unloadModes() {
+    activeMode = 'none';
+    quizQuestions = [];
+  }
 
-  function toggleTheme() {
-    const next = (document.documentElement.dataset.theme as 'dark' | 'light') === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
-    document.documentElement.style.colorScheme = next;
-    try {
-      localStorage.setItem('edu3d.theme', next);
-    } catch {
-      /* session-only */
+  function enterStory() {
+    if (!manifest?.story.length) {
+      toast('This model has no story beats.');
+      return;
     }
-    host?.setTheme(readThemeColors());
+    activeMode = activeMode === 'story' ? 'none' : 'story';
   }
 
-  function toggleFullscreen() {
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void document.documentElement.requestFullscreen().catch(() => toast('Fullscreen is not available here.'));
+  async function enterQuiz() {
+    if (activeMode === 'quiz') {
+      activeMode = 'none';
+      return;
+    }
+    if (manifest && manifest.quiz.length > 0) {
+      quizSource = 'authored';
+      quizQuestions = manifest.quiz;
+      activeMode = 'quiz';
+      quizModalOpen = true;
+      return;
+    }
+    if (!manifest) return;
+    quizSource = 'generated';
+    const result = await apiFetch<{ questions: QuizQuestion[]; dropped: number }>('/quiz', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ context: toContext(manifest, selectedPart), count: 5, difficulty: 'mixed' }),
+    });
+    if (result.ok && result.data.questions.length > 0) {
+      quizQuestions = result.data.questions;
+      activeMode = 'quiz';
+      quizModalOpen = true;
+    } else {
+      toast('Quiz generation is unavailable right now.');
+    }
   }
 
-  let showHelp = $state(false);
-
-  const SHORTCUTS: ReadonlyArray<[string, string]> = [
-    ['Space', 'Play / pause'],
-    ['R', 'Reset to the authored state'],
-    ['X / W / E', 'X-ray / wireframe / explode'],
-    ['F', 'Focus the selected part'],
-    ['D', 'Diagnostics panel'],
-    ['T', 'Toggle theme'],
-    ['Ctrl+Z / Ctrl+Y', 'Undo / redo a parameter change'],
-    ['Esc', 'Exit any mode, deselect'],
-    ['?', 'This list'],
-  ];
-
-  function setViewMode(mode: typeof viewMode) {
-    viewMode = mode;
-    host?.setViewMode(mode);
-  }
-
-  function onParameterInput(id: string, value: number | boolean | string) {
-    noteParameterGesture();
+  function beatSetParameter(id: string, value: number | boolean | string) {
     parameterValues = { ...parameterValues, [id]: value };
     host?.setParameter(id, value);
   }
 
+  async function shareModel() {
+    if (!manifest) return;
+    shareModalOpen = true;
+  }
+
+  // ── Derived data ──────────────────────────────────────────────────────────
+  const activePart = $derived(
+    manifest?.parts.find((part) => part.id === (selectedPart ?? hoveredPart)) ?? null,
+  );
+
+  const listedParts = $derived(
+    manifest?.parts.filter((part) => part.selectable && part.kind !== 'group').slice(0, 200) ?? [],
+  );
+
+  const selectedPartInfo = $derived(
+    activePart
+      ? {
+          title: activePart.info?.title ?? activePart.name,
+          summary: activePart.info?.summary ?? '',
+          bullets: activePart.info?.bullets ?? [],
+          facts: activePart.info?.facts ?? [],
+        }
+      : null,
+  );
+
+  const overviewHtmlSafe = $derived(manifest ? { name: manifest.name, description: manifest.description, concept: manifest.pedagogy.concept, objectives: manifest.pedagogy.objectives, simplifications: manifest.pedagogy.simplifications } : null);
+
+  const formatMetric = (id: string): string => {
+    const declaration = manifest?.metrics.find((metric) => metric.id === id);
+    const value = metrics[id];
+    if (value === undefined || !declaration) return '—';
+    return `${value.toFixed(declaration.precision)}${declaration.unit ? ` ${declaration.unit}` : ''}`;
+  };
+
+  const formatTime = (seconds: number): string => {
+    const minutes = Math.floor(seconds / 60);
+    const rest = Math.floor(seconds % 60);
+    return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+  };
+
+  const VIEW_PRESETS = [
+    { id: 'front', label: 'Front' },
+    { id: 'back', label: 'Back' },
+    { id: 'left', label: 'Left' },
+    { id: 'right', label: 'Right' },
+    { id: 'top', label: 'Top' },
+    { id: 'bottom', label: 'Bottom' },
+    { id: 'iso', label: 'Isometric' },
+  ] as const;
+
+  const SHORTCUT_CATEGORIES: ReadonlyArray<{ title: string; items: ReadonlyArray<[string, string]> }> = [
+    { title: 'Playback', items: [['Space', 'Play / Pause'], ['R', 'Reset'], ['V', 'Reset View']] },
+    { title: 'Views', items: [['1', 'Front View'], ['2', 'Back View'], ['3', 'Left View'], ['4', 'Right View'], ['5', 'Top View'], ['6', 'Isometric View']] },
+    { title: 'Display Modes', items: [['F', 'Fullscreen'], ['X', 'X-ray Mode'], ['W', 'Wireframe Mode'], ['E', 'Explode View']] },
+    { title: 'Modes', items: [['G', 'AI Output'], ['S', 'Story Mode']] },
+    { title: 'Actions', items: [['Ctrl+Z', 'Undo'], ['Ctrl+Y', 'Redo']] },
+    { title: 'General', items: [['T', 'Toggle Theme'], ['?', 'Show Shortcuts'], ['Esc', 'Close Modal']] },
+  ];
+
+  // ── Pointer handlers (V1: primary orbits, middle/shift pans) ──────────────
   function onPointerDown(event: PointerEvent) {
     if (!canvasHolder) return;
     const rect = canvasHolder.getBoundingClientRect();
     lastPointer = { x: event.clientX, y: event.clientY };
-    // Middle button or shift-drag pans; primary orbits. Matches every 3D tool a learner may have met.
     dragging = event.button === 1 || event.shiftKey ? 'pan' : 'orbit';
     host?.pointer(event.clientX - rect.left, event.clientY - rect.top, 'down');
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
@@ -437,16 +439,13 @@
   function onPointerMove(event: PointerEvent) {
     if (!canvasHolder) return;
     const rect = canvasHolder.getBoundingClientRect();
-
     if (!dragging) {
       host?.pointer(event.clientX - rect.left, event.clientY - rect.top, 'move');
       return;
     }
-
     const deltaX = event.clientX - lastPointer.x;
     const deltaY = event.clientY - lastPointer.y;
     lastPointer = { x: event.clientX, y: event.clientY };
-
     if (dragging === 'orbit') host?.orbit(deltaX, deltaY);
     else host?.pan(deltaX, deltaY);
   }
@@ -462,232 +461,301 @@
     event.preventDefault();
     host?.zoom(event.deltaY);
   }
-
-  /** The part the panel is describing: the selection, or whatever the pointer is over. */
-  const activePart = $derived(
-    manifest?.parts.find((part) => part.id === (selectedPart ?? hoveredPart)) ?? null,
-  );
-
-  /** Parts worth listing: named, selectable, and not bare scaffolding. */
-  const listedParts = $derived(
-    manifest?.parts.filter((part) => part.selectable && part.kind !== 'group').slice(0, 200) ?? [],
-  );
-
-  const formatMetric = (id: string): string => {
-    const declaration = manifest?.metrics.find((metric) => metric.id === id);
-    const value = metrics[id];
-    if (value === undefined || !declaration) return '—';
-    return `${value.toFixed(declaration.precision)}${declaration.unit ? ` ${declaration.unit}` : ''}`;
-  };
 </script>
 
 <svelte:head>
   <title>{manifest?.name ?? 'Viewer'} — EDU-3D</title>
 </svelte:head>
 
-<div class="viewer">
-  <!-- Toolbar -->
-  <header class="toolbar glass">
-    <button
-      class="icon"
-      onclick={() => (leftOpen = !leftOpen)}
-      aria-label="Toggle parameters panel"
-    >
-      ☰
-    </button>
-
-    <span class="model-name">{manifest?.name ?? 'No model loaded'}</span>
-
-    <div class="spacer"></div>
-
-    <button class="chip" onclick={togglePaused} aria-pressed={paused}>
-      {paused ? 'Play' : 'Pause'}
-    </button>
-    <button class="chip" onclick={() => host?.resetTime()}>Reset</button>
-
-    <div class="modes" role="group" aria-label="View mode">
-      {#each [{ id: 'normal', label: 'Solid' }, { id: 'xray', label: 'X-ray' }, { id: 'wireframe', label: 'Wire' }, { id: 'explode', label: 'Explode' }] as mode (mode.id)}
-        <button
-          class="chip"
-          class:active={viewMode === mode.id}
-          onclick={() => setViewMode(mode.id as typeof viewMode)}
-          aria-pressed={viewMode === mode.id}
-        >
-          {mode.label}
-        </button>
-      {/each}
+<div class="app-container">
+  <!-- ── Top Toolbar ──────────────────────────────────────────────────────── -->
+  <header class="top-toolbar glass-panel">
+    <div class="toolbar-brand">
+      <div class="brand-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+          <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+          <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+        </svg>
+      </div>
+      <span class="brand-text">EDU-3D</span>
+      <span class="topic-separator">›</span>
+      <span class="topic-name">{topicName}</span>
     </div>
 
-    <button class="chip" onclick={() => host?.focusPart(selectedPart)}>Focus</button>
-    <button class="chip" onclick={() => host?.requestSnapshot()}>Snapshot</button>
+    <nav class="toolbar-controls">
+      <!-- Playback -->
+      <div class="control-group">
+        <button class="toolbar-btn toggle-btn" id="btnPlayPause" title="Play/Pause (Space)" onclick={togglePaused}>
+          <div class:icon-play={!paused} class:hidden-icon={paused}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2L13 8L3 14V2Z" /></svg>
+          </div>
+          <div class:icon-pause={paused} class:hidden-icon={!paused}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="2" width="3" height="12" /><rect x="9" y="2" width="3" height="12" /></svg>
+          </div>
+          <span>{paused ? 'Play' : 'Pause'}</span>
+        </button>
+        <button class="toolbar-btn" title="Reset (R)" onclick={() => host?.resetTime()}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2C4.7 2 2 4.7 2 8s2.7 6 6 6 6-2.7 6-6h-2c0 2.2-1.8 4-4 4s-4-1.8-4-4 1.8-4 4-4V2z" /><path d="M8 2L11 5L8 8V2Z" /></svg>
+          <span>Reset</span>
+        </button>
+        <button class="toolbar-btn" title="Reset View (V)" onclick={() => host?.viewPreset('iso')}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.5" /><circle cx="8" cy="8" r="3" /></svg>
+          <span>Reset View</span>
+        </button>
+        <button class="toolbar-btn" title="Take Screenshot" onclick={() => host?.requestSnapshot()}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.5" /><circle cx="8" cy="9" r="2" /><rect x="6" y="2" width="4" height="2" rx="0.5" /></svg>
+          <span>Screenshot</span>
+        </button>
+      </div>
 
-    <select
-      class="chip presets"
-      aria-label="View preset"
-      onchange={(event) => {
-        host?.viewPreset(event.currentTarget.value as 'front' | 'back' | 'left' | 'right' | 'top' | 'iso');
-        event.currentTarget.selectedIndex = 0;
-      }}
-    >
-      <option value="" disabled selected>Views</option>
-      <option value="front">Front</option>
-      <option value="back">Back</option>
-      <option value="left">Left</option>
-      <option value="right">Right</option>
-      <option value="top">Top</option>
-      <option value="iso">Isometric</option>
-    </select>
+      <!-- View Presets dropdown -->
+      <div class="control-group">
+        <div class="dropdown-wrapper">
+          <button class="toolbar-btn dropdown-trigger" title="View Presets" onclick={() => (viewPresetsOpen = !viewPresetsOpen)}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3L12 8L8 13L4 8L8 3Z" /></svg>
+            <span>View</span>
+            <svg class="dropdown-arrow" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M6 8L2 4h8L6 8Z" /></svg>
+          </button>
+          <div class="dropdown-menu glass-panel" class:active={viewPresetsOpen}>
+            {#each VIEW_PRESETS as preset (preset.id)}
+              <button class="dropdown-item" onclick={() => { host?.viewPreset(preset.id); viewPresetsOpen = false; }}>
+                {preset.label}
+              </button>
+            {/each}
+          </div>
+        </div>
+      </div>
 
-    <button
-      class="chip"
-      class:active={activeMode === 'story'}
-      onclick={enterStory}
-      disabled={!manifest?.story.length}
-      title={manifest?.story.length ? 'Play the guided tour' : 'This model has no story beats'}
-    >
-      Story
-    </button>
-    <button
-      class="chip"
-      class:active={activeMode === 'quiz'}
-      onclick={() => void enterQuiz()}
-      title={manifest?.quiz.length ? `${manifest.quiz.length} authored questions` : 'Questions will be generated for this model'}
-    >
-      Quiz
-    </button>
+      <!-- Content -->
+      <div class="control-group">
+        <button class="toolbar-btn primary-action" title="Generate a model with AI (G)" onclick={() => (window.location.href = '/')}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l1.6 3.9L13.5 6.5 9.6 8.1 8 12 6.4 8.1 2.5 6.5 6.4 4.9 8 1z" /><circle cx="12.5" cy="12.5" r="1.5" /></svg>
+          <span>Generate</span>
+        </button>
+        <button class="toolbar-btn" title="Browse the gallery (Ctrl+G)" onclick={shareModel}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="5" height="5" /><rect x="9" y="3" width="5" height="5" /><rect x="2" y="10" width="5" height="3" /><rect x="9" y="10" width="5" height="3" /></svg>
+          <span>Gallery</span>
+        </button>
+        <button class="toolbar-btn" title="Publish this model (Ctrl+P)" onclick={shareModel}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2l4 4h-2.5v5h-3V6H4l4-4z" /><rect x="3" y="12" width="10" height="2" rx="1" /></svg>
+          <span>Publish</span>
+        </button>
+      </div>
 
-    <button
-      class="chip"
-      onclick={undo}
-      disabled={undoStack.length === 0}
-      title="Undo a parameter change (Ctrl+Z)"
-    >
-      Undo
-    </button>
-    <button
-      class="chip"
-      onclick={redo}
-      disabled={redoStack.length === 0}
-      title="Redo an undone change (Ctrl+Y)"
-    >
-      Redo
-    </button>
+      <!-- Modes -->
+      <div class="control-group">
+        <button class="toolbar-btn mode-btn" class:active={activeMode === 'story'} title="Story Mode (S)" onclick={enterStory}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z" fill="none" stroke="currentColor" stroke-width="1.5" /><path d="M5 6h6M5 9h4" /></svg>
+          <span>Story</span>
+        </button>
+        <button class="toolbar-btn mode-btn" class:active={activeMode === 'quiz'} title="Quiz Mode" onclick={() => void enterQuiz()}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" /><text x="8" y="11" text-anchor="middle" font-size="8" font-weight="bold" fill="currentColor">?</text></svg>
+          <span>Quiz</span>
+        </button>
+      </div>
 
-    <button class="chip" onclick={toggleTheme} title="Toggle theme (T)">Theme</button>
-    <button
-      class="chip"
-      onclick={toggleFullscreen}
-      title="Fullscreen (F11)"
-    >
-      Full
-    </button>
-    <button class="chip" onclick={() => (showHelp = !showHelp)} title="Keyboard shortcuts (?)">?</button>
+      <!-- Display modes -->
+      <div class="control-group">
+        <button class="toolbar-btn toggle-btn" title="Fullscreen (F)" onclick={toggleFullscreen}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h4v2H4v2H2V2zM10 2h4v4h-2V4h-2V2zM2 10h2v2h2v2H2v-4zM12 12h-2v2h4v-4h-2v2z" /></svg>
+          <span>Fullscreen</span>
+        </button>
+        <button class="toolbar-btn toggle-btn" class:active={viewMode === 'xray'} title="X-ray Mode (X)" onclick={() => setViewMode(viewMode === 'xray' ? 'normal' : 'xray')}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5" /><circle cx="8" cy="8" r="3" fill="currentColor" opacity="0.7" /></svg>
+          <span>X-ray</span>
+        </button>
+        <button class="toolbar-btn toggle-btn" class:active={viewMode === 'wireframe'} title="Wireframe (W)" onclick={() => setViewMode(viewMode === 'wireframe' ? 'normal' : 'wireframe')}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" /><line x1="3" y1="8" x2="13" y2="8" /><line x1="8" y1="3" x2="8" y2="13" /></svg>
+          <span>Wireframe</span>
+        </button>
+        <button class="toolbar-btn toggle-btn" class:active={viewMode === 'explode'} title="Explode View (E)" onclick={() => setViewMode(viewMode === 'explode' ? 'normal' : 'explode')}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="1.5" /><circle cx="3" cy="3" r="1" opacity="0.7" /><circle cx="13" cy="3" r="1" opacity="0.7" /><circle cx="3" cy="13" r="1" opacity="0.7" /><circle cx="13" cy="13" r="1" opacity="0.7" /><line x1="8" y1="8" x2="3" y2="3" stroke="currentColor" stroke-width="1" opacity="0.5" /><line x1="8" y1="8" x2="13" y2="3" stroke="currentColor" stroke-width="1" opacity="0.5" /><line x1="8" y1="8" x2="3" y2="13" stroke="currentColor" stroke-width="1" opacity="0.5" /><line x1="8" y1="8" x2="13" y2="13" stroke="currentColor" stroke-width="1" opacity="0.5" /></svg>
+          <span>Explode</span>
+        </button>
+      </div>
 
-    <button class="icon" onclick={() => (rightOpen = !rightOpen)} aria-label="Toggle info panel">
-      ⓘ
-    </button>
+      <!-- Panels -->
+      <div class="control-group">
+        <button class="toolbar-btn toggle-btn" class:active={leftOpen} title="Toggle Left Panel" onclick={() => (leftOpen = !leftOpen)}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="5" height="12" rx="1" /><rect x="9" y="2" width="5" height="12" rx="1" opacity="0.3" /></svg>
+          <span>Left Panel</span>
+        </button>
+        <button class="toolbar-btn toggle-btn" class:active={rightOpen} title="Toggle Right Panel" onclick={() => (rightOpen = !rightOpen)}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="5" height="12" rx="1" opacity="0.3" /><rect x="9" y="2" width="5" height="12" rx="1" /></svg>
+          <span>Right Panel</span>
+        </button>
+      </div>
+
+      <!-- Undo/Redo -->
+      <div class="control-group">
+        <button class="toolbar-btn" title="Undo (Ctrl+Z)" disabled={undoStack.length === 0} onclick={undo}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 8l4-4v3h4a3 3 0 010 6H8v-2h4a1 1 0 000-2H8v3l-4-4z" /></svg>
+          <span>Undo</span>
+        </button>
+        <button class="toolbar-btn" title="Redo (Ctrl+Y)" disabled={redoStack.length === 0} onclick={redo}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M12 8l-4-4v3H4a3 3 0 000 6h4v-2H4a1 1 0 010-2h4v3l4-4z" /></svg>
+          <span>Redo</span>
+        </button>
+      </div>
+
+      <!-- Additional -->
+      <div class="control-group">
+        <button class="toolbar-btn" title="Toggle Theme (T)" onclick={toggleTheme}>
+          <svg class="icon-sun" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="3" /><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" stroke-width="1.5" fill="none" /></svg>
+          <svg class="icon-moon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.5 8a5.5 5.5 0 01-9.14 4.14A5.5 5.5 0 018 2.5a4 4 0 000 11 4 4 0 01-1.14-7.86A5.49 5.49 0 0113.5 8z" /></svg>
+          <span>Theme</span>
+        </button>
+        <button class="toolbar-btn" title="Share Blueprint" onclick={shareModel}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="12" cy="4" r="2" /><circle cx="4" cy="8" r="2" /><circle cx="12" cy="12" r="2" /><path d="M6 7l4-2M6 9l4 2" stroke="currentColor" stroke-width="1.5" fill="none" /></svg>
+          <span>Share</span>
+        </button>
+        <button class="toolbar-btn" title="View the AI's output for this model" onclick={() => (codeViewModalOpen = true)}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.5 4L2 8l3.5 4M10.5 4L14 8l-3.5 4" /></svg>
+          <span>AI Output</span>
+        </button>
+        <button class="toolbar-btn" title="Keyboard Shortcuts (?)" onclick={() => (shortcutsModalOpen = true)}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" /><text x="8" y="11" text-anchor="middle" font-size="8" font-weight="bold">?</text></svg>
+          <span>Help</span>
+        </button>
+      </div>
+    </nav>
   </header>
 
-  <div class="body">
-    <!-- Left: parameters and metrics -->
-    {#if leftOpen}
-      <aside class="panel glass" aria-label="Parameters">
-        <h2>Controls</h2>
+  <!-- ── Main Content Area ────────────────────────────────────────────────── -->
+  <main class="content-area">
+    <!-- Left Panel -->
+    <aside class="left-panel panel glass-panel" class:collapsed={!leftOpen}>
+      <div class="panel-tabs">
+        <button class="tab-btn" class:active={activeTab === 'parameters'} onclick={() => (activeTab = 'parameters')}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="2" /><line x1="5" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="2" /></svg>
+          Parameters
+        </button>
+        <button class="tab-btn" class:active={activeTab === 'aichat'} onclick={() => (activeTab = 'aichat')}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v9H6l-4 3V2z" fill="none" stroke="currentColor" stroke-width="1.5" /><circle cx="5" cy="6" r="0.5" /><circle cx="8" cy="6" r="0.5" /><circle cx="11" cy="6" r="0.5" /></svg>
+          AI Chat
+        </button>
+      </div>
 
-        {#if !manifest}
-          <p class="muted">Waiting for a model.</p>
-        {:else if manifest.parameters.length === 0}
-          <p class="muted">This model has no adjustable parameters.</p>
-        {:else}
-          {#each manifest.parameters as parameter (parameter.id)}
-            <div class="control">
-              <label for={`param-${parameter.id}`}>
-                <span>{parameter.label}</span>
-                {#if parameter.kind === 'number'}
-                  <output>
-                    {Number(parameterValues[parameter.id] ?? parameter.default).toFixed(
-                      parameter.precision ?? 2,
-                    )}{parameter.unit ? ` ${parameter.unit}` : ''}
-                  </output>
-                {/if}
-              </label>
+      <div class="panel-content">
+        {#if activeTab === 'parameters'}
+          <div class="tab-content active">
+            <div class="param-panel">
+              <div class="param-panel-intro">
+                <h4 class="param-panel-title">Model Controls</h4>
+                <p class="param-panel-hint">Adjust values to reshape the model in real time.</p>
+              </div>
 
-              {#if parameter.kind === 'number'}
-                <input
-                  id={`param-${parameter.id}`}
-                  type="range"
-                  min={parameter.min}
-                  max={parameter.max}
-                  step={parameter.step ?? (parameter.max - parameter.min) / 200}
-                  value={Number(parameterValues[parameter.id] ?? parameter.default)}
-                  oninput={(event) =>
-                    onParameterInput(parameter.id, Number(event.currentTarget.value))}
-                />
-              {:else if parameter.kind === 'boolean'}
-                <input
-                  id={`param-${parameter.id}`}
-                  type="checkbox"
-                  checked={Boolean(parameterValues[parameter.id] ?? parameter.default)}
-                  onchange={(event) => onParameterInput(parameter.id, event.currentTarget.checked)}
-                />
-              {:else if parameter.kind === 'choice'}
-                <select
-                  id={`param-${parameter.id}`}
-                  value={String(parameterValues[parameter.id] ?? parameter.default)}
-                  onchange={(event) => onParameterInput(parameter.id, event.currentTarget.value)}
-                >
-                  {#each parameter.options as option (option.value)}
-                    <option value={option.value}>{option.label}</option>
-                  {/each}
-                </select>
+              {#if !manifest}
+                <div class="loading-state">
+                  <div class="spinner"></div>
+                  <p>Loading parameters...</p>
+                </div>
+              {:else if manifest.parameters.length === 0}
+                <div class="empty-state">This model has no adjustable parameters.</div>
               {:else}
-                <input
-                  id={`param-${parameter.id}`}
-                  type="color"
-                  value={String(parameterValues[parameter.id] ?? parameter.default)}
-                  oninput={(event) => onParameterInput(parameter.id, event.currentTarget.value)}
-                />
-              {/if}
+                <div class="parameters-container">
+                  {#each manifest.parameters as parameter (parameter.id)}
+                    <div class="parameter-item">
+                      <div class="parameter-header">
+                        <span class="parameter-label">{parameter.label}</span>
+                        {#if parameter.kind === 'number'}
+                          <span class="parameter-value">
+                            {Number(parameterValues[parameter.id] ?? parameter.default).toFixed(parameter.precision ?? 2)}{parameter.unit ? ` ${parameter.unit}` : ''}
+                          </span>
+                        {/if}
+                      </div>
 
-              {#if parameter.description}
-                <p class="hint">{parameter.description}</p>
+                      {#if parameter.kind === 'number'}
+                        <input
+                          type="range"
+                          class="parameter-slider"
+                          min={parameter.min}
+                          max={parameter.max}
+                          step={parameter.step ?? (parameter.max - parameter.min) / 200}
+                          value={Number(parameterValues[parameter.id] ?? parameter.default)}
+                          aria-label={parameter.label}
+                          oninput={(event) => onParameterInput(parameter.id, Number(event.currentTarget.value))}
+                        />
+                      {:else if parameter.kind === 'boolean'}
+                        <div class="checkbox-container">
+                          <label class="toggle-switch">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(parameterValues[parameter.id] ?? parameter.default)}
+                              onchange={(event) => onParameterInput(parameter.id, event.currentTarget.checked)}
+                            />
+                            <span class="toggle-slider"></span>
+                          </label>
+                        </div>
+                      {:else if parameter.kind === 'choice'}
+                        <select
+                          class="parameter-select"
+                          value={String(parameterValues[parameter.id] ?? parameter.default)}
+                          onchange={(event) => onParameterInput(parameter.id, event.currentTarget.value)}
+                        >
+                          {#each parameter.options as option (option.value)}
+                            <option value={option.value}>{option.label}</option>
+                          {/each}
+                        </select>
+                      {:else}
+                        <input
+                          type="color"
+                          value={String(parameterValues[parameter.id] ?? parameter.default)}
+                          oninput={(event) => onParameterInput(parameter.id, event.currentTarget.value)}
+                        />
+                      {/if}
+
+                      {#if parameter.description}
+                        <p class="param-panel-hint">{parameter.description}</p>
+                      {/if}
+                    </div>
+                  {/each}
+
+                  {#if manifest.metrics.length > 0}
+                    <div class="info-section metrics-section">
+                      <h4 class="info-heading">Live Metrics</h4>
+                      <div class="info-content metrics-grid">
+                        {#each manifest.metrics as metric (metric.id)}
+                          <div class="metric-item">
+                            <span class="metric-label">{metric.label}</span>
+                            <span class="metric-value">{formatMetric(metric.id)}</span>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+
+                  {#if manifest.colorRoles.length > 0}
+                    <div class="info-section">
+                      <h4 class="info-heading">Legend</h4>
+                      <div class="info-content">
+                        {#each manifest.colorRoles as role (role.id)}
+                          <div class="property-row">
+                            <span class="property-key"><span class="swatch" style={`background:${role.color}`}></span>{role.label}</span>
+                            <span class="property-val">{role.meaning}</span>
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/if}
+                </div>
               {/if}
             </div>
-          {/each}
+          </div>
+        {:else}
+          <div class="tab-content active">
+            <ChatPanel {manifest} {selectedPart} />
+          </div>
         {/if}
+      </div>
+    </aside>
 
-        {#if manifest && manifest.metrics.length > 0}
-          <h2>Read-outs</h2>
-          <dl class="metrics">
-            {#each manifest.metrics as metric (metric.id)}
-              <dt>{metric.label}</dt>
-              <dd>
-                {formatMetric(metric.id)}
-                {#if metric.formula}<span class="formula">{metric.formula}</span>{/if}
-              </dd>
-            {/each}
-          </dl>
-        {/if}
-
-        {#if manifest && manifest.colorRoles.length > 0}
-          <h2>Legend</h2>
-          <ul class="legend">
-            {#each manifest.colorRoles as role (role.id)}
-              <li>
-                <span class="swatch" style={`background:${role.color}`}></span>
-                <span><strong>{role.label}</strong> — {role.meaning}</span>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </aside>
-    {/if}
-
-    <!-- Centre: the canvas the worker draws into -->
-    <main class="stage">
+    <!-- 3D Viewport -->
+    <section class="viewport-container">
       <div
-        class="canvas-holder"
         bind:this={canvasHolder}
+        class="main-canvas-holder"
         onpointerdown={onPointerDown}
         onpointermove={onPointerMove}
         onpointerup={onPointerUp}
@@ -697,676 +765,344 @@
         aria-label="3D model view. Use the part list to select parts with a keyboard."
       ></div>
 
-      {#if !support.supported}
-        <div class="overlay">
-          <h2>This browser cannot run the 3D engine</h2>
-          <p>{support.reason}</p>
+      <!-- Tooltip -->
+      {#if hoveredPart && !selectedPart}
+        <div class="tooltip-3d glass-panel">
+          <div class="tooltip-header">{manifest?.parts.find((p) => p.id === hoveredPart)?.name}</div>
+          {#if manifest?.parts.find((p) => p.id === hoveredPart)?.info?.bullets?.length}
+            <ul class="tooltip-bullets">
+              {#each manifest.parts.find((p) => p.id === hoveredPart)?.info?.bullets as bullet, index (index)}
+                <li>{bullet}</li>
+              {/each}
+            </ul>
+          {/if}
         </div>
-      {:else if loading}
-        <div class="overlay">
-          <p class="pulse">Building the model on your device…</p>
+      {/if}
+
+      <!-- Story subtitle overlay -->
+      {#if activeMode === 'story' && manifest?.story.length}
+        <div class="subtitle-overlay active">
+          <StoryMode
+            story={manifest.story}
+            onsetParameter={beatSetParameter}
+            onfocus={(partId) => host?.focusPart(partId)}
+            onclose={() => {
+              activeMode = 'none';
+              host?.focusPart(null);
+            }}
+          />
+        </div>
+      {/if}
+
+      <!-- Loading overlay -->
+      {#if !engineReady && !loadError}
+        <div class="loading-overlay">
+          <div class="loading-content">
+            <div class="spinner-large"></div>
+            <h2>Loading 3D Model</h2>
+            <p>Authoring, pricing and realizing on this device…</p>
+          </div>
         </div>
       {:else if loadError}
-        <div class="overlay">
-          <h2>The model could not be built</h2>
-          <p>{loadError}</p>
-          <button class="chip" onclick={() => host?.reload()}>Try again</button>
+        <div class="loading-overlay">
+          <div class="loading-content">
+            <h2>The model could not be built</h2>
+            <p>{loadError}</p>
+            <button class="modal-btn" onclick={() => host?.reload()}>Try again</button>
+          </div>
         </div>
-      {:else if !engineReady}
-        <div class="overlay"><p class="pulse">Starting the engine…</p></div>
-      {/if}
-
-      {#if hoveredPart && !selectedPart}
-        <div class="hover-hint">{manifest?.parts.find((p) => p.id === hoveredPart)?.name}</div>
-      {/if}
-
-      {#if activeMode === 'story' && manifest?.story.length}
-        <StoryMode
-          story={manifest.story}
-          onsetParameter={beatSetParameter}
-          onfocus={(partId) => host?.focusPart(partId)}
-          onclose={() => {
-            activeMode = 'none';
-            host?.focusPart(null);
-          }}
-        />
-      {/if}
-
-      {#if activeMode === 'quiz' && quizQuestions.length > 0}
-        <QuizModal
-          questions={quizQuestions}
-          source={quizSource}
-          onclose={() => (activeMode = 'none')}
-        />
+      {:else if !support.supported}
+        <div class="loading-overlay">
+          <div class="loading-content">
+            <h2>This browser cannot run the 3D engine</h2>
+            <p>{support.reason}</p>
+          </div>
+        </div>
       {/if}
 
       <!-- Toasts -->
       <div class="toasts" aria-live="polite">
         {#each toasts as entry (entry.id)}
-          <div class="toast glass">{entry.message}</div>
+          <div class="toast glass-panel">{entry.message}</div>
         {/each}
       </div>
-    </main>
+    </section>
 
-    <!-- Right: part info, structure, and the tutor -->
-    {#if rightOpen}
-      <aside class="panel glass" aria-label="Model information">
-        <div class="panel-tabs" role="tablist" aria-label="Panel content">
-          <button
-            role="tab"
-            aria-selected={!chatOpen}
-            class:active={!chatOpen}
-            onclick={() => (chatOpen = false)}
-          >
-            Info
-          </button>
-          <button
-            role="tab"
-            aria-selected={chatOpen}
-            class:active={chatOpen}
-            onclick={() => (chatOpen = true)}
-          >
-            Tutor
-          </button>
+    <!-- Right Panel -->
+    <aside class="right-panel panel glass-panel" class:collapsed={!rightOpen}>
+      <div class="panel-header">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+          <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2" />
+          <path d="M10 6v4M10 14h.01" />
+        </svg>
+        <h3>Information</h3>
+      </div>
+
+      <div class="panel-content">
+        <div class="info-panel">
+          {#if selectedPartInfo}
+            <div class="info-section">
+              <h4 class="info-heading">Selected part</h4>
+              <div class="info-content">
+                <h4 class="part-title">{selectedPartInfo.title}</h4>
+                {#if selectedPartInfo.summary}<p>{selectedPartInfo.summary}</p>{/if}
+              </div>
+              {#if selectedPartInfo.bullets.length > 0}
+                <ul class="info-bullets">
+                  {#each selectedPartInfo.bullets as bullet, index (index)}
+                    <li>{bullet}</li>
+                  {/each}
+                </ul>
+              {/if}
+              {#if selectedPartInfo.facts.length > 0}
+                <div class="properties-grid">
+                  {#each selectedPartInfo.facts as fact, index (index)}
+                    <div class="property-row">
+                      <span class="property-key">{fact.label}</span>
+                      <span class="property-val">{fact.value}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+              <button class="modal-btn" onclick={() => selectedPart && host?.focusPart(selectedPart)}>Focus this part</button>
+            </div>
+          {:else if overviewHtmlSafe}
+            <div class="info-section overview-section">
+              <h4 class="info-heading">Overview</h4>
+              <div class="info-content">
+                <h4 class="part-title">{overviewHtmlSafe.name}</h4>
+                <p>{overviewHtmlSafe.description}</p>
+                <p class="concept-line">{overviewHtmlSafe.concept}</p>
+              </div>
+            </div>
+
+            <div class="info-section">
+              <h4 class="info-heading">What this teaches</h4>
+              <ul class="info-bullets">
+                {#each overviewHtmlSafe.objectives as objective, index (index)}
+                  <li>{objective}</li>
+                {/each}
+              </ul>
+            </div>
+
+            {#if overviewHtmlSafe.simplifications.length > 0}
+              <div class="info-section">
+                <h4 class="info-heading">Simplifications</h4>
+                <ul class="info-bullets muted">
+                  {#each overviewHtmlSafe.simplifications as note, index (index)}
+                    <li>{note}</li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+
+            <!-- Parts list — the keyboard-reachable selection path -->
+            {#if listedParts.length > 0}
+              <div class="info-section">
+                <h4 class="info-heading">Parts</h4>
+                <div class="part-list">
+                  {#each listedParts as part (part.id)}
+                    <button class="part-button" class:active={selectedPart === part.id} onclick={() => { selectedPart = part.id; host?.focusPart(part.id); }}>
+                      {part.name}
+                    </button>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          {:else}
+            <p class="loading-state">Loading topic information...</p>
+          {/if}
         </div>
+      </div>
+    </aside>
+  </main>
 
-        {#if chatOpen}
-          <ChatPanel bind:this={chatPanel} />
-        {:else if activePart}
-          <h2>{activePart.info?.title ?? activePart.name}</h2>
-          {#if activePart.info?.summary}
-            <p>{activePart.info.summary}</p>
-          {/if}
-          {#if activePart.info?.bullets && activePart.info.bullets.length > 0}
-            <ul>
-              {#each activePart.info.bullets as bullet, index (index)}
-                <li>{bullet}</li>
-              {/each}
-            </ul>
-          {/if}
-          {#if activePart.info?.facts && activePart.info.facts.length > 0}
-            <dl class="facts">
-              {#each activePart.info.facts as fact, index (index)}
-                <dt>{fact.label}</dt>
-                <dd>{fact.value}</dd>
-              {/each}
-            </dl>
-          {/if}
-          <button class="chip" onclick={() => host?.focusPart(activePart.id)}
-            >Focus this part</button
-          >
-        {:else if manifest}
-          <h2>{manifest.name}</h2>
-          <p>{manifest.description}</p>
-          <h3>What this teaches</h3>
-          <p class="muted">{manifest.pedagogy.concept}</p>
-          <ul>
-            {#each manifest.pedagogy.objectives as objective, index (index)}
-              <li>{objective}</li>
-            {/each}
-          </ul>
-          {#if manifest.pedagogy.simplifications.length > 0}
-            <h3>Simplifications</h3>
-            <ul class="muted">
-              {#each manifest.pedagogy.simplifications as note, index (index)}
-                <li>{note}</li>
-              {/each}
-            </ul>
-          {/if}
-        {:else}
-          <h2>No model</h2>
-          <p class="muted">Nothing is loaded yet.</p>
-        {/if}
-
-        {#if listedParts.length > 0}
-          <h3>Parts</h3>
-          <!-- A keyboard-reachable equivalent of clicking the canvas: `08` requires the keyboard path never to
-               regress, and a canvas cannot be tabbed into. -->
-          <ul class="part-list">
-            {#each listedParts as part (part.id)}
-              <li>
-                <button
-                  class="part-button"
-                  class:active={selectedPart === part.id}
-                  onclick={() => {
-                    selectedPart = part.id;
-                    host?.focusPart(part.id);
-                  }}
-                >
-                  {part.name}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {/if}
-      </aside>
-    {/if}
-  </div>
-
-  <!-- Status bar: every number measured, never estimated -->
-  <footer class="statusbar">
-    {#if stats}
-      <span title="Frames per second, measured over a rolling window"
-        >{stats.fps.toFixed(0)} fps</span
-      >
-      <span title="Draw calls this frame">{stats.drawCalls} draws</span>
-      <span title="Triangles this frame">{(stats.triangles / 1000).toFixed(0)}k tris</span>
-      <span title="Geometry cache hit rate">{(stats.cacheHitRate * 100).toFixed(0)}% cached</span>
-      <span title="Device tier">{stats.effectiveTier}</span>
-      <span title="Model time">{stats.simSeconds.toFixed(1)}s</span>
-    {:else}
-      <span class="muted">engine idle</span>
-    {/if}
-
-    <div class="spacer"></div>
-
-    {#if verdict && verdict.adjustments.length > 0}
-      <span class="degraded" title={verdict.adjustments.map((a) => a.message).join(' ')}>
-        quality adapted
-      </span>
-    {/if}
-    {#if manifest?.physics && !simUnavailable}
-      <span title="Physics is simulated">physics on</span>
-    {:else if manifest?.physics}
-      <span class="muted" title="The solver could not load on this device; the model animates instead">physics unavailable</span>
-    {:else}
-      <span class="muted" title="This model animates rather than simulating">physics off</span>
-    {/if}
-    <button class="link" onclick={() => (showDiagnostics = !showDiagnostics)}>diagnostics</button>
+  <!-- ── Bottom Stats Bar ─────────────────────────────────────────────────── -->
+  <footer class="bottom-bar glass-panel">
+    <div class="stats-group">
+      <div class="stat-item">
+        <span class="stat-label">FPS</span>
+        <span class="stat-value">{stats ? stats.fps.toFixed(0) : '—'}</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Draws</span>
+        <span class="stat-value">{stats?.drawCalls ?? '—'}</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Triangles</span>
+        <span class="stat-value">{stats ? `${(stats.triangles / 1000).toFixed(0)}k` : '—'}</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Time</span>
+        <span class="stat-value">{stats ? formatTime(stats.simSeconds) : '00:00'}</span>
+      </div>
+    </div>
+    <div class="stats-group">
+      <div class="stat-item">
+        <span class="stat-label">Tier</span>
+        <span class="stat-value">{deviceTier || '—'}</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-label">Physics</span>
+        <span class="stat-value">{manifest?.physics ? 'On' : 'Off'}</span>
+      </div>
+      {#if verdict && verdict.adjustments.length > 0}
+        <div class="stat-item" title={verdict.adjustments.map((a) => a.message).join(' ')}>
+          <span class="stat-label">Quality</span>
+          <span class="stat-value warning">Adapted</span>
+        </div>
+      {/if}
+    </div>
   </footer>
 
-  {#if showHelp}
-    <section class="help glass" role="dialog" aria-label="Keyboard shortcuts">
-      <header class="help-head">
-        <h2>Keyboard shortcuts</h2>
-        <button class="chip" onclick={() => (showHelp = false)}>Close</button>
-      </header>
-      <dl class="shortcut-list">
-        {#each SHORTCUTS as [keys, action] (keys)}
-          <dt><kbd>{keys}</kbd></dt>
-          <dd>{action}</dd>
-        {/each}
-      </dl>
-    </section>
+  <!-- ── Quiz Modal (V1 structure) ────────────────────────────────────────── -->
+  {#if quizModalOpen && quizQuestions.length > 0}
+    <div class="modal-overlay active" role="dialog" aria-modal="true" aria-label="Quiz mode">
+      <QuizModal questions={quizQuestions} source={quizSource} onclose={() => { quizModalOpen = false; activeMode = 'none'; }} />
+    </div>
   {/if}
 
-  {#if showDiagnostics}
-    <section class="diagnostics glass" aria-label="Diagnostics">
-      <h2>Diagnostics</h2>
-      {#if manifest}
-        <p>
-          {manifest.cost.parts} parts · {manifest.cost.uniqueGeometries} unique geometries ·
-          {manifest.cost.instancedSets} instanced sets · {manifest.cost.instances} instances
-        </p>
-        <p class="muted">Authoring pass took {manifest.cost.authorMillis} ms on this device.</p>
-        {#if manifest.warnings.length > 0}
-          <h3>Build warnings</h3>
-          <ul>
-            {#each manifest.warnings as warning, index (index)}
-              <li>{warning}</li>
+  <!-- ── Shortcuts Modal ──────────────────────────────────────────────────── -->
+  {#if shortcutsModalOpen}
+    <div class="modal-overlay active" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <div class="modal-container shortcuts-modal glass-panel">
+        <div class="modal-header">
+          <h2>⌨️ Keyboard Shortcuts</h2>
+          <button class="modal-close-btn" onclick={() => (shortcutsModalOpen = false)}>×</button>
+        </div>
+        <div class="modal-body">
+          <div class="shortcuts-grid">
+            {#each SHORTCUT_CATEGORIES as category (category.title)}
+              <div class="shortcut-category">
+                <h4>{category.title}</h4>
+                {#each category.items as item (item[0])}
+                  <div class="shortcut-item"><kbd>{item[0]}</kbd><span>{item[1]}</span></div>
+                {/each}
+              </div>
             {/each}
-          </ul>
-        {/if}
-      {/if}
-      {#if verdict && verdict.adjustments.length > 0}
-        <h3>Quality adjustments</h3>
-        <ul>
-          {#each verdict.adjustments as adjustment, index (index)}
-            <li>{adjustment.message}{adjustment.saved ? ` (${adjustment.saved})` : ''}</li>
-          {/each}
-        </ul>
-      {/if}
-      {#if guestLogs.length > 0}
-        <h3>Model output</h3>
-        <ul class="logs">
-          {#each guestLogs as entry, index (index)}
-            <li class={entry.level}>{entry.message}</li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- ── Share Modal ──────────────────────────────────────────────────────── -->
+  {#if shareModalOpen}
+    <ShareModal {manifest} onclose={() => (shareModalOpen = false)} />
+  {/if}
+
+  <!-- ── AI Output viewer ─────────────────────────────────────────────────── -->
+  {#if codeViewModalOpen}
+    <CodeViewModal {manifest} tab={codeViewTab} ontab={(t) => (codeViewTab = t)} onclose={() => (codeViewModalOpen = false)} />
   {/if}
 </div>
 
 <style>
-  .viewer {
-    display: grid;
-    grid-template-rows: var(--toolbar-height) 1fr var(--statusbar-height);
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-  }
-
-  .toolbar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: 0 var(--space-3);
-    margin: var(--space-2) var(--space-2) 0;
-    border-radius: var(--radius-md);
-    z-index: var(--z-toolbar);
-  }
-
-  .model-name {
-    font-family: var(--font-display);
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 22ch;
-  }
-
-  .spacer {
-    flex: 1;
-  }
-
-  .modes {
-    display: flex;
-    gap: 2px;
-  }
-
-  .chip,
-  .icon {
-    min-height: 32px;
-    padding: var(--space-1) var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-full);
-    background: var(--surface);
-    color: var(--text);
-    font-size: var(--text-sm);
-    transition:
-      background-color var(--duration-fast) var(--ease-out),
-      border-color var(--duration-fast) var(--ease-out);
-  }
-
-  .chip:hover,
-  .icon:hover {
-    background: var(--surface-hover);
-    border-color: var(--accent-ring);
-  }
-
-  .chip.active {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-
-  .icon {
-    padding: var(--space-1) var(--space-2);
-  }
-
-  .body {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    /* One definite row: without it the row grows to content height, the panels overflow the viewport,
-       and the part list's clicks land on the panel chrome instead of the buttons — the row must be
-       exactly the space the toolbar and status bar leave. */
-    grid-template-rows: minmax(0, 1fr);
-    gap: var(--space-2);
-    padding: var(--space-2);
-    min-height: 0;
-  }
-
-  .panel {
-    width: var(--panel-width);
-    padding: var(--space-4);
-    overflow-y: auto;
-    /* Constrain to the grid row so the panel scrolls internally instead of stretching it. */
-    min-height: 0;
-    max-height: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-
-  .panel h2 {
-    font-size: var(--text-lg);
-    margin: 0;
-  }
-
-  /* The Info/Tutor tabs: one mode at a time inside the right panel (`05`). */
-  .panel-tabs {
-    display: flex;
-    gap: 2px;
-    border-bottom: 1px solid var(--border);
-    padding-bottom: var(--space-2);
-  }
-
-  .panel-tabs button {
-    padding: var(--space-1) var(--space-3);
-    border-radius: var(--radius-full);
-    font-size: var(--text-sm);
-    color: var(--text-subtle);
-    font-weight: 600;
-  }
-
-  .panel-tabs button.active {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-
-  .panel h3 {
-    font-size: var(--text-sm);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-subtle);
-    margin: var(--space-2) 0 0;
-  }
-
-  .panel p,
-  .panel li {
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-  }
-
-  .muted {
-    color: var(--text-subtle);
-  }
-
-  .stage {
-    position: relative;
-    border-radius: var(--radius-lg);
-    overflow: hidden;
-    background: var(--bg-sunken);
-    min-height: 0;
-  }
-
-  .canvas-holder {
+  /* The canvas holder fills the viewport container; V1's canvas element itself was sized by the engine. */
+  .main-canvas-holder {
     position: absolute;
     inset: 0;
-    /* The canvas must not intercept text selection during an orbit drag. */
     touch-action: none;
     user-select: none;
     cursor: grab;
   }
 
-  .canvas-holder:active {
+  .main-canvas-holder:active {
     cursor: grabbing;
   }
 
-  .overlay {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-content: center;
-    justify-items: center;
-    gap: var(--space-3);
-    text-align: center;
-    padding: var(--space-5);
-    background: color-mix(in oklab, var(--bg) 78%, transparent);
-    z-index: var(--z-overlay);
-  }
-
-  .pulse {
-    color: var(--text-muted);
-    animation: pulse 1.6s var(--ease-in-out) infinite;
-  }
-
-  @keyframes pulse {
-    0%,
-    100% {
-      opacity: 0.55;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
-
-  .hover-hint {
-    position: absolute;
-    bottom: var(--space-4);
-    left: 50%;
-    transform: translateX(-50%);
-    padding: var(--space-1) var(--space-3);
-    border-radius: var(--radius-full);
-    background: var(--glass-bg);
-    border: 1px solid var(--border);
-    font-size: var(--text-sm);
-    pointer-events: none;
+  .hidden-icon {
+    display: none;
   }
 
   .toasts {
     position: absolute;
-    top: var(--space-3);
-    right: var(--space-3);
+    top: var(--space-4);
+    right: var(--space-4);
     display: grid;
     gap: var(--space-2);
     max-width: 26rem;
-    z-index: var(--z-toast);
+    z-index: 3000;
   }
 
   .toast {
-    padding: var(--space-2) var(--space-3);
-    font-size: var(--text-sm);
+    padding: 0.875rem 1.25rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    animation: toastIn 0.4s var(--ease-out);
   }
 
-  .control {
-    display: grid;
-    gap: var(--space-1);
-  }
-
-  .control label {
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-2);
-    font-size: var(--text-sm);
-    color: var(--text);
-  }
-
-  .control output {
-    font-family: var(--font-mono);
-    color: var(--accent);
-  }
-
-  .control input[type='range'] {
-    width: 100%;
-    /* 44px is the comfortable touch target `08` requires; the visual track stays slim. */
-    min-height: var(--touch-target);
-    accent-color: var(--accent);
-  }
-
-  .hint {
-    font-size: var(--text-xs);
-    color: var(--text-subtle);
-  }
-
-  .metrics,
-  .facts {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: var(--space-1) var(--space-3);
-    margin: 0;
-    font-size: var(--text-sm);
-  }
-
-  .metrics dt,
-  .facts dt {
-    color: var(--text-subtle);
-  }
-
-  .metrics dd,
-  .facts dd {
-    margin: 0;
-    font-family: var(--font-mono);
-    color: var(--text);
-  }
-
-  .formula {
-    display: block;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--text-subtle);
-  }
-
-  .legend {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: grid;
-    gap: var(--space-2);
-  }
-
-  .legend li {
-    display: flex;
-    align-items: start;
-    gap: var(--space-2);
+  @keyframes toastIn {
+    from { transform: translateX(400px); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
   }
 
   .swatch {
-    width: 14px;
-    height: 14px;
-    border-radius: var(--radius-sm);
-    flex-shrink: 0;
-    margin-top: 2px;
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 4px;
     border: 1px solid var(--border-strong);
+    margin-right: 6px;
+    vertical-align: -1px;
+  }
+
+  .part-title {
+    font-size: 1.0625rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.01em;
+    margin-bottom: var(--space-2);
+  }
+
+  .concept-line {
+    margin-top: var(--space-2);
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  .info-bullets {
+    display: grid;
+    gap: var(--space-2);
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    padding-left: 1.125rem;
+  }
+
+  .info-bullets.muted {
+    color: var(--text-dim);
   }
 
   .part-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
     display: grid;
     gap: 2px;
-    /* No inner max-height: the panel itself owns scrolling now, and a nested scroller here both
-       collapsed the list's height (children clipped out of layout) and fought the panel's scroll —
-       one scroller per column, the panel's. */
+    max-height: 20rem;
+    overflow-y: auto;
   }
 
   .part-button {
     width: 100%;
     text-align: left;
-    padding: var(--space-1) var(--space-2);
+    padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    color: var(--text-muted);
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
   }
 
   .part-button:hover {
-    background: var(--surface-hover);
-    color: var(--text);
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .part-button.active {
-    background: var(--accent-soft);
+    background: var(--accent-muted);
     color: var(--accent);
   }
 
-  .statusbar {
-    display: flex;
-    align-items: center;
-    gap: var(--space-4);
-    padding: 0 var(--space-4);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--text-subtle);
-    border-top: 1px solid var(--border);
-  }
-
-  .degraded {
-    color: var(--status-warn);
-  }
-
-  .link {
-    color: var(--text-subtle);
-    text-decoration: underline;
-    font-size: var(--text-xs);
-  }
-
-  .link:hover {
-    color: var(--accent);
-  }
-
-  .presets {
-    padding-right: var(--space-2);
-  }
-
-  .help {
-    position: fixed;
-    inset: 0;
-    margin: auto;
-    width: min(26rem, calc(100vw - 2 * var(--space-4)));
-    height: fit-content;
-    padding: var(--space-5);
-    z-index: var(--z-modal);
-  }
-
-  .help-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--space-3);
-  }
-
-  .shortcut-list {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: var(--space-2) var(--space-4);
-    margin: 0;
-    font-size: var(--text-sm);
-  }
-
-  .shortcut-list kbd {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-sm);
-    padding: 0.0625rem 0.5rem;
-    color: var(--text-muted);
-  }
-
-  .shortcut-list dd {
-    margin: 0;
-    color: var(--text-muted);
-  }
-
-  .diagnostics {
-    position: fixed;
-    right: var(--space-3);
-    bottom: calc(var(--statusbar-height) + var(--space-3));
-    width: min(34rem, calc(100vw - 2 * var(--space-3)));
-    max-height: 60vh;
-    overflow-y: auto;
-    padding: var(--space-4);
-    z-index: var(--z-modal);
-    font-size: var(--text-sm);
-  }
-
-  .logs {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-  }
-
-  .logs .error {
-    color: var(--status-error);
-  }
-
-  .logs .warn {
-    color: var(--status-warn);
-  }
-
-  /*
-    Phone layout. `08`: the three-panel viewer collapses to a single column, the canvas owns the screen, and panels
-    become sheets. This is the compact variant; the full sheet behaviour lands with the mobile pass.
-  */
-  @media (max-width: 860px) {
-    .body {
-      grid-template-columns: 1fr;
-      grid-template-rows: 1fr;
-    }
-
-    .panel {
-      position: absolute;
-      inset: auto var(--space-2) calc(var(--statusbar-height) + var(--space-2)) var(--space-2);
-      width: auto;
-      max-height: 45vh;
-      z-index: var(--z-panel);
-    }
-
-    .modes {
-      display: none;
-    }
+  .stat-value.warning {
+    color: var(--warning);
   }
 </style>

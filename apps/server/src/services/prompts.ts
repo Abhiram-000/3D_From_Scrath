@@ -108,6 +108,29 @@ THE CONTRACT (hard rules — the platform enforces these and rejects violations)
 AVAILABLE API (generated from the engine — the gate validates against exactly this list):
 ${surface}
 
+EXACT CALL SHAPES — copy these argument names precisely; every field named here is required:
+scene.colorRole({ id: 'carrier', label: 'Carrier', color: '#c2885c', meaning: 'What this colour means' });
+scene.param({ id: 'length', label: 'Pendulum length', kind: 'number', min: 0.5, max: 3, default: 1.5, unit: 'm', affects: [{ partId: 'bob', channel: 'transform' }] });
+scene.mesh({ id: 'bob', name: 'Bob', geometry: geom.sphere({ radius: 0.15 }), material: mat.metal({ color: '#c2885c' }), position: [0, -1.5, 0], info: { title: 'Bob', summary: 'What it is.', bullets: ['A fact'] } });
+scene.motion({ id: 'swing', partId: 'bob', kind: 'oscillate', axis: [0, 0, 1], rate: { param: 'speed' }, amplitude: 0.4 });
+scene.metric({ id: 'period', label: 'Period', unit: 's', formula: 'T = 2*pi*sqrt(L/g)' });
+scene.onFrame((ctx) => { const t = ctx.time; ctx.part('bob').setRotation(0.4 * Math.sin(t * 3), 0, 0); });
+scene.story([{ id: 'beat1', title: 'Setup', narration: 'One or two sentences.', targetPartId: 'bob' }]);
+scene.quiz([{ id: 'q1', question: 'A question?', options: ['A', 'B', 'C', 'D'], correctIndex: 0, explanation: 'Why.' }]);
+
+CORRECT OPENING — your program MUST begin exactly like this (fill in your own content):
+scene.describe({
+  name: 'The Model Name',
+  description: 'Two or three sentences describing what this model shows and how to explore it.',
+  domain: 'mechanical-engineering',
+  concept: 'One sentence stating the core idea the model teaches.',
+  objectives: ['Something the learner will be able to do', '...3-4 total'],
+  level: 'secondary',
+  principles: ['A physical law or rule the model demonstrates'],
+  simplifications: ['Any liberty taken with scale or detail, stated honestly'],
+});
+Then declare color roles, parameters, geometry, parts, motion, story beats and quiz.
+
 AMBIITION: ${COMPLEXITY_GUIDANCE[options.complexity]}
 Spend your output budget on planning and a complete program, not on comments or restating these rules.
 Output one fenced JavaScript block containing the complete, self-contained program.`;

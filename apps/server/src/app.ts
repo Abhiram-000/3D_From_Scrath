@@ -186,7 +186,20 @@ export function buildApp(state: AppState): Hono<AppContext> {
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const encoder = new TextEncoder();
-        const write = (event: unknown) => controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        // A closed controller means the client disconnected (`04`: "stop charging for work nobody
+        // is waiting for; never write to a dead socket"). Every write checks, because the pipeline's
+        // heartbeat timer fires on its own schedule and an enqueue into a closed controller is an
+        // uncaught exception that would take the whole server down — one dropped reader must never
+        // kill the process serving everyone else.
+        let clientGone = false;
+        const write = (event: unknown) => {
+          if (clientGone) return;
+          try {
+            controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          } catch {
+            clientGone = true;
+          }
+        };
         state.openStreams += 1;
         try {
           write({ type: 'phase', phase: 'queued', message: 'Sending your topic to the model…', at: Date.now() });
@@ -208,7 +221,12 @@ export function buildApp(state: AppState): Hono<AppContext> {
           write({ type: 'error', code: 'internal', message: DEFAULT_ERROR_MESSAGE.internal, requestId, at: Date.now() });
         } finally {
           state.openStreams -= 1;
-          controller.close();
+          // Closing an already-closed controller throws; guard it the same way.
+          try {
+            controller.close();
+          } catch {
+            /* the reader is already gone */
+          }
         }
       },
     });

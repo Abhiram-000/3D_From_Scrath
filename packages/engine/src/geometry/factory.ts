@@ -121,8 +121,26 @@ const clampSegments = (value: unknown, fallback: number, max = 512): number => {
 };
 
 function requireVec3(value: unknown, name: string): Vec3 {
+  // Generators naturally write a vector three ways: [x, y, z], {x, y, z} and — for sizes —
+  // {width, height, length}. All three spellings are accepted because a build should not die to a
+  // synonym (`box` has had this policy since the start; this extends it to every vector argument).
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    const x = record.x ?? record.width;
+    const y = record.y ?? record.height;
+    const z = record.z ?? record.length ?? record.depth;
+    if (
+      typeof x === 'number' && Number.isFinite(x) &&
+      typeof y === 'number' && Number.isFinite(y) &&
+      typeof z === 'number' && Number.isFinite(z)
+    ) {
+      return [x, y, z];
+    }
+  }
   if (!Array.isArray(value) || value.length < 3) {
-    throw new GeometryError(`${name} must be an array of three numbers, e.g. [0, 1, 0].`);
+    throw new GeometryError(
+      `${name} must be three numbers — an array [x, y, z], or an object {x, y, z} / {width, height, length}.`,
+    );
   }
   return [
     requireFinite(value[0], `${name}[0]`),
@@ -392,14 +410,21 @@ export class GeometryFactory {
 
       // ── Primitives ────────────────────────────────────────────────────────
       box: (
-        spec: { size: readonly [number, number, number] } | readonly [number, number, number],
+        spec:
+          | { size: readonly [number, number, number] }
+          | readonly [number, number, number]
+          | { width: number; height: number; length: number },
       ) => {
-        // Both spellings are accepted because both are natural to write, and a generator that guesses wrong
-        // should not lose a whole build to it. `Array.isArray` does not narrow a readonly tuple, so the
-        // discriminant is the presence of `size`.
-        const size = Array.isArray(spec)
-          ? (spec as readonly [number, number, number])
-          : (spec as { size: readonly [number, number, number] }).size;
+        // Every natural spelling is accepted because a generator that guesses wrong should not lose
+        // a whole build to it: [w, h, d], { size: [w, h, d] } and { width, height, length } (the
+        // spelling `beam` uses, and the one models reach for most often).
+        let size: unknown;
+        if (Array.isArray(spec)) {
+          size = spec;
+        } else {
+          const record = spec as { size?: unknown; width?: unknown; height?: unknown; length?: unknown };
+          size = record.size ?? { x: record.width, y: record.height, z: record.length };
+        }
         const [w, h, d] = requireVec3(size, 'box size');
         return this.register('box', { w, h, d }, () => primitives.box(w, h, d));
       },

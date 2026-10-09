@@ -82,6 +82,16 @@ export interface ServerConfig {
     readonly model: string;
     readonly chatModel: string;
     readonly maxOutputTokens: number;
+    /**
+     * A second, independent provider (`04` resilience: "upstream failures are translated, not
+     * propagated"). When the primary is quota-throttled or down, generation falls across to this
+     * one rather than failing the learner's wait. Null when unconfigured.
+     */
+    readonly fallback: {
+      readonly apiKey: string | null;
+      readonly baseUrl: string;
+      readonly model: string;
+    } | null;
   };
 
   readonly storage: {
@@ -125,7 +135,7 @@ const DEFAULTS = {
   host: '127.0.0.1',
   aiBaseUrl: 'https://api.openai.com/v1',
   aiModel: 'gpt-5',
-  maxOutputTokens: 32_000,
+  maxOutputTokens: 64_000,
   dataDir: '.data',
   limits: { api: 600, write: 30, generate: 12, chat: 60, quiz: 30 },
 } as const;
@@ -158,6 +168,16 @@ export function resolveConfig(env: Record<string, string | undefined>): ServerCo
         'No AI key configured. Generation, chat and quiz will answer 503; the gallery and viewer work normally.',
     });
   }
+
+  // ── Fallback AI provider (optional) ────────────────────────────────────────
+  const fallbackKey = env.FALLBACK_AI_API_KEY?.trim() || null;
+  const fallback = fallbackKey
+    ? {
+        apiKey: fallbackKey,
+        baseUrl: env.FALLBACK_AI_BASE_URL?.trim() || 'https://freeinference.org/v1',
+        model: env.FALLBACK_AI_MODEL?.trim() || 'deepseek-v4-flash',
+      }
+    : null;
 
   // ── Storage ────────────────────────────────────────────────────────────────
   const databaseUrl = env.DATABASE_URL?.trim() || null;
@@ -290,7 +310,7 @@ export function resolveConfig(env: Record<string, string | undefined>): ServerCo
     allowedOrigins: [...origins],
 
     ai: {
-      configured: aiConfigured,
+      configured: aiConfigured || fallbackKey !== null,
       apiKey,
       baseUrl: env.AI_BASE_URL?.trim() || DEFAULTS.aiBaseUrl,
       model: env.AI_MODEL?.trim() || DEFAULTS.aiModel,
@@ -298,6 +318,7 @@ export function resolveConfig(env: Record<string, string | undefined>): ServerCo
       // a confusing 404 from the provider, whereas reusing the configured one always works.
       chatModel: env.AI_CHAT_MODEL?.trim() || env.AI_MODEL?.trim() || DEFAULTS.aiModel,
       maxOutputTokens: parseInteger(env.AI_MAX_OUTPUT_TOKENS, DEFAULTS.maxOutputTokens),
+      fallback,
     },
 
     storage: {

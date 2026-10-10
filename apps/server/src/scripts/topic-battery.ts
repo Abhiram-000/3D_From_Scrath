@@ -18,7 +18,7 @@
  * Records audit score, repair/refine passes and durations alongside, because those numbers explain
  * the three above when a regression lands.
  */
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const API = 'http://127.0.0.1:8787';

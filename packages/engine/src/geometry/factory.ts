@@ -332,10 +332,23 @@ export class GeometryFactory {
 
   private pathOf(handle: unknown, argument: string): Path3 {
     const data = this.pathData.get(handle as PathHandle);
-    if (!data) {
-      throw new GeometryError(`${argument} must be a path created by geom.path().`);
+    if (data) return data;
+    // A raw [[x,y,z], ...] array is the spelling models reach for most; build the path from it on
+    // the spot rather than failing a build that passed everything else (the same tolerance policy
+    // as box/helix — observed live in the topic battery).
+    if (Array.isArray(handle) && handle.length >= 2 && Array.isArray(handle[0])) {
+      const points = handle as ReadonlyArray<readonly [number, number, number]>;
+      const coords = new Float64Array(points.length * 3);
+      points.forEach((point, index) => {
+        coords[index * 3] = Number(point[0]) || 0;
+        coords[index * 3 + 1] = Number(point[1]) || 0;
+        coords[index * 3 + 2] = Number(point[2]) || 0;
+      });
+      return { points: coords, closed: false };
     }
-    return data;
+    throw new GeometryError(
+      `${argument} must be a path created by geom.path() or an array of [x, y, z] points.`,
+    );
   }
 
   private makeProfile(builder: string, spec: unknown, profile: Profile): ProfileHandle {
@@ -599,9 +612,24 @@ export class GeometryFactory {
         wireSegments?: number;
       }) => {
         const radius = requireFinite(spec?.radius, 'helix radius', { min: 1e-6 });
-        const wireRadius = requireFinite(spec?.wireRadius, 'helix wireRadius', { min: 1e-6 });
+        // `thickness`/`tube` are accepted spellings of wireRadius — models reach for both.
+        const wireRadius = requireFinite(
+          (spec as { wireRadius?: number; thickness?: number; tube?: number } | undefined)
+            ?.wireRadius ??
+            (spec as { thickness?: number } | undefined)?.thickness ??
+            (spec as { tube?: number } | undefined)?.tube,
+          'helix wireRadius',
+          { min: 1e-6 },
+        );
         const turns = requireFinite(spec?.turns, 'helix turns', { min: 0.1, max: 200 });
-        const pitch = requireFinite(spec?.pitch, 'helix pitch');
+        // `height` derives pitch (height = turns × pitch) — the natural spelling for a spring of a
+        // given length; requiring `pitch` alone failed live generations that passed everything else.
+        const specRecord = spec as { pitch?: number; height?: number; turns?: number } | undefined;
+        const pitchSource =
+          specRecord?.pitch ?? (specRecord?.height !== undefined && specRecord.turns !== undefined)
+            ? specRecord.pitch ?? (specRecord.height ?? 0) / (specRecord.turns || 1)
+            : undefined;
+        const pitch = requireFinite(pitchSource, 'helix pitch (or height to derive it)');
         const segmentsPerTurn = clampSegments(spec?.segmentsPerTurn, 24, 128);
         const wireSegments = clampSegments(spec?.wireSegments, 10, 64);
         return this.register(

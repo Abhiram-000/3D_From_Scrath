@@ -147,6 +147,8 @@ Rules for geometry arguments (the example shows each correct form):
 - Vectors are arrays: position: [x, y, z]. size: [w, h, d].
 - geom.box takes { size: [w, h, d] } or [w, h, d] — never {width, height, length}.
 - Round shapes take { radius, height?/halfHeight?, segments? }.
+- Springs: geom.helix({ radius, wireRadius, turns, pitch }) — pitch is metres per turn; or pass
+  height instead and pitch is derived. A spring that cannot compress is a picture of a spring.
 - scene.mesh returns a part id string, NOT an object: never write bob.position.set(...) — use
   ctx.part('bob').setPosition(...) inside onFrame instead.
 - Every part needs a unique id. Every param needs a unique id.

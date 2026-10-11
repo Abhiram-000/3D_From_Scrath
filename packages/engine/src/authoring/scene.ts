@@ -954,10 +954,21 @@ export class SceneBuilder {
         if (!this.parts.has(partId)) {
           throw new SceneError(`motion '${id}' targets part '${partId}', which does not exist.`);
         }
+        // The wire enum keeps `follow` and `sequence` for compatibility, but a motion declaration
+        // cannot express them: no targetPartId, no states list. Accepting one stored a motion no
+        // runtime could apply — a silent no-op wearing the audit's score — so it is refused here,
+        // as loudly as a dangling part id.
+        const kind = String(spec?.kind ?? 'spin');
+        if (kind === 'follow' || kind === 'sequence') {
+          throw new SceneError(
+            `motion '${id}' uses kind '${kind}', which a motion declaration cannot express. ` +
+              `Supported kinds: spin, oscillate, orbit, translate, pulse, flowAlongPath.`,
+          );
+        }
         this.motions.push({
           id,
           partId,
-          kind: (spec?.kind ?? 'spin') as never,
+          kind: kind as never,
           axis: this.vec3(spec?.axis, 'motion axis', [0, 1, 0]),
           rate: (spec?.rate ?? { const: 1 }) as never,
           ...(spec?.amplitude !== undefined ? { amplitude: spec.amplitude as never } : {}),

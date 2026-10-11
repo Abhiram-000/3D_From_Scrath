@@ -450,6 +450,31 @@ describe('authoring failures are reported, never thrown', () => {
     expect(result.message).toMatch(/does not exist/);
   });
 
+  it('rejects the follow and sequence motion kinds, naming the six it can declare', () => {
+    // MotionDecl carries no targetPartId and no states list, so these two enum members are
+    // unimplementable from the declaration schema. Accepting them silently produced a no-op
+    // motion — the exact bug class this phase removes — so the declaration site must refuse
+    // them as loudly as it refuses a part id that does not exist.
+    for (const kind of ['follow', 'sequence']) {
+      const result = author(`
+        scene.describe({ name: 'Bad kind', description: 'Unimplementable.', concept: 'x', objectives: ['y'] });
+        scene.mesh({ id: 'a', geometry: geom.box([1, 1, 1]), material: mat.metal({}) });
+        scene.motion({ id: 'm', partId: 'a', kind: '${kind}', reason: 'should not get this far' });
+      `);
+      expect(result.ok, kind).toBe(false);
+      if (result.ok) return;
+      // The message must name the offending kind and list every supported one, so the fix is
+      // a rewrite of the declaration, not a hunt through docs.
+      expect(result.message).toMatch(new RegExp(`'${kind}'`));
+      expect(result.message).toMatch(/spin/);
+      expect(result.message).toMatch(/oscillate/);
+      expect(result.message).toMatch(/orbit/);
+      expect(result.message).toMatch(/translate/);
+      expect(result.message).toMatch(/pulse/);
+      expect(result.message).toMatch(/flowAlongPath/);
+    }
+  });
+
   it('reports an undeclared colour role rather than silently using grey', () => {
     const result = author(`
       scene.describe({ name: 'Role', description: 'Missing role.', concept: 'x', objectives: ['y'] });

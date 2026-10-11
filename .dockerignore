@@ -1,0 +1,19 @@
+# Everything the container must not carry: dev state, local stores, build caches, docs tooling.
+node_modules
+**/node_modules
+**/.svelte-kit
+**/build
+!apps/web/build
+.git
+.omo
+.data
+test-results
+playwright-report
+coverage
+*.log
+.env
+apps/server/.env
+apps/server/.env.production
+battery-results.json
+battery-history.jsonl
+Build_Docs

@@ -26,6 +26,7 @@ import { buildChatPrompt, buildQuizPrompt } from './services/prompts.ts';
 import type { GalleryStore } from './services/gallery-store.ts';
 import { sniffSnapshot, SNAPSHOT_MAX_BYTES } from './services/gallery-store.ts';
 import { limitWith, type LimiterSet } from './services/rate-limits.ts';
+import { staticSiteMiddleware } from './services/static-pages.ts';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { validateQuizQuestions } from './services/quiz.ts';
 
@@ -415,10 +416,18 @@ export function buildApp(state: AppState): Hono<AppContext> {
     });
   });
 
+  // ── Static frontend (mounted last: the API owns /api, everything else is pages) ──
+  app.use('*', staticSiteMiddleware)
+
   // ── 404 with the same shape, so clients have one parser ───────────────────
-  app.notFound((context) =>
-    context.json(apiError('not_found', 'No such endpoint.', context.get('requestId')), 404),
-  );
+  // API paths keep the JSON error; anything else already had its chance at a page above.
+  app.notFound((context) => {
+    const pathname = new URL(context.req.url).pathname;
+    if (pathname.startsWith('/api/')) {
+      return context.json(apiError('not_found', 'No such endpoint.', context.get('requestId')), 404);
+    }
+    return context.text('Not found.', 404);
+  });
 
   // ── The catch-all: an unexpected fault carries a request id and nothing else ──
   app.onError((error, context) => {

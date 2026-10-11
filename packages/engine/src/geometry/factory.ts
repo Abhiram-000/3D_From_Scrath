@@ -338,7 +338,7 @@ export class GeometryFactory {
     // as box/helix — observed live in the topic battery).
     if (Array.isArray(handle) && handle.length >= 2 && Array.isArray(handle[0])) {
       const points = handle as ReadonlyArray<readonly [number, number, number]>;
-      const coords = new Float64Array(points.length * 3);
+      const coords = new Float32Array(points.length * 3);
       points.forEach((point, index) => {
         coords[index * 3] = Number(point[0]) || 0;
         coords[index * 3 + 1] = Number(point[1]) || 0;

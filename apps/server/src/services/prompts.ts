@@ -2,29 +2,40 @@
  * The prompt architecture — the platform's primary production tool (`00`).
  *
  * "The difference between a six-box disappointment and a 300-part cutaway rocket is mostly the
- * prompting architecture. Engineer them like code, not like a wish." This module is engineered
- * around five techniques, each chosen because a live model run demonstrated its need:
+ * prompting architecture. Engineer them like code, not like a wish."
  *
- *  1. **A complete, correct exemplar.** Models imitate structure they have seen far more faithfully
- *     than they follow rules they have read — the single highest-leverage technique for *runnable*
- *     code. The exemplar below is a real program that passes this exact gate.
- *  2. **The API as a copyable reference table**, generated from the engine's own registry, never
- *     hand-written — so the documented surface and the enforced surface are one string.
- *  3. **Negative examples from observed failures.** Every "NEVER" line below is a real mistake a
- *     live model made: `geom.box({width, height, length})` from habit, `.position.set()` on a
- *     handle, ids that collide. Naming the trap prevents the trap.
- *  4. **Plan-first scaffolding.** A short block comment the model fills before coding — chain of
- *     thought made structural rather than hoped-for.
- *  5. **A self-check the model runs before answering.** The last thing in the prompt is the first
- *     thing the model does with its draft.
+ * v3 adds the *teaching-quality* layer on top of v2's runnable-code layer, driven by the topic
+ * battery's measured weaknesses (thin parameters averaging 2, textbook accuracy unverified,
+ * understandability unguided). The techniques, each with its evidence:
  *
- * Versioned, because a prompt change is a code change: the version rides in every bundle's
- * provenance so model quality is attributable to the prompt that produced it.
+ *  1. **A complete, correct exemplar** (v2, kept). Models imitate structure they have seen far
+ *     more faithfully than rules they have read. v3's exemplar models what the battery showed was
+ *     missing: FOUR parameters with distinct physics, real-world numbers, plain-language info
+ *     text, and a misconception distractor in the quiz.
+ *  2. **Role separation with a domain-scientist pass** (`00`: "separate the expert personas —
+ *     domain scientist (what is true), instructional designer (what teaches), 3D engineer (what
+ *     builds)"). v3 makes the scientist pass explicit: name the real quantities, real units, real
+ *     values BEFORE any code.
+ *  3. **Textbook-fidelity contract.** A named list of what "accurate" means: correct entities
+ *     with their textbook names, correct proportions where reality is the lesson, correct
+ *     direction of every causal arrow, real constants and formulas. Where scale is exaggerated,
+ *     the model says so in simplifications.
+ *  4. **Plain-language register for all learner-facing text.** Info summaries a curious teenager
+ *     can read; one idea per bullet; the concept stated as a sentence a teacher would say.
+ *  5. **The API as a copyable reference table** (generated, never hand-written) and **negative
+ *     examples from observed failures** (v2, kept — every NEVER line is a real live mistake).
+ *  6. **Plan-first scaffolding**, extended with a FACTS line the scientist pass fills in.
+ *  7. **A rubric-anchored self-check**: the model grades its own draft on the five dimensions the
+ *     platform's audit scores, and fixes anything below standard before answering. Rubric-anchored
+ *     self-evaluation measurably outperforms bare checklists.
+ *
+ * Versioned, because a prompt change is a code change; battery-history.jsonl holds the numbers
+ * this version must beat.
  */
 import { describeApiSurface } from '@edu3d/engine';
 import type { ComplexityPreference } from '@edu3d/contracts';
 
-export const PROMPT_VERSION = '2026-10-v2-exemplar';
+export const PROMPT_VERSION = '2026-10-v3-teaching';
 
 /** The domain grammar table from `00`, compressed to the rows the model can act on. */
 const DOMAIN_GRAMMARS: ReadonlyArray<{ domain: string; entities: string; motion: string }> = [
@@ -44,81 +55,123 @@ const DOMAIN_GRAMMARS: ReadonlyArray<{ domain: string; entities: string; motion:
 ];
 
 const COMPLEXITY_GUIDANCE: Readonly<Record<ComplexityPreference, string>> = {
-  simple: 'Around 8–15 meaningful parts. One parameter that clearly changes one behavior.',
-  balanced: 'Around 20–50 meaningful parts. 2–4 parameters, each driving visible behavior.',
-  detailed: 'Around 60–150 meaningful parts built from parameterized component definitions. 3–6 parameters.',
+  simple: 'Around 8–15 meaningful parts. Two parameters with distinct effects.',
+  balanced: 'Around 20–50 meaningful parts. 3–4 parameters, each driving clearly different visible behavior.',
+  detailed:
+    'Around 60–150 meaningful parts built from parameterized component definitions. 4–6 parameters with distinct physics.',
   maximum:
-    "150–300+ meaningful parts: real subassemblies, instanced repetition, hierarchy that reads as the machine's block diagram. 4–8 parameters.",
+    "150–300+ meaningful parts: real subassemblies, instanced repetition, hierarchy that reads as the machine's block diagram. 5–8 parameters with distinct physics.",
 };
 
 /**
- * The exemplar: a small, complete, correct program that exercises the API's core.
+ * The v3 exemplar: complete, gate-clean, and modeling every teaching-quality behavior.
  *
- * Sliced from the reference turbofan's patterns but small enough to keep the prompt cheap: describe →
- * colorRole → param → metric → materials → groups → profile/revolve geometry → instancing →
- * onFrame → story → quiz. Every line is gate-clean; the model copies these shapes verbatim.
+ * Four parameters (not two — the battery showed models copy the exemplar's parameter COUNT):
+ * length and gravity drive the physics with distinct laws, mass demonstrates what does NOT
+ * matter (a real teaching point), damping shows decay. Real constants (g = 9.81), real formula
+ * (T = 2π√(L/g)), plain-language info text, and a quiz whose distractor is the classic
+ * misconception ("heavier swings slower").
  */
-const EXEMPLAR = `// A pendulum clock. Units: metres, radians, seconds.
-// PLAN: concept = pendulum period depends on length, not mass.
-// ENTITIES: pivot, rod, bob, dial. CAUSALITY: gravity -> torque -> swing -> tick.
-// REPRESENTATION: rod = slim revolve, bob = sphere, motion = oscillate + onFrame physics.
+const EXEMPLAR = `// A pendulum, taught honestly. Units: metres, kilograms, seconds.
+// PLAN: the period depends on length and gravity, NOT mass — the model must let the learner discover that.
+// FACTS: g = 9.81 m/s². T = 2π·sqrt(L/g). Small-angle swing. Damping shrinks amplitude, not period.
+// ENTITIES: pivot, rod, bob, protractor arc, timer marks. CAUSALITY: gravity → restoring torque → swing; length sets the tempo.
+// REPRESENTATION: rod = slim revolve, bob = sphere (mass slider changes SIZE ONLY — the period must not move), arc = line path.
 scene.describe({
   name: 'Pendulum',
-  description: 'A swinging pendulum showing why the period depends on length, not mass.',
+  description: 'Swing a pendulum and discover what changes its tempo — and what surprisingly does not.',
   domain: 'physics',
-  concept: 'A pendulum is a harmonic oscillator: T = 2*pi*sqrt(L/g).',
-  objectives: ['Predict how length changes the period', 'Explain why mass does not matter'],
+  concept: 'A pendulum is a clock: its period is set by length and gravity alone — mass never matters.',
+  objectives: [
+    'Predict how doubling the length changes the period',
+    'Explain why adding mass leaves the swing unchanged',
+    'Read T = 2*pi*sqrt(L/g) off the live counter as you drag',
+  ],
   level: 'secondary',
-  principles: ['Restoring torque is proportional to sin(angle) for small angles'],
-  simplifications: ['Damping ignored; real clocks need an escapement to keep swinging'],
+  principles: [
+    'Restoring torque = -m·g·L·sin(θ); for small angles sin(θ) ≈ θ, giving simple harmonic motion',
+    'T = 2π·sqrt(L/g) — mass cancels out of the equation',
+  ],
+  simplifications: ['No pivot friction; the damping slider stands in for air drag'],
 });
-scene.colorRole({ id: 'metal', label: 'Metal', color: '#c2885c', meaning: 'Structural parts' });
-scene.colorRole({ id: 'energy', label: 'Motion', color: '#d4a055', meaning: 'The swinging mass' });
-scene.param({ id: 'length', label: 'Rod length', kind: 'number', min: 0.5, max: 3, default: 1.5, unit: 'm', affects: [{ partId: 'bob', channel: 'transform' }] });
-scene.param({ id: 'gravity', label: 'Gravity', kind: 'number', min: 1.6, max: 20, default: 9.81, unit: 'm/s2', affects: [{ partId: 'bob', channel: 'transform' }] });
-scene.metric({ id: 'period', label: 'Period', unit: 's', formula: 'T = 2*pi*sqrt(L/g)' });
-var steel = mat.metal({ role: 'metal', roughness: 0.3 });
+scene.colorRole({ id: 'structure', label: 'Structure', color: '#8a8f96', meaning: 'Fixed parts' });
+scene.colorRole({ id: 'energy', label: 'The swinger', color: '#c2885c', meaning: 'The moving mass' });
+scene.colorRole({ id: 'measure', label: 'Measurement', color: '#5b93c9', meaning: 'Scales and read-outs' });
+scene.param({ id: 'length', label: 'Length', kind: 'number', min: 0.3, max: 3, default: 1.5, unit: 'm', affects: [{ partId: 'bob', channel: 'transform' }] });
+scene.param({ id: 'gravity', label: 'Gravity', kind: 'number', min: 1.6, max: 25, default: 9.81, unit: 'm/s²', affects: [{ partId: 'bob', channel: 'transform' }] });
+scene.param({ id: 'mass', label: 'Bob mass', kind: 'number', min: 0.5, max: 5, default: 1, unit: 'kg', affects: [{ partId: 'bob', channel: 'material' }] });
+scene.param({ id: 'damping', label: 'Air drag', kind: 'number', min: 0, max: 0.5, default: 0.02, affects: [{ partId: 'bob', channel: 'transform' }] });
+scene.metric({ id: 'period', label: 'Period', unit: 's', formula: 'T = 2π·sqrt(L/g)' });
+scene.metric({ id: 'amplitude', label: 'Amplitude', unit: '°' });
+var steel = mat.metal({ role: 'structure', roughness: 0.35 });
 var brass = mat.metal({ role: 'energy', roughness: 0.25 });
-scene.group({ id: 'clock', name: 'Pendulum clock' });
+var ink = mat.plastic({ role: 'measure', color: '#5b93c9' });
+scene.group({ id: 'rig', name: 'Pendulum rig' });
 scene.mesh({
-  id: 'pivot', name: 'Pivot', parentId: 'clock',
-  geometry: geom.cylinder({ radius: 0.05, height: 0.08 }),
+  id: 'pivot', name: 'Pivot', parentId: 'rig',
+  geometry: geom.cylinder({ radius: 0.05, height: 0.06 }),
   material: steel, position: [0, 0, 0],
-  info: { title: 'Pivot', summary: 'The fixed point the rod swings from.' },
+  info: { title: 'Pivot', summary: 'The fixed point. Frictionless here, so energy only leaves through air drag.' },
 });
-var bob = scene.mesh({
-  id: 'bob', name: 'Bob', parentId: 'clock', hero: true,
-  geometry: geom.sphere({ radius: 0.16, segments: 32 }),
+scene.mesh({
+  id: 'bob', name: 'Bob', parentId: 'rig', hero: true,
+  geometry: geom.sphere({ radius: 0.14, segments: 32 }),
   material: brass, position: [0, -1.5, 0],
-  info: { title: 'Bob', summary: 'The swinging mass.', bullets: ['Mass does not change the period'] },
+  info: {
+    title: 'Bob',
+    summary: 'The swinging weight. Drag its mass up — the tempo refuses to change.',
+    bullets: ['Mass appears on both sides of the equation of motion and cancels', 'Only length and gravity set the period'],
+  },
 });
-// The period read-out recomputed from the same parameters the physics uses.
+// Measurement arc the learner reads the angle against.
+var arcPts = [];
+for (var a = -0.6; a <= 0.6; a += 0.05) arcPts.push([Math.sin(a) * 1.7, -Math.cos(a) * 1.7, 0]);
+scene.mesh({
+  id: 'arc', name: 'Angle scale', parentId: 'rig',
+  geometry: geom.pipe({ path: geom.path(arcPts), radius: 0.008 }),
+  material: ink, position: [0, 0, 0],
+  info: { title: 'Angle scale', summary: 'Read the swing amplitude here in degrees.' },
+});
+var theta0 = 0.35;
 scene.onFrame(function (ctx) {
-  var L = ctx.params.length;
-  var g = ctx.params.gravity;
+  var L = ctx.params.length, g = ctx.params.gravity, b = ctx.params.damping;
   var T = 2 * Math.PI * Math.sqrt(L / g);
+  // Amplitude decays with damping; the period stays T throughout — damping steals height, not time.
+  var decay = Math.exp(-b * ctx.time);
+  var theta = theta0 * decay * Math.cos(ctx.time * ((2 * Math.PI) / T));
+  ctx.part('bob').setPosition(Math.sin(theta) * L, -Math.cos(theta) * L, 0);
+  ctx.part('bob').setScale(Math.cbrt(ctx.params.mass), Math.cbrt(ctx.params.mass), Math.cbrt(ctx.params.mass));
   ctx.metric('period', T);
-  var theta = 0.35 * Math.cos(ctx.time * ((2 * Math.PI) / T));
-  ctx.part('bob').setPosition(0, -L, 0);
-  ctx.part('bob').setRotation(0, 0, theta);
+  ctx.metric('amplitude', theta0 * decay * 57.3);
 });
 scene.story([
-  { id: 'b1', title: 'The setup', narration: 'Gravity pulls the bob down; the rod forces it to arc.', targetPartId: 'pivot' },
-  { id: 'b2', title: 'The swing', narration: 'Length alone sets the tempo — drag the slider and watch.', targetPartId: 'bob' },
+  { id: 'b1', title: 'One clean swing', narration: 'Gravity pulls the bob back toward the bottom; the rod turns that pull into a curved path.', targetPartId: 'bob' },
+  { id: 'b2', title: 'Length is the clock', narration: 'Drag Length up — longer arm, lazier swing. The Period counter follows sqrt of what you dragged.', targetPartId: 'bob' },
+  { id: 'b3', title: 'The mass surprise', narration: 'Now drag Bob mass. The bob grows, but the tempo never blinks. Mass cancels.', targetPartId: 'bob' },
+  { id: 'b4', title: 'The equation', narration: 'T = 2π·sqrt(L/g). Everything you just felt, in five symbols.', targetPartId: 'bob' },
 ]);
-scene.quiz([{
-  id: 'q1', question: 'Double the rod length. The period...',
-  options: ['Doubles', 'Increases by sqrt(2)', 'Halves', 'Stays the same'],
-  correctIndex: 1, explanation: 'T scales with sqrt(L): double length, ~1.41x period.',
-}]);
-scene.camera({ position: [3, -0.5, 4], target: [0, -1, 0], fov: 40 });`;
+scene.quiz([
+  {
+    id: 'q1', question: 'You double the bob mass. The period will…',
+    options: ['Double', 'Increase slightly', 'Stay exactly the same', 'Halve'],
+    correctIndex: 2,
+    explanation: 'Mass appears in both the restoring force and the inertia, and cancels: T = 2π·sqrt(L/g) has no m in it. The "heavier swings slower" instinct is the classic misconception.',
+  },
+  {
+    id: 'q2', question: 'Take this pendulum to the Moon (g ≈ 1.6). Compared to Earth it swings…',
+    options: ['Faster', 'Slower, by a factor of about 2.5', 'At the same rate', 'Not at all'],
+    correctIndex: 1,
+    explanation: 'T grows as 1/sqrt(g): sqrt(9.81/1.6) ≈ 2.5, so each swing takes about 2.5× longer.',
+  },
+]);
+scene.camera({ position: [3.2, -0.4, 3.6], target: [0, -1.1, 0], fov: 42 });`;
 
 /**
  * Assemble the generation system prompt.
  *
  * Structure order matters as much as content: exemplar FIRST (primacy), reference table second
- * (where it can be found), contract third, negative examples fourth (recency — the last thing
- * before the model writes), self-check last of all.
+ * (where it can be found), contract third, negative examples late (recency), self-check last of
+ * all — the last thing read is the first thing done.
  */
 export function buildGenerationPrompt(options: {
   complexity: ComplexityPreference;
@@ -133,11 +186,26 @@ export function buildGenerationPrompt(options: {
         : 'HIGH tier device: up to ~1.8M triangles and ~1200 draw calls.';
 
   return `You write a complete JavaScript program that builds an interactive 3D educational model.
-The program runs ONCE against a scene API and must be correct on the first execution — there is no
-browser console, no retry at runtime. Study the complete working example below; copy its call
-shapes exactly.
+The program runs ONCE against a scene API and must be correct on the first execution — no browser
+console, no runtime retry. You work as three experts in sequence, and each pass leaves visible
+traces in the program:
 
-=== COMPLETE WORKING EXAMPLE (your program must have this structure) ===
+PASS 1 — DOMAIN SCIENTIST (what is true). Before any code, establish the facts:
+  - Name the real entities with their textbook names (not nicknames).
+  - List the real quantities with units and typical values (g = 9.81 m/s², mains voltage 230 V,
+    a resting heart 60–100 bpm — whatever this topic actually involves).
+  - State the governing relationships as formulas, and the direction of every causal arrow
+    (voltage drives current; the turbine does not "create energy from nothing").
+  - Name the one misconception a learner most likely holds about this topic — your quiz will
+    target it.
+PASS 2 — INSTRUCTIONAL DESIGNER (what teaches). Choose the 3–6 parameters that let the learner
+  INTERROGATE the concept: each one a real quantity from Pass 1, each one changing visibly
+  different behavior, at least one demonstrating a non-obvious truth (like mass not mattering).
+  Write all learner-facing text in plain language a curious teenager understands: one idea per
+  bullet, no jargon without a plain gloss.
+PASS 3 — 3D ENGINEER (what builds). Write the program against the API below.
+
+=== COMPLETE WORKING EXAMPLE (your program must reach this standard) ===
 ${EXEMPLAR}
 
 === API REFERENCE (every name your program may call) ===
@@ -149,7 +217,9 @@ Rules for geometry arguments (the example shows each correct form):
 - Round shapes take { radius, height?/halfHeight?, segments? }.
 - Springs: geom.helix({ radius, wireRadius, turns, pitch }) — pitch is metres per turn; or pass
   height instead and pitch is derived. A spring that cannot compress is a picture of a spring.
-- scene.mesh returns a part id string, NOT an object: never write bob.position.set(...) — use
+- Paths: geom.path([[x,y,z], [x,y,z], ...]) creates the handle; sweep/pipe/flow take that handle
+  (or a raw array of points).
+- scene.mesh returns a part id string, NOT an object: never bob.position.set(...) — use
   ctx.part('bob').setPosition(...) inside onFrame instead.
 - Every part needs a unique id. Every param needs a unique id.
 
@@ -161,10 +231,20 @@ NEVER (each of these broke a real generated model):
 - duplicate part or parameter ids
 - forgetting info text on selectable parts
 
-AUTHORING METHOD — inside a block comment at the top, write four lines before any code:
-// PLAN: the core idea in one sentence.
-// ENTITIES: every part the concept requires (source, mechanism, boundary, output).
-// CAUSALITY: what drives what, and which parameter exposes it.
+TEXTBOOK FIDELITY — the bar your model is audited against:
+- Correct entities: every part the textbook names exists, named as the textbook names it.
+- Correct proportions wherever reality is the lesson; deliberate exaggeration declared in
+  'simplifications' with the real value stated.
+- Correct causal directions: flow goes the way it really goes; drives turn what they really drive.
+- Real constants and formulas in principles/metrics — numbers a physics teacher would sign.
+- The quiz's tempting wrong answer is the real misconception from Pass 1, and the explanation
+  says why it is tempting AND why it is wrong.
+
+AUTHORING METHOD — inside a block comment at the top, fill in these five lines before any code:
+// PLAN: the core idea in one sentence — the thing a learner will remember.
+// FACTS: the real quantities, units, values and formulas from your Pass 1.
+// MISCONCEPTION: the wrong belief this model will cure, stated plainly.
+// ENTITIES: every part the concept requires, with its textbook name.
 // REPRESENTATION: the shape whose BEHAVIOR matches each entity's behavior.
 
 Then, in order: describe → colorRole → param → metric → materials → groups → parts → motion →
@@ -176,23 +256,27 @@ ${DOMAIN_GRAMMARS.map((row) => `  - ${row.domain}: ${row.entities}; moves by: ${
 HARD CONTRACT:
 1. scene.describe({...}) first, with concept, objectives, principles, honest simplifications.
 2. Real units: metres, kilograms, seconds. Declare any exaggeration in simplifications.
-3. Every parameter visibly changes behavior (bind it in onFrame — the example shows how).
+3. Every parameter visibly changes behavior, and no two parameters produce the same visible
+   change (the battery showed 2 thin parameters average — this model needs ${COMPLEXITY_GUIDANCE[options.complexity]}).
 4. Repeated structure is instanced (scene.instances + geom.pattern.*) or a component
    (scene.defineComponent + scene.place) — never copy-pasted parts.
 5. Semantic materials (mat.metal, mat.glass, mat.emissive, mat.organic) and declared color roles.
 6. The model must move by default. Metrics must agree with the motion (see the example's period).
-7. 3–6 story beats along the causal arc; quiz questions with real-misconception distractors.
-8. Set the opening camera: scene.camera({ position, target, fov }).
-9. Triangle budget for this run: ${budget}
-10. Ambition for this run: ${COMPLEXITY_GUIDANCE[options.complexity]}
+7. 3–6 story beats along the causal arc, each narration one plain-language idea.
+8. Quiz: 2+ questions; at least one targets the misconception from your PLAN.
+9. Set the opening camera: scene.camera({ position, target, fov }).
+10. Triangle budget for this run: ${budget}
 
-BEFORE YOU ANSWER — verify your draft against this checklist, then fix anything that fails:
-[ ] starts with scene.describe (name, description, concept, objectives all non-empty strings)
-[ ] every geometry call matches the reference table's argument names exactly
-[ ] every parameter is read somewhere in onFrame via ctx.params.<id>
-[ ] every part id is unique; every part has a name
-[ ] no imports, no host globals, no object methods on part ids
-[ ] story beats and quiz included
+BEFORE YOU ANSWER — grade your draft against this rubric and fix anything that fails:
+[ ] RUNNABLE: starts with scene.describe; every call matches the reference table's argument names;
+    no imports or host globals; ids unique.
+[ ] ACCURATE: entities, proportions, causal directions, constants and formulas are textbook-true;
+    exaggerations declared. Would a subject teacher sign it?
+[ ] UNDERSTANDABLE: every info summary and story beat is plain language, one idea per sentence;
+    a teenager could restate the concept after playing.
+[ ] ALIVE: the model moves by default; every parameter produces a distinct visible change; metrics
+    track the motion.
+[ ] COMPLETE: story, quiz with a real misconception distractor, camera set, info on every part.
 Output ONE fenced JavaScript block containing the complete, self-contained program.`;
 }
 
@@ -212,10 +296,8 @@ export function wrapTopic(topic: string): string {
 /**
  * The self-repair prompt: the model's own code plus the specific, enumerated errors.
  *
- * "Targeted revision beats re-rolling: a fresh attempt produces a different first draft, not a fixed
- * one" (`04`). The full code is echoed rather than diffed because the model has no other way to see
- * its own output, and the errors are numbered so a fix for one cannot silently drop another. The
- * exemplar rides along: repair imitates the same way generation does.
+ * "Targeted revision beats re-rolling" (`04`). The exemplar rides along: repair imitates the same
+ * way generation does.
  */
 export function buildRepairPrompt(code: string, errors: readonly string[]): string {
   return `Your program was rejected. Fix it and return the COMPLETE corrected program in one fenced
@@ -236,8 +318,8 @@ ${code}
 /**
  * The refinement prompt: audit deficiencies, phrased as instructions the generator can act on.
  *
- * The deficiencies already arrive as imperative instructions from the audit (`01`); this wrapper adds
- * the acceptance rule — genuinely better, or the first version stands.
+ * The deficiencies arrive as imperative instructions from the audit (`01`); this wrapper adds the
+ * acceptance rule — genuinely better, or the first version stands.
  */
 export function buildRefinementPrompt(code: string, deficiencies: readonly string[]): string {
   return `The platform audited your model and found it short of the teaching bar. Return the COMPLETE
@@ -245,7 +327,7 @@ improved program in one fenced block. Fix every deficiency without dropping what
 not remove parts, parameters or beats to dodge a finding — the audit re-runs on the revision and a
 revision that is not genuinely better is discarded.
 
-STRUCTURE TO MATCH (your program already follows it — keep following it):
+STRUCTURE AND STANDARD TO MATCH:
 ${EXEMPLAR}
 
 DEFICIENCIES:
@@ -262,8 +344,8 @@ export function buildChatPrompt(persona: string, contextSummary: string): string
   const personas: Record<string, string> = {
     teacher: 'Warm, wise, analogy-driven, encouraging. The classic explanation.',
     buddy: 'Casual peer, supportive, plain words. Intimidated learners breathe out.',
-    engineer: "Technical and precise: cite this model's actual parameter values, materials and forces.",
     eli5: 'Tiny words, toys/animals/food metaphors. For a complete newcomer.',
+    engineer: "Technical and precise: cite this model's actual parameter values, materials and forces.",
     socratic:
       "Never answer directly. Ask guiding questions that use this model's own parts as evidence, one step at a time.",
   };
@@ -271,9 +353,9 @@ export function buildChatPrompt(persona: string, contextSummary: string): string
 ${personas[persona] ?? personas.teacher}
 
 Answer about THIS model: reference its parts by name, suggest parameter changes it actually supports,
-correct misconceptions using what is on screen. Generic encyclopedia answers that ignore the model are
-a failure. Keep answers short enough to read beside a moving model — a few sentences, a concrete
-reference to something on screen, and where useful one thing to try.
+correct misconceptions using what is on screen. Keep answers short enough to read beside a moving
+model — a few sentences, a concrete reference to something on screen, and where useful one thing to
+try ("drag the length slider and watch the period counter").
 
 THE CURRENT MODEL (bounded summary, not the full spec):
 ${contextSummary}`;
@@ -284,8 +366,9 @@ export function buildQuizPrompt(contextSummary: string, count: number, difficult
   return `Write ${count} multiple-choice questions about the 3D model below, difficulty "${difficulty}".
 Rules that are enforced on your output:
 - 4 options, exactly one correct, an explanation for BOTH outcomes.
-- Distractors built from real misconceptions a learner who half-understands would hold — not obviously
-  wrong filler. The explanation says why the tempting wrong answer is wrong.
+- Distractors built from real misconceptions a learner who half-understands would hold — not
+  obviously wrong filler. The explanation says why the tempting wrong answer is tempting AND why
+  it is wrong.
 - Test what the model can SHOW: "what happens to X when you increase Y?" — answerable by touching it.
 - Never generic trivia the model gives no evidence for.
 

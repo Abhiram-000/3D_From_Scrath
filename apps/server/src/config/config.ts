@@ -238,11 +238,13 @@ export function resolveConfig(env: Record<string, string | undefined>): ServerCo
   }
 
   if (isProduction && origins.size === 0) {
-    problems.push({
+    // Single-container deployments serve the frontend from this same origin (static-pages.ts), so
+    // there is no cross-origin request to allow and no variable to set. The refusal only fires for
+    // split deployments — which signal themselves by configuring ALLOWED_ORIGINS/PUBLIC_ORIGIN.
+    warnings.push({
       variable: 'PUBLIC_ORIGIN',
       message:
-        'No CORS origins are allowed, so every browser request from the frontend will be refused.',
-      fix: 'Set PUBLIC_ORIGIN to this deployment’s URL, and ALLOWED_ORIGINS for any additional frontends.',
+        'No CORS origins configured. Fine when this server also serves the frontend (single container); if the frontend deploys separately, set PUBLIC_ORIGIN to its URL.',
     });
   }
 

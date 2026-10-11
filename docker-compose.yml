@@ -1,0 +1,55 @@
+# EDU-3D — the easy deploy.
+#
+#   docker compose up          → http://localhost:8787, everything works, no login, no setup.
+#   AI keys in .env            → generation works too.
+#   DATABASE_URL commented     → file store on a named volume (survives restarts and redeploys).
+#                                Uncomment the postgres block to go durable, zero other changes.
+#
+# The whole platform is one service: the container serves both the static frontend and the API
+# from port 8787, same-origin, so there is no CORS to configure and no second deploy to keep
+# in sync.
+
+services:
+  edu3d:
+    build: .
+    image: edu3d
+    restart: unless-stopped
+    ports:
+      - '8787:8787'
+    env_file:
+      # Create from deploy.env.example; only AI_API_KEY is ever required to unlock generation.
+      - path: ./deploy.env
+        required: false
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8787
+      # The file store persists to a named volume; this flag accepts that choice explicitly
+      # (config.ts would otherwise refuse in production). Swap in Postgres below to upgrade.
+      EDU3D_ALLOW_EPHEMERAL_STORE: 'true'
+      EDU3D_DATA_DIR: /data
+      # One proxy hop in front of most hosting platforms; keeps per-client rate limits honest.
+      TRUST_PROXY: 1
+    volumes:
+      - edu3d-data:/data
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional durable storage. Uncomment and set DATABASE_URL: postgres://edu3d:edu3d@postgres:5432/edu3d
+  # postgres:
+  #   image: postgres:16-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: edu3d
+  #     POSTGRES_PASSWORD: edu3d
+  #     POSTGRES_DB: edu3d
+  #   volumes:
+  #     - edu3d-pg:/var/lib/postgresql/data
+
+volumes:
+  edu3d-data: {}
+  # edu3d-pg: {}

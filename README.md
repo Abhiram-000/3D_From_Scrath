@@ -42,6 +42,28 @@ generation answers 503 while the viewer and gallery keep working.
 pnpm dev            # server + web, in parallel
 ```
 
+## Deploy (production)
+
+One container serves everything — the built frontend and the API on one port, same-origin — with
+**no required configuration**: no login, no database, no CORS setup. Add an AI key and generation
+unlocks; add nothing and the viewer, reference model and gallery still work.
+
+```sh
+cp deploy.env.example deploy.env   # optional: add AI_API_KEY to unlock generation
+docker compose up                  # → http://localhost:8787
+```
+
+What the compose file handles so you don't have to: production mode, `0.0.0.0` binding, proxy-aware
+rate limits, the gallery persisted to a named volume (survives redeploys), a health check wired to
+`/api/health`, and graceful drain on stop (in-flight generations finish; open streams are told).
+To upgrade storage to Postgres, uncomment the `postgres` service and set `DATABASE_URL` — nothing
+else changes. To deploy the frontend separately (CDN), set `PUBLIC_ORIGIN` to its URL.
+
+The image is multi-stage and reproducible: dependency layers are cached by manifest, the frontend
+build is pinned by lockfile, and the server runs its TypeScript directly (nothing to compile out of
+date). Any platform that runs a container works — Fly.io, Railway, Render, a VPS with `docker run
+-d -p 8787:8787 edu3d`.
+
 ## Verify
 
 ```sh

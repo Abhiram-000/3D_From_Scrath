@@ -70,6 +70,21 @@ describe('the secret scanner', () => {
     expect(findings).toEqual([]);
   });
 
+  it('still flags deploy.env when a .gitignore in the same tree ignores it', async () => {
+    // The property the whole design leans on: the walk reads the filesystem, never git's view,
+    // so the ignore rule that keeps `git add .` from staging the file cannot also keep the
+    // scanner from reading it. Until now nothing tested this at unit level — a regression that
+    // switched the walk to git-tracked files (or made it honour ignore rules) would have passed
+    // the whole suite while un-scanning the one file the rule exists for.
+    const findings = await scanFiles({
+      '.gitignore': 'deploy.env\n',
+      'deploy.env': '',
+    });
+    expect(findings).toEqual([
+      { file: 'deploy.env', line: 0, name: 'environment file committed', text: '' },
+    ]);
+  });
+
   it('suppresses an offending line only when the allow-marker sits on that line', async () => {
     // The marker is `secret-scan-ok` and its scope is the line: the identical credential one line
     // below stays a finding, so an exemption can never widen into a file-wide off switch. The

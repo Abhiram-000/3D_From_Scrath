@@ -17,6 +17,7 @@
 - Motion is **absolute** (authored base transform + `elapsed`), never accumulated, so reset and time-scrub are exact.
 - Frame budgets are contracts from `08`: ≥30 fps LOW / ≥50 MID / ≥58 HIGH; <2 s time-to-first-frame on MID; <1 frame input-to-response; landing page kilobytes, never megabytes.
 - Every new public function ships with a test in the same commit. No task ends with a skipped or commented-out test.
+- **A change that fixes an unexpected behaviour ships with a regression test that demonstrably fails against the old code.** The RED run is not ceremony: it is the proof the test would have caught the bug. A test that passes both before and after the fix protects nothing and is a finding at review.
 - `pnpm verify` (secret scan → config → format → lint → typecheck → unit+integration → build → e2e) is the single definition of done, per `09`.
 - Never commit a credential. `deploy.env` is gitignored from Phase 0 onward.
 - No hex literal in a component file; every colour, radius, shadow and easing is a CSS custom property in one theme sheet (`07`).

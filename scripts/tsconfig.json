@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2023"],
+    "types": ["node"],
+    "noEmit": true,
+    // check-secrets.test.ts imports the scanner it tests as `./check-secrets.mjs`; without allowJs
+    // that import is an implicit-any error. checkJs stays off — the .mjs itself is not under check.
+    "allowJs": true
+  },
+  "include": ["*.ts"]
+}

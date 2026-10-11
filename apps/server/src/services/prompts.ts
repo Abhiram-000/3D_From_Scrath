@@ -39,24 +39,77 @@ export const PROMPT_VERSION = '2026-10-v3-teaching';
 
 /** The domain grammar table from `00`, compressed to the rows the model can act on. */
 const DOMAIN_GRAMMARS: ReadonlyArray<{ domain: string; entities: string; motion: string }> = [
-  { domain: 'mechanical / machines', entities: 'gears, linkages, bearings, shafts, engines', motion: 'rotation, transmission, timing — correct ratios' },
-  { domain: 'electronics / circuits', entities: 'sources, components, carriers, traces', motion: 'directed current flow, signal, state' },
-  { domain: 'physics / fields', entities: 'sources, charges, vectors, potentials', motion: 'propagation, oscillation, interaction' },
-  { domain: 'chemistry', entities: 'atoms, bonds, molecules, reactions', motion: 'vibration, bonding, transformation' },
-  { domain: 'biology / anatomy', entities: 'organelles, organs, membranes, systems', motion: 'transport, growth, cycles' },
-  { domain: 'earth science / geology', entities: 'strata, cycles, plates', motion: 'flow, pressure, time-lapse' },
-  { domain: 'astronomy / space', entities: 'bodies, orbits, radiation', motion: 'revolution, rotation, trajectories' },
-  { domain: 'mathematics', entities: 'functions, surfaces, transformations', motion: 'the variable sweeping its range — axes and a clean graph' },
-  { domain: 'architecture / civil', entities: 'beams, trusses, loads, spans', motion: 'load, deformation, construction sequence' },
-  { domain: 'computing / algorithms', entities: 'data, states, operations', motion: 'the algorithm executing, step by step' },
-  { domain: 'economics / systems', entities: 'actors, flows, stocks, feedback', motion: 'exchange, growth, oscillation — spatial metaphors' },
-  { domain: 'history / geography', entities: 'places, routes, events', motion: 'movement, expansion, before/after — maps and timeline paths' },
-  { domain: 'everyday curiosity', entities: 'the real object and its parts', motion: 'the thing doing its job, exploded' },
+  {
+    domain: 'mechanical / machines',
+    entities: 'gears, linkages, bearings, shafts, engines',
+    motion: 'rotation, transmission, timing — correct ratios',
+  },
+  {
+    domain: 'electronics / circuits',
+    entities: 'sources, components, carriers, traces',
+    motion: 'directed current flow, signal, state',
+  },
+  {
+    domain: 'physics / fields',
+    entities: 'sources, charges, vectors, potentials',
+    motion: 'propagation, oscillation, interaction',
+  },
+  {
+    domain: 'chemistry',
+    entities: 'atoms, bonds, molecules, reactions',
+    motion: 'vibration, bonding, transformation',
+  },
+  {
+    domain: 'biology / anatomy',
+    entities: 'organelles, organs, membranes, systems',
+    motion: 'transport, growth, cycles',
+  },
+  {
+    domain: 'earth science / geology',
+    entities: 'strata, cycles, plates',
+    motion: 'flow, pressure, time-lapse',
+  },
+  {
+    domain: 'astronomy / space',
+    entities: 'bodies, orbits, radiation',
+    motion: 'revolution, rotation, trajectories',
+  },
+  {
+    domain: 'mathematics',
+    entities: 'functions, surfaces, transformations',
+    motion: 'the variable sweeping its range — axes and a clean graph',
+  },
+  {
+    domain: 'architecture / civil',
+    entities: 'beams, trusses, loads, spans',
+    motion: 'load, deformation, construction sequence',
+  },
+  {
+    domain: 'computing / algorithms',
+    entities: 'data, states, operations',
+    motion: 'the algorithm executing, step by step',
+  },
+  {
+    domain: 'economics / systems',
+    entities: 'actors, flows, stocks, feedback',
+    motion: 'exchange, growth, oscillation — spatial metaphors',
+  },
+  {
+    domain: 'history / geography',
+    entities: 'places, routes, events',
+    motion: 'movement, expansion, before/after — maps and timeline paths',
+  },
+  {
+    domain: 'everyday curiosity',
+    entities: 'the real object and its parts',
+    motion: 'the thing doing its job, exploded',
+  },
 ];
 
 const COMPLEXITY_GUIDANCE: Readonly<Record<ComplexityPreference, string>> = {
   simple: 'Around 8–15 meaningful parts. Two parameters with distinct effects.',
-  balanced: 'Around 20–50 meaningful parts. 3–4 parameters, each driving clearly different visible behavior.',
+  balanced:
+    'Around 20–50 meaningful parts. 3–4 parameters, each driving clearly different visible behavior.',
   detailed:
     'Around 60–150 meaningful parts built from parameterized component definitions. 4–6 parameters with distinct physics.',
   maximum:
@@ -345,7 +398,8 @@ export function buildChatPrompt(persona: string, contextSummary: string): string
     teacher: 'Warm, wise, analogy-driven, encouraging. The classic explanation.',
     buddy: 'Casual peer, supportive, plain words. Intimidated learners breathe out.',
     eli5: 'Tiny words, toys/animals/food metaphors. For a complete newcomer.',
-    engineer: "Technical and precise: cite this model's actual parameter values, materials and forces.",
+    engineer:
+      "Technical and precise: cite this model's actual parameter values, materials and forces.",
     socratic:
       "Never answer directly. Ask guiding questions that use this model's own parts as evidence, one step at a time.",
   };

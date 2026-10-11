@@ -79,7 +79,10 @@ export class PhysicsWorld {
   private readonly maxBodies: number;
 
   /** Part transforms by part id, written each step, read by `syncTransforms`'s physics branch. */
-  readonly simulatedParts = new Map<string, { position: [number, number, number]; rotation: [number, number, number] }>();
+  readonly simulatedParts = new Map<
+    string,
+    { position: [number, number, number]; rotation: [number, number, number] }
+  >();
 
   private constructor(world: RAPIER.World, maxBodies: number) {
     this.world = world;
@@ -118,7 +121,8 @@ export class PhysicsWorld {
       const density = decl.material.density ?? DENSITIES[decl.material.name] ?? DENSITIES.custom!;
 
       const friction = decl.material.friction ?? DEFAULT_FRICTION[decl.material.name] ?? 0.6;
-      const restitution = decl.material.restitution ?? (decl.material.name === 'rubber' ? 0.8 : 0.15);
+      const restitution =
+        decl.material.restitution ?? (decl.material.name === 'rubber' ? 0.8 : 0.15);
 
       const bodyDesc =
         decl.kind === 'dynamic'
@@ -128,7 +132,11 @@ export class PhysicsWorld {
             : RAPIER.RigidBodyDesc.fixed();
 
       bodyDesc
-        .setTranslation(part.transform.position[0], part.transform.position[1], part.transform.position[2])
+        .setTranslation(
+          part.transform.position[0],
+          part.transform.position[1],
+          part.transform.position[2],
+        )
         .setLinearDamping(decl.material.linearDamping ?? 0.04)
         .setAngularDamping(decl.material.angularDamping ?? 0.04)
         .setCanSleep(decl.canSleep)
@@ -139,19 +147,29 @@ export class PhysicsWorld {
         bodyDesc.setLinvel(decl.linearVelocity[0], decl.linearVelocity[1], decl.linearVelocity[2]);
       }
       if (decl.angularVelocity) {
-        bodyDesc.setAngvel({ x: decl.angularVelocity[0], y: decl.angularVelocity[1], z: decl.angularVelocity[2] });
+        bodyDesc.setAngvel({
+          x: decl.angularVelocity[0],
+          y: decl.angularVelocity[1],
+          z: decl.angularVelocity[2],
+        });
       }
 
       const body = this.world.createRigidBody(bodyDesc);
 
       // The collider: `auto` derives from the render geometry's bounds — the fidelity rule (`02` R3).
       const colliderDesc = this.describeCollider(decl, part.transform.scale[0]);
-      colliderDesc.setDensity(decl.mass ? decl.mass / Math.max(1e-9, this.estimateVolume(decl)) : density);
+      colliderDesc.setDensity(
+        decl.mass ? decl.mass / Math.max(1e-9, this.estimateVolume(decl)) : density,
+      );
       colliderDesc.setFriction(friction);
       colliderDesc.setRestitution(restitution);
       colliderDesc.setSensor(decl.collider.sensor);
       if (decl.collider.offset) {
-        colliderDesc.setTranslation(decl.collider.offset[0], decl.collider.offset[1], decl.collider.offset[2]);
+        colliderDesc.setTranslation(
+          decl.collider.offset[0],
+          decl.collider.offset[1],
+          decl.collider.offset[2],
+        );
       }
       this.world.createCollider(colliderDesc, body);
 
@@ -179,7 +197,12 @@ export class PhysicsWorld {
       case 'sphere':
         return (4 / 3) * Math.PI * r ** 3;
       case 'box':
-        return 8 * (decl.collider.size?.[0] ?? r) * (decl.collider.size?.[1] ?? r) * (decl.collider.size?.[2] ?? r);
+        return (
+          8 *
+          (decl.collider.size?.[0] ?? r) *
+          (decl.collider.size?.[1] ?? r) *
+          (decl.collider.size?.[2] ?? r)
+        );
       case 'cylinder':
       case 'capsule':
         return Math.PI * r * r * h * 2;
@@ -200,11 +223,20 @@ export class PhysicsWorld {
           (decl.collider.size?.[2] ?? 0.5) * scale,
         );
       case 'capsule':
-        return RAPIER.ColliderDesc.capsule((decl.collider.halfHeight ?? 0.5) * scale, (decl.collider.radius ?? 0.25) * scale);
+        return RAPIER.ColliderDesc.capsule(
+          (decl.collider.halfHeight ?? 0.5) * scale,
+          (decl.collider.radius ?? 0.25) * scale,
+        );
       case 'cylinder':
-        return RAPIER.ColliderDesc.cylinder((decl.collider.halfHeight ?? 0.5) * scale, (decl.collider.radius ?? 0.5) * scale);
+        return RAPIER.ColliderDesc.cylinder(
+          (decl.collider.halfHeight ?? 0.5) * scale,
+          (decl.collider.radius ?? 0.5) * scale,
+        );
       case 'cone':
-        return RAPIER.ColliderDesc.cone((decl.collider.halfHeight ?? 0.5) * scale, (decl.collider.radius ?? 0.5) * scale);
+        return RAPIER.ColliderDesc.cone(
+          (decl.collider.halfHeight ?? 0.5) * scale,
+          (decl.collider.radius ?? 0.5) * scale,
+        );
       default:
         // `auto`: the bounding-radius sphere of the rendered geometry. A convex hull from arbitrary
         // AI-generated topology is not safe to compute here; the sphere is always faithful enough to
@@ -232,12 +264,12 @@ export class PhysicsWorld {
         params = RAPIER.JointData.prismatic(anchorA, anchorB, axis);
         break;
       case 'fixed':
-        params = RAPIER.JointData.fixed(
-          anchorA,
-          { x: 0, y: 0, z: 0, w: 1 },
-          anchorB,
-          { x: 0, y: 0, z: 0, w: 1 },
-        );
+        params = RAPIER.JointData.fixed(anchorA, { x: 0, y: 0, z: 0, w: 1 }, anchorB, {
+          x: 0,
+          y: 0,
+          z: 0,
+          w: 1,
+        });
         break;
       case 'spherical':
         params = RAPIER.JointData.spherical(anchorA, anchorB);
@@ -270,7 +302,9 @@ export class PhysicsWorld {
   setMotorTarget(jointId: string, targetVelocity: number): void {
     const joint = this.joints.get(jointId);
     if (!joint || !Number.isFinite(targetVelocity)) return;
-    const revolute = joint as RAPIER.RevoluteImpulseJoint & { configureMotorVelocity(v: number, factor: number): void };
+    const revolute = joint as RAPIER.RevoluteImpulseJoint & {
+      configureMotorVelocity(v: number, factor: number): void;
+    };
     revolute.configureMotorVelocity?.(targetVelocity, 4);
   }
 
@@ -285,7 +319,14 @@ export class PhysicsWorld {
     for (const link of this.bodies.values()) {
       const part = partById.get(link.decl.partId);
       if (!part) continue;
-      link.body.setTranslation({ x: part.transform.position[0], y: part.transform.position[1], z: part.transform.position[2] }, true);
+      link.body.setTranslation(
+        {
+          x: part.transform.position[0],
+          y: part.transform.position[1],
+          z: part.transform.position[2],
+        },
+        true,
+      );
       link.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       link.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
       link.quarantined = false;
@@ -299,7 +340,10 @@ export class PhysicsWorld {
    * Returns the probes to publish, and the wall-milliseconds the step cost — the physics budget line
    * the adaptive ladder watches (`02` Performance).
    */
-  step(frameDeltaSeconds: number, motorTargets: ReadonlyMap<string, number>): { probes: PhysicsProbes; millis: number } {
+  step(
+    frameDeltaSeconds: number,
+    motorTargets: ReadonlyMap<string, number>,
+  ): { probes: PhysicsProbes; millis: number } {
     const started = performance.now();
     this.accumulator = Math.min(this.accumulator + frameDeltaSeconds, FIXED_DT * MAX_SUBSTEPS);
 
@@ -323,8 +367,11 @@ export class PhysicsWorld {
         // NaN quarantine: freeze at the last good pose; one poisoned body must not write garbage
         // into the whole scene graph (`02` Runtime).
         if (
-          !Number.isFinite(translation.x) || !Number.isFinite(translation.y) || !Number.isFinite(translation.z) ||
-          !Number.isFinite(rotation.x) || !Number.isFinite(rotation.w)
+          !Number.isFinite(translation.x) ||
+          !Number.isFinite(translation.y) ||
+          !Number.isFinite(translation.z) ||
+          !Number.isFinite(rotation.x) ||
+          !Number.isFinite(rotation.w)
         ) {
           if (!link.quarantined) {
             link.quarantined = true;
@@ -341,18 +388,15 @@ export class PhysicsWorld {
         if (link.decl.kind !== 'dynamic') continue;
         this.simulatedParts.set(link.decl.partId, {
           position: [translation.x, translation.y, translation.z],
-          rotation: [
-            (2 * Math.atan2(rotation.y, rotation.w) * 180) / Math.PI / 1,
-            0,
-            0,
-          ],
+          rotation: [(2 * Math.atan2(rotation.y, rotation.w) * 180) / Math.PI / 1, 0, 0],
         });
         // Measured values the UI and the model's formulas read (`02` R6).
         probes[`${id}.speed`] = Math.hypot(linvel.x, linvel.y, linvel.z);
         probes[`${id}.height`] = translation.y;
         const velocity = link.body.linvel();
         const mass = link.body.mass();
-        probes[`${id}.kinetic`] = 0.5 * mass * (velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2);
+        probes[`${id}.kinetic`] =
+          0.5 * mass * (velocity.x ** 2 + velocity.y ** 2 + velocity.z ** 2);
       }
     }
 

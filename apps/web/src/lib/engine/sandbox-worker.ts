@@ -423,7 +423,12 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     frameDisabled: false,
     physicsMillis: 0,
 
-    ladder: { applied: new Set(), pressureFrames: 0, headroomFrames: 0, basePixelRatio: request.pixelRatio },
+    ladder: {
+      applied: new Set(),
+      pressureFrames: 0,
+      headroomFrames: 0,
+      basePixelRatio: request.pixelRatio,
+    },
 
     orbit: { theta: Math.PI * 0.25, phi: Math.PI * 0.4, distance: 5, target: new THREE.Vector3() },
     autoRotate: true,
@@ -578,7 +583,11 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
         else if (world) world.dispose();
         if (!world && target.builder === builder) {
           target.simFailed = true;
-          post({ type: 'notice', message: 'Physics simulation is unavailable on this device; the model animates instead.' });
+          post({
+            type: 'notice',
+            message:
+              'Physics simulation is unavailable on this device; the model animates instead.',
+          });
         }
       })
       .catch(() => {
@@ -884,7 +893,8 @@ function ladderStep(target: WorkerState, direction: 'down' | 'up'): void {
       }
       break;
     case 'shadows':
-      target.renderer.shadowMap.enabled = direction === 'up' && target.verdict!.decisions.shadowLights.size > 0;
+      target.renderer.shadowMap.enabled =
+        direction === 'up' && target.verdict!.decisions.shadowLights.size > 0;
       break;
     case 'flatShading':
       // A material-level change: flip the flag and force the realizer's materials to rebuild their
@@ -946,7 +956,9 @@ function monitorLadder(target: WorkerState, frameTimeMs: number): void {
   }
 }
 
-/** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */function publishStats(target: WorkerState): void {
+/** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */ function publishStats(
+  target: WorkerState,
+): void {
   const average =
     target.frameTimes.length > 0
       ? target.frameTimes.reduce((sum, value) => sum + value, 0) / target.frameTimes.length

@@ -77,7 +77,6 @@
   let codeViewTab = $state<'raw' | 'spec'>('raw');
   let quizQuestions = $state<QuizQuestion[]>([]);
   let quizSource = $state<'authored' | 'generated'>('authored');
-  
 
   let ambient: Ambient | null = null;
 
@@ -109,7 +108,7 @@
       modelLoading = false;
       manifest = loadedManifest;
       verdict = loadedVerdict;
-      
+
       loadError = null;
       topicName = loadedManifest.name;
       const defaults: Record<string, number | boolean | string> = {};
@@ -120,7 +119,7 @@
     },
     onLoadFailed: (message, timedOut) => {
       modelLoading = false;
-      
+
       loadError = timedOut ? `${message} (it ran too long and was stopped)` : message;
     },
     onStats: (nextStats) => {
@@ -140,7 +139,6 @@
     },
     onNotice: (message) => toast(message),
     onKilled: (reason) => {
-      
       manifest = null;
       stats = null;
       loadError = reason;
@@ -179,16 +177,17 @@
     observer.observe(canvasHolder);
 
     // `03` R2's priority order: shared link → session spec → on-disk fallback.
-    
+
     const sharedId = new URLSearchParams(window.location.search).get('model');
     const generated = takeBundle();
     if (sharedId) {
       void loadFromGallery(sharedId);
     } else if (generated) {
       host.load(generated.code, 7);
-      topicName = typeof (generated.manifest as { name?: string })?.name === 'string'
-        ? (generated.manifest as { name: string }).name
-        : 'Generated model';
+      topicName =
+        typeof (generated.manifest as { name?: string })?.name === 'string'
+          ? (generated.manifest as { name: string }).name
+          : 'Generated model';
     } else {
       host.load(REFERENCE_MODEL_SOURCE, 7);
     }
@@ -209,27 +208,66 @@
         case 'v':
           host?.viewPreset('iso');
           break;
-        case '1': host?.viewPreset('front'); break;
-        case '2': host?.viewPreset('back'); break;
-        case '3': host?.viewPreset('left'); break;
-        case '4': host?.viewPreset('right'); break;
-        case '5': host?.viewPreset('top'); break;
-        case '6': host?.viewPreset('iso'); break;
-        case 'x': setViewMode(viewMode === 'xray' ? 'normal' : 'xray'); break;
-        case 'w': setViewMode(viewMode === 'wireframe' ? 'normal' : 'wireframe'); break;
-        case 'e': setViewMode(viewMode === 'explode' ? 'normal' : 'explode'); break;
-        case 'f': toggleFullscreen(); break;
-        case 'g': codeViewModalOpen = true; break;
-        case 't': toggleTheme(); break;
-        case '?': shortcutsModalOpen = !shortcutsModalOpen; break;
+        case '1':
+          host?.viewPreset('front');
+          break;
+        case '2':
+          host?.viewPreset('back');
+          break;
+        case '3':
+          host?.viewPreset('left');
+          break;
+        case '4':
+          host?.viewPreset('right');
+          break;
+        case '5':
+          host?.viewPreset('top');
+          break;
+        case '6':
+          host?.viewPreset('iso');
+          break;
+        case 'x':
+          setViewMode(viewMode === 'xray' ? 'normal' : 'xray');
+          break;
+        case 'w':
+          setViewMode(viewMode === 'wireframe' ? 'normal' : 'wireframe');
+          break;
+        case 'e':
+          setViewMode(viewMode === 'explode' ? 'normal' : 'explode');
+          break;
+        case 'f':
+          toggleFullscreen();
+          break;
+        case 'g':
+          codeViewModalOpen = true;
+          break;
+        case 't':
+          toggleTheme();
+          break;
+        case '?':
+          shortcutsModalOpen = !shortcutsModalOpen;
+          break;
         case 'z':
-          if (event.ctrlKey || event.metaKey) { event.preventDefault(); undo(); }
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            undo();
+          }
           break;
         case 'y':
-          if (event.ctrlKey || event.metaKey) { event.preventDefault(); redo(); }
+          if (event.ctrlKey || event.metaKey) {
+            event.preventDefault();
+            redo();
+          }
           break;
         case 'escape':
-          if (quizModalOpen || shortcutsModalOpen || shareModalOpen || codeViewModalOpen || galleryOpen || generateOpen) {
+          if (
+            quizModalOpen ||
+            shortcutsModalOpen ||
+            shareModalOpen ||
+            codeViewModalOpen ||
+            galleryOpen ||
+            generateOpen
+          ) {
             quizModalOpen = shortcutsModalOpen = shareModalOpen = codeViewModalOpen = false;
             galleryOpen = generateOpen = false;
           } else if (activeMode !== 'none') {
@@ -258,7 +296,9 @@
   });
 
   async function loadFromGallery(id: string) {
-    const result = await apiFetch<{ bundle: { code?: string } }>(`/gallery/${encodeURIComponent(id)}`);
+    const result = await apiFetch<{ bundle: { code?: string } }>(
+      `/gallery/${encodeURIComponent(id)}`,
+    );
     if (result.ok && result.data.bundle?.code) {
       host?.load(result.data.bundle.code, 7);
       return;
@@ -284,7 +324,10 @@
 
   function toggleFullscreen() {
     if (document.fullscreenElement) void document.exitFullscreen();
-    else void document.documentElement.requestFullscreen().catch(() => toast('Fullscreen is not available here.'));
+    else
+      void document.documentElement
+        .requestFullscreen()
+        .catch(() => toast('Fullscreen is not available here.'));
   }
 
   function onParameterInput(id: string, value: number | boolean | string) {
@@ -362,7 +405,11 @@
     const result = await apiFetch<{ questions: QuizQuestion[]; dropped: number }>('/quiz', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ context: toContext(manifest, selectedPart), count: 5, difficulty: 'mixed' }),
+      body: JSON.stringify({
+        context: toContext(manifest, selectedPart),
+        count: 5,
+        difficulty: 'mixed',
+      }),
     });
     if (result.ok && result.data.questions.length > 0) {
       quizQuestions = result.data.questions;
@@ -413,7 +460,17 @@
       : null,
   );
 
-  const overviewHtmlSafe = $derived(manifest ? { name: manifest.name, description: manifest.description, concept: manifest.pedagogy.concept, objectives: manifest.pedagogy.objectives, simplifications: manifest.pedagogy.simplifications } : null);
+  const overviewHtmlSafe = $derived(
+    manifest
+      ? {
+          name: manifest.name,
+          description: manifest.description,
+          concept: manifest.pedagogy.concept,
+          objectives: manifest.pedagogy.objectives,
+          simplifications: manifest.pedagogy.simplifications,
+        }
+      : null,
+  );
 
   const formatMetric = (id: string): string => {
     const declaration = manifest?.metrics.find((metric) => metric.id === id);
@@ -438,13 +495,60 @@
     { id: 'iso', label: 'Isometric' },
   ] as const;
 
-  const SHORTCUT_CATEGORIES: ReadonlyArray<{ title: string; items: ReadonlyArray<[string, string]> }> = [
-    { title: 'Playback', items: [['Space', 'Play / Pause'], ['R', 'Reset'], ['V', 'Reset View']] },
-    { title: 'Views', items: [['1', 'Front View'], ['2', 'Back View'], ['3', 'Left View'], ['4', 'Right View'], ['5', 'Top View'], ['6', 'Isometric View']] },
-    { title: 'Display Modes', items: [['F', 'Fullscreen'], ['X', 'X-ray Mode'], ['W', 'Wireframe Mode'], ['E', 'Explode View']] },
-    { title: 'Modes', items: [['G', 'AI Output'], ['S', 'Story Mode']] },
-    { title: 'Actions', items: [['Ctrl+Z', 'Undo'], ['Ctrl+Y', 'Redo']] },
-    { title: 'General', items: [['T', 'Toggle Theme'], ['?', 'Show Shortcuts'], ['Esc', 'Close Modal']] },
+  const SHORTCUT_CATEGORIES: ReadonlyArray<{
+    title: string;
+    items: ReadonlyArray<[string, string]>;
+  }> = [
+    {
+      title: 'Playback',
+      items: [
+        ['Space', 'Play / Pause'],
+        ['R', 'Reset'],
+        ['V', 'Reset View'],
+      ],
+    },
+    {
+      title: 'Views',
+      items: [
+        ['1', 'Front View'],
+        ['2', 'Back View'],
+        ['3', 'Left View'],
+        ['4', 'Right View'],
+        ['5', 'Top View'],
+        ['6', 'Isometric View'],
+      ],
+    },
+    {
+      title: 'Display Modes',
+      items: [
+        ['F', 'Fullscreen'],
+        ['X', 'X-ray Mode'],
+        ['W', 'Wireframe Mode'],
+        ['E', 'Explode View'],
+      ],
+    },
+    {
+      title: 'Modes',
+      items: [
+        ['G', 'AI Output'],
+        ['S', 'Story Mode'],
+      ],
+    },
+    {
+      title: 'Actions',
+      items: [
+        ['Ctrl+Z', 'Undo'],
+        ['Ctrl+Y', 'Redo'],
+      ],
+    },
+    {
+      title: 'General',
+      items: [
+        ['T', 'Toggle Theme'],
+        ['?', 'Show Shortcuts'],
+        ['Esc', 'Close Modal'],
+      ],
+    },
   ];
 
   // ── Pointer handlers (V1: primary orbits, middle/shift pans) ──────────────
@@ -494,9 +598,24 @@
     <div class="toolbar-brand">
       <div class="brand-icon">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-          <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
-          <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
-          <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+          <path
+            d="M12 2L2 7L12 12L22 7L12 2Z"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M2 17L12 22L22 17"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
+          <path
+            d="M2 12L12 17L22 12"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linejoin="round"
+          />
         </svg>
       </div>
       <span class="brand-text">EDU-3D</span>
@@ -507,25 +626,65 @@
     <nav class="toolbar-controls">
       <!-- Playback -->
       <div class="control-group">
-        <button class="toolbar-btn toggle-btn" id="btnPlayPause" title="Play/Pause (Space)" onclick={togglePaused}>
+        <button
+          class="toolbar-btn toggle-btn"
+          id="btnPlayPause"
+          title="Play/Pause (Space)"
+          onclick={togglePaused}
+        >
           <div class:icon-play={!paused} class:hidden-icon={paused}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2L13 8L3 14V2Z" /></svg>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+              ><path d="M3 2L13 8L3 14V2Z" /></svg
+            >
           </div>
           <div class:icon-pause={paused} class:hidden-icon={!paused}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="2" width="3" height="12" /><rect x="9" y="2" width="3" height="12" /></svg>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+              ><rect x="4" y="2" width="3" height="12" /><rect
+                x="9"
+                y="2"
+                width="3"
+                height="12"
+              /></svg
+            >
           </div>
           <span>{paused ? 'Play' : 'Pause'}</span>
         </button>
         <button class="toolbar-btn" title="Reset (R)" onclick={() => host?.resetTime()}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2C4.7 2 2 4.7 2 8s2.7 6 6 6 6-2.7 6-6h-2c0 2.2-1.8 4-4 4s-4-1.8-4-4 1.8-4 4-4V2z" /><path d="M8 2L11 5L8 8V2Z" /></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path
+              d="M8 2C4.7 2 2 4.7 2 8s2.7 6 6 6 6-2.7 6-6h-2c0 2.2-1.8 4-4 4s-4-1.8-4-4 1.8-4 4-4V2z"
+            /><path d="M8 2L11 5L8 8V2Z" /></svg
+          >
           <span>Reset</span>
         </button>
         <button class="toolbar-btn" title="Reset View (V)" onclick={() => host?.viewPreset('iso')}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.5" /><circle cx="8" cy="8" r="3" /></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><rect
+              x="2"
+              y="2"
+              width="12"
+              height="12"
+              rx="1"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            /><circle cx="8" cy="8" r="3" /></svg
+          >
           <span>Reset View</span>
         </button>
         <button class="toolbar-btn" title="Take Screenshot" onclick={() => host?.requestSnapshot()}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="4" width="12" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.5" /><circle cx="8" cy="9" r="2" /><rect x="6" y="2" width="4" height="2" rx="0.5" /></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><rect
+              x="2"
+              y="4"
+              width="12"
+              height="9"
+              rx="1"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            /><circle cx="8" cy="9" r="2" /><rect x="6" y="2" width="4" height="2" rx="0.5" /></svg
+          >
           <span>Screenshot</span>
         </button>
       </div>
@@ -533,14 +692,32 @@
       <!-- View Presets dropdown -->
       <div class="control-group">
         <div class="dropdown-wrapper">
-          <button class="toolbar-btn dropdown-trigger" title="View Presets" onclick={() => (viewPresetsOpen = !viewPresetsOpen)}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3L12 8L8 13L4 8L8 3Z" /></svg>
+          <button
+            class="toolbar-btn dropdown-trigger"
+            title="View Presets"
+            onclick={() => (viewPresetsOpen = !viewPresetsOpen)}
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+              ><path d="M8 3L12 8L8 13L4 8L8 3Z" /></svg
+            >
             <span>View</span>
-            <svg class="dropdown-arrow" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M6 8L2 4h8L6 8Z" /></svg>
+            <svg
+              class="dropdown-arrow"
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              fill="currentColor"><path d="M6 8L2 4h8L6 8Z" /></svg
+            >
           </button>
           <div class="dropdown-menu glass-panel" class:active={viewPresetsOpen}>
             {#each VIEW_PRESETS as preset (preset.id)}
-              <button class="dropdown-item" onclick={() => { host?.viewPreset(preset.id); viewPresetsOpen = false; }}>
+              <button
+                class="dropdown-item"
+                onclick={() => {
+                  host?.viewPreset(preset.id);
+                  viewPresetsOpen = false;
+                }}
+              >
                 {preset.label}
               </button>
             {/each}
@@ -550,28 +727,96 @@
 
       <!-- Content -->
       <div class="control-group">
-        <button class="toolbar-btn primary-action" title="Generate a model with AI (G)" onclick={() => (generateOpen = true)}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1l1.6 3.9L13.5 6.5 9.6 8.1 8 12 6.4 8.1 2.5 6.5 6.4 4.9 8 1z" /><circle cx="12.5" cy="12.5" r="1.5" /></svg>
+        <button
+          class="toolbar-btn primary-action"
+          title="Generate a model with AI (G)"
+          onclick={() => (generateOpen = true)}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path d="M8 1l1.6 3.9L13.5 6.5 9.6 8.1 8 12 6.4 8.1 2.5 6.5 6.4 4.9 8 1z" /><circle
+              cx="12.5"
+              cy="12.5"
+              r="1.5"
+            /></svg
+          >
           <span>Generate</span>
         </button>
-        <button class="toolbar-btn" title="Browse the gallery (Ctrl+G)" onclick={() => (galleryOpen = true)}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="5" height="5" /><rect x="9" y="3" width="5" height="5" /><rect x="2" y="10" width="5" height="3" /><rect x="9" y="10" width="5" height="3" /></svg>
+        <button
+          class="toolbar-btn"
+          title="Browse the gallery (Ctrl+G)"
+          onclick={() => (galleryOpen = true)}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            ><rect x="2" y="3" width="5" height="5" /><rect x="9" y="3" width="5" height="5" /><rect
+              x="2"
+              y="10"
+              width="5"
+              height="3"
+            /><rect x="9" y="10" width="5" height="3" /></svg
+          >
           <span>Gallery</span>
         </button>
         <button class="toolbar-btn" title="Publish this model (Ctrl+P)" onclick={shareModel}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2l4 4h-2.5v5h-3V6H4l4-4z" /><rect x="3" y="12" width="10" height="2" rx="1" /></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path d="M8 2l4 4h-2.5v5h-3V6H4l4-4z" /><rect
+              x="3"
+              y="12"
+              width="10"
+              height="2"
+              rx="1"
+            /></svg
+          >
           <span>Publish</span>
         </button>
       </div>
 
       <!-- Modes -->
       <div class="control-group">
-        <button class="toolbar-btn mode-btn" class:active={activeMode === 'story'} title="Story Mode (S)" onclick={enterStory}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z" fill="none" stroke="currentColor" stroke-width="1.5" /><path d="M5 6h6M5 9h4" /></svg>
+        <button
+          class="toolbar-btn mode-btn"
+          class:active={activeMode === 'story'}
+          title="Story Mode (S)"
+          onclick={enterStory}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path
+              d="M3 2h10a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            /><path d="M5 6h6M5 9h4" /></svg
+          >
           <span>Story</span>
         </button>
-        <button class="toolbar-btn mode-btn" class:active={activeMode === 'quiz'} title="Quiz Mode" onclick={() => void enterQuiz()}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" /><text x="8" y="11" text-anchor="middle" font-size="8" font-weight="bold" fill="currentColor">?</text></svg>
+        <button
+          class="toolbar-btn mode-btn"
+          class:active={activeMode === 'quiz'}
+          title="Quiz Mode"
+          onclick={() => void enterQuiz()}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><circle
+              cx="8"
+              cy="8"
+              r="6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            /><text
+              x="8"
+              y="11"
+              text-anchor="middle"
+              font-size="8"
+              font-weight="bold"
+              fill="currentColor">?</text
+            ></svg
+          >
           <span>Quiz</span>
         </button>
       </div>
@@ -579,43 +824,170 @@
       <!-- Display modes -->
       <div class="control-group">
         <button class="toolbar-btn toggle-btn" title="Fullscreen (F)" onclick={toggleFullscreen}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h4v2H4v2H2V2zM10 2h4v4h-2V4h-2V2zM2 10h2v2h2v2H2v-4zM12 12h-2v2h4v-4h-2v2z" /></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path
+              d="M2 2h4v2H4v2H2V2zM10 2h4v4h-2V4h-2V2zM2 10h2v2h2v2H2v-4zM12 12h-2v2h4v-4h-2v2z"
+            /></svg
+          >
           <span>Fullscreen</span>
         </button>
-        <button class="toolbar-btn toggle-btn" class:active={viewMode === 'xray'} title="X-ray Mode (X)" onclick={() => setViewMode(viewMode === 'xray' ? 'normal' : 'xray')}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.5" /><circle cx="8" cy="8" r="3" fill="currentColor" opacity="0.7" /></svg>
+        <button
+          class="toolbar-btn toggle-btn"
+          class:active={viewMode === 'xray'}
+          title="X-ray Mode (X)"
+          onclick={() => setViewMode(viewMode === 'xray' ? 'normal' : 'xray')}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><circle
+              cx="8"
+              cy="8"
+              r="6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              opacity="0.5"
+            /><circle cx="8" cy="8" r="3" fill="currentColor" opacity="0.7" /></svg
+          >
           <span>X-ray</span>
         </button>
-        <button class="toolbar-btn toggle-btn" class:active={viewMode === 'wireframe'} title="Wireframe (W)" onclick={() => setViewMode(viewMode === 'wireframe' ? 'normal' : 'wireframe')}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="10" height="10" /><line x1="3" y1="8" x2="13" y2="8" /><line x1="8" y1="3" x2="8" y2="13" /></svg>
+        <button
+          class="toolbar-btn toggle-btn"
+          class:active={viewMode === 'wireframe'}
+          title="Wireframe (W)"
+          onclick={() => setViewMode(viewMode === 'wireframe' ? 'normal' : 'wireframe')}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            ><rect x="3" y="3" width="10" height="10" /><line x1="3" y1="8" x2="13" y2="8" /><line
+              x1="8"
+              y1="3"
+              x2="8"
+              y2="13"
+            /></svg
+          >
           <span>Wireframe</span>
         </button>
-        <button class="toolbar-btn toggle-btn" class:active={viewMode === 'explode'} title="Explode View (E)" onclick={() => setViewMode(viewMode === 'explode' ? 'normal' : 'explode')}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="1.5" /><circle cx="3" cy="3" r="1" opacity="0.7" /><circle cx="13" cy="3" r="1" opacity="0.7" /><circle cx="3" cy="13" r="1" opacity="0.7" /><circle cx="13" cy="13" r="1" opacity="0.7" /><line x1="8" y1="8" x2="3" y2="3" stroke="currentColor" stroke-width="1" opacity="0.5" /><line x1="8" y1="8" x2="13" y2="3" stroke="currentColor" stroke-width="1" opacity="0.5" /><line x1="8" y1="8" x2="3" y2="13" stroke="currentColor" stroke-width="1" opacity="0.5" /><line x1="8" y1="8" x2="13" y2="13" stroke="currentColor" stroke-width="1" opacity="0.5" /></svg>
+        <button
+          class="toolbar-btn toggle-btn"
+          class:active={viewMode === 'explode'}
+          title="Explode View (E)"
+          onclick={() => setViewMode(viewMode === 'explode' ? 'normal' : 'explode')}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><circle cx="8" cy="8" r="1.5" /><circle cx="3" cy="3" r="1" opacity="0.7" /><circle
+              cx="13"
+              cy="3"
+              r="1"
+              opacity="0.7"
+            /><circle cx="3" cy="13" r="1" opacity="0.7" /><circle
+              cx="13"
+              cy="13"
+              r="1"
+              opacity="0.7"
+            /><line
+              x1="8"
+              y1="8"
+              x2="3"
+              y2="3"
+              stroke="currentColor"
+              stroke-width="1"
+              opacity="0.5"
+            /><line
+              x1="8"
+              y1="8"
+              x2="13"
+              y2="3"
+              stroke="currentColor"
+              stroke-width="1"
+              opacity="0.5"
+            /><line
+              x1="8"
+              y1="8"
+              x2="3"
+              y2="13"
+              stroke="currentColor"
+              stroke-width="1"
+              opacity="0.5"
+            /><line
+              x1="8"
+              y1="8"
+              x2="13"
+              y2="13"
+              stroke="currentColor"
+              stroke-width="1"
+              opacity="0.5"
+            /></svg
+          >
           <span>Explode</span>
         </button>
       </div>
 
       <!-- Panels -->
       <div class="control-group">
-        <button class="toolbar-btn toggle-btn" class:active={leftOpen} title="Toggle Left Panel" onclick={() => (leftOpen = !leftOpen)}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="5" height="12" rx="1" /><rect x="9" y="2" width="5" height="12" rx="1" opacity="0.3" /></svg>
+        <button
+          class="toolbar-btn toggle-btn"
+          class:active={leftOpen}
+          title="Toggle Left Panel"
+          onclick={() => (leftOpen = !leftOpen)}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><rect x="2" y="2" width="5" height="12" rx="1" /><rect
+              x="9"
+              y="2"
+              width="5"
+              height="12"
+              rx="1"
+              opacity="0.3"
+            /></svg
+          >
           <span>Left Panel</span>
         </button>
-        <button class="toolbar-btn toggle-btn" class:active={rightOpen} title="Toggle Right Panel" onclick={() => (rightOpen = !rightOpen)}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="2" width="5" height="12" rx="1" opacity="0.3" /><rect x="9" y="2" width="5" height="12" rx="1" /></svg>
+        <button
+          class="toolbar-btn toggle-btn"
+          class:active={rightOpen}
+          title="Toggle Right Panel"
+          onclick={() => (rightOpen = !rightOpen)}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><rect x="2" y="2" width="5" height="12" rx="1" opacity="0.3" /><rect
+              x="9"
+              y="2"
+              width="5"
+              height="12"
+              rx="1"
+            /></svg
+          >
           <span>Right Panel</span>
         </button>
       </div>
 
       <!-- Undo/Redo -->
       <div class="control-group">
-        <button class="toolbar-btn" title="Undo (Ctrl+Z)" disabled={undoStack.length === 0} onclick={undo}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 8l4-4v3h4a3 3 0 010 6H8v-2h4a1 1 0 000-2H8v3l-4-4z" /></svg>
+        <button
+          class="toolbar-btn"
+          title="Undo (Ctrl+Z)"
+          disabled={undoStack.length === 0}
+          onclick={undo}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path d="M4 8l4-4v3h4a3 3 0 010 6H8v-2h4a1 1 0 000-2H8v3l-4-4z" /></svg
+          >
           <span>Undo</span>
         </button>
-        <button class="toolbar-btn" title="Redo (Ctrl+Y)" disabled={redoStack.length === 0} onclick={redo}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M12 8l-4-4v3H4a3 3 0 000 6h4v-2H4a1 1 0 010-2h4v3l4-4z" /></svg>
+        <button
+          class="toolbar-btn"
+          title="Redo (Ctrl+Y)"
+          disabled={redoStack.length === 0}
+          onclick={redo}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path d="M12 8l-4-4v3H4a3 3 0 000 6h4v-2H4a1 1 0 010-2h4v3l4-4z" /></svg
+          >
           <span>Redo</span>
         </button>
       </div>
@@ -623,20 +995,66 @@
       <!-- Additional -->
       <div class="control-group">
         <button class="toolbar-btn" title="Toggle Theme (T)" onclick={toggleTheme}>
-          <svg class="icon-sun" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="3" /><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" stroke-width="1.5" fill="none" /></svg>
-          <svg class="icon-moon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M13.5 8a5.5 5.5 0 01-9.14 4.14A5.5 5.5 0 018 2.5a4 4 0 000 11 4 4 0 01-1.14-7.86A5.49 5.49 0 0113.5 8z" /></svg>
+          <svg class="icon-sun" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><circle cx="8" cy="8" r="3" /><path
+              d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"
+              stroke="currentColor"
+              stroke-width="1.5"
+              fill="none"
+            /></svg
+          >
+          <svg class="icon-moon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path
+              d="M13.5 8a5.5 5.5 0 01-9.14 4.14A5.5 5.5 0 018 2.5a4 4 0 000 11 4 4 0 01-1.14-7.86A5.49 5.49 0 0113.5 8z"
+            /></svg
+          >
           <span>Theme</span>
         </button>
         <button class="toolbar-btn" title="Share Blueprint" onclick={shareModel}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="12" cy="4" r="2" /><circle cx="4" cy="8" r="2" /><circle cx="12" cy="12" r="2" /><path d="M6 7l4-2M6 9l4 2" stroke="currentColor" stroke-width="1.5" fill="none" /></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><circle cx="12" cy="4" r="2" /><circle cx="4" cy="8" r="2" /><circle
+              cx="12"
+              cy="12"
+              r="2"
+            /><path
+              d="M6 7l4-2M6 9l4 2"
+              stroke="currentColor"
+              stroke-width="1.5"
+              fill="none"
+            /></svg
+          >
           <span>Share</span>
         </button>
-        <button class="toolbar-btn" title="View the AI's output for this model" onclick={() => (codeViewModalOpen = true)}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5.5 4L2 8l3.5 4M10.5 4L14 8l-3.5 4" /></svg>
+        <button
+          class="toolbar-btn"
+          title="View the AI's output for this model"
+          onclick={() => (codeViewModalOpen = true)}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"><path d="M5.5 4L2 8l3.5 4M10.5 4L14 8l-3.5 4" /></svg
+          >
           <span>AI Output</span>
         </button>
-        <button class="toolbar-btn" title="Keyboard Shortcuts (?)" onclick={() => (shortcutsModalOpen = true)}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5" /><text x="8" y="11" text-anchor="middle" font-size="8" font-weight="bold">?</text></svg>
+        <button
+          class="toolbar-btn"
+          title="Keyboard Shortcuts (?)"
+          onclick={() => (shortcutsModalOpen = true)}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><circle
+              cx="8"
+              cy="8"
+              r="6"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            /><text x="8" y="11" text-anchor="middle" font-size="8" font-weight="bold">?</text></svg
+          >
           <span>Help</span>
         </button>
       </div>
@@ -648,12 +1066,40 @@
     <!-- Left Panel -->
     <aside class="left-panel panel glass-panel" class:collapsed={!leftOpen}>
       <div class="panel-tabs">
-        <button class="tab-btn" class:active={activeTab === 'parameters'} onclick={() => (activeTab = 'parameters')}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="3" cy="8" r="2" /><line x1="5" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="2" /></svg>
+        <button
+          class="tab-btn"
+          class:active={activeTab === 'parameters'}
+          onclick={() => (activeTab = 'parameters')}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><circle cx="3" cy="8" r="2" /><line
+              x1="5"
+              y1="8"
+              x2="14"
+              y2="8"
+              stroke="currentColor"
+              stroke-width="2"
+            /></svg
+          >
           Parameters
         </button>
-        <button class="tab-btn" class:active={activeTab === 'aichat'} onclick={() => (activeTab = 'aichat')}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v9H6l-4 3V2z" fill="none" stroke="currentColor" stroke-width="1.5" /><circle cx="5" cy="6" r="0.5" /><circle cx="8" cy="6" r="0.5" /><circle cx="11" cy="6" r="0.5" /></svg>
+        <button
+          class="tab-btn"
+          class:active={activeTab === 'aichat'}
+          onclick={() => (activeTab = 'aichat')}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path
+              d="M2 2h12v9H6l-4 3V2z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            /><circle cx="5" cy="6" r="0.5" /><circle cx="8" cy="6" r="0.5" /><circle
+              cx="11"
+              cy="6"
+              r="0.5"
+            /></svg
+          >
           AI Chat
         </button>
       </div>
@@ -682,7 +1128,9 @@
                         <span class="parameter-label">{parameter.label}</span>
                         {#if parameter.kind === 'number'}
                           <span class="parameter-value">
-                            {Number(parameterValues[parameter.id] ?? parameter.default).toFixed(parameter.precision ?? 2)}{parameter.unit ? ` ${parameter.unit}` : ''}
+                            {Number(parameterValues[parameter.id] ?? parameter.default).toFixed(
+                              parameter.precision ?? 2,
+                            )}{parameter.unit ? ` ${parameter.unit}` : ''}
                           </span>
                         {/if}
                       </div>
@@ -696,7 +1144,8 @@
                           step={parameter.step ?? (parameter.max - parameter.min) / 200}
                           value={Number(parameterValues[parameter.id] ?? parameter.default)}
                           aria-label={parameter.label}
-                          oninput={(event) => onParameterInput(parameter.id, Number(event.currentTarget.value))}
+                          oninput={(event) =>
+                            onParameterInput(parameter.id, Number(event.currentTarget.value))}
                         />
                       {:else if parameter.kind === 'boolean'}
                         <div class="checkbox-container">
@@ -704,7 +1153,8 @@
                             <input
                               type="checkbox"
                               checked={Boolean(parameterValues[parameter.id] ?? parameter.default)}
-                              onchange={(event) => onParameterInput(parameter.id, event.currentTarget.checked)}
+                              onchange={(event) =>
+                                onParameterInput(parameter.id, event.currentTarget.checked)}
                             />
                             <span class="toggle-slider"></span>
                           </label>
@@ -713,7 +1163,8 @@
                         <select
                           class="parameter-select"
                           value={String(parameterValues[parameter.id] ?? parameter.default)}
-                          onchange={(event) => onParameterInput(parameter.id, event.currentTarget.value)}
+                          onchange={(event) =>
+                            onParameterInput(parameter.id, event.currentTarget.value)}
                         >
                           {#each parameter.options as option (option.value)}
                             <option value={option.value}>{option.label}</option>
@@ -723,7 +1174,8 @@
                         <input
                           type="color"
                           value={String(parameterValues[parameter.id] ?? parameter.default)}
-                          oninput={(event) => onParameterInput(parameter.id, event.currentTarget.value)}
+                          oninput={(event) =>
+                            onParameterInput(parameter.id, event.currentTarget.value)}
                         />
                       {/if}
 
@@ -753,7 +1205,10 @@
                       <div class="info-content">
                         {#each manifest.colorRoles as role (role.id)}
                           <div class="property-row">
-                            <span class="property-key"><span class="swatch" style={`background:${role.color}`}></span>{role.label}</span>
+                            <span class="property-key"
+                              ><span class="swatch" style={`background:${role.color}`}
+                              ></span>{role.label}</span
+                            >
                             <span class="property-val">{role.meaning}</span>
                           </div>
                         {/each}
@@ -789,7 +1244,9 @@
       <!-- Tooltip -->
       {#if hoveredPart && !selectedPart}
         <div class="tooltip-3d glass-panel">
-          <div class="tooltip-header">{manifest?.parts.find((p) => p.id === hoveredPart)?.name}</div>
+          <div class="tooltip-header">
+            {manifest?.parts.find((p) => p.id === hoveredPart)?.name}
+          </div>
           {#if manifest?.parts.find((p) => p.id === hoveredPart)?.info?.bullets?.length}
             <ul class="tooltip-bullets">
               {#each manifest.parts.find((p) => p.id === hoveredPart)?.info?.bullets as bullet, index (index)}
@@ -893,7 +1350,11 @@
                   {/each}
                 </div>
               {/if}
-              <button class="modal-btn" onclick={() => selectedPart && host?.focusPart(selectedPart)}>Focus this part</button>
+              <button
+                class="modal-btn"
+                onclick={() => selectedPart && host?.focusPart(selectedPart)}
+                >Focus this part</button
+              >
             </div>
           {:else if overviewHtmlSafe}
             <div class="info-section overview-section">
@@ -931,7 +1392,14 @@
                 <h4 class="info-heading">Parts</h4>
                 <div class="part-list">
                   {#each listedParts as part (part.id)}
-                    <button class="part-button" class:active={selectedPart === part.id} onclick={() => { selectedPart = part.id; host?.focusPart(part.id); }}>
+                    <button
+                      class="part-button"
+                      class:active={selectedPart === part.id}
+                      onclick={() => {
+                        selectedPart = part.id;
+                        host?.focusPart(part.id);
+                      }}
+                    >
                       {part.name}
                     </button>
                   {/each}
@@ -987,13 +1455,25 @@
   <!-- ── Quiz Modal (V1 structure) ────────────────────────────────────────── -->
   {#if quizModalOpen && quizQuestions.length > 0}
     <div class="modal-overlay active" role="dialog" aria-modal="true" aria-label="Quiz mode">
-      <QuizModal questions={quizQuestions} source={quizSource} onclose={() => { quizModalOpen = false; activeMode = 'none'; }} />
+      <QuizModal
+        questions={quizQuestions}
+        source={quizSource}
+        onclose={() => {
+          quizModalOpen = false;
+          activeMode = 'none';
+        }}
+      />
     </div>
   {/if}
 
   <!-- ── Shortcuts Modal ──────────────────────────────────────────────────── -->
   {#if shortcutsModalOpen}
-    <div class="modal-overlay active" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+    <div
+      class="modal-overlay active"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Keyboard shortcuts"
+    >
       <div class="modal-container shortcuts-modal glass-panel">
         <div class="modal-header">
           <h2>⌨️ Keyboard Shortcuts</h2>
@@ -1030,7 +1510,12 @@
 
   <!-- ── AI Output viewer ─────────────────────────────────────────────────── -->
   {#if codeViewModalOpen}
-    <CodeViewModal {manifest} tab={codeViewTab} ontab={(t) => (codeViewTab = t)} onclose={() => (codeViewModalOpen = false)} />
+    <CodeViewModal
+      {manifest}
+      tab={codeViewTab}
+      ontab={(t) => (codeViewTab = t)}
+      onclose={() => (codeViewModalOpen = false)}
+    />
   {/if}
 </div>
 
@@ -1071,8 +1556,14 @@
   }
 
   @keyframes toastIn {
-    from { transform: translateX(400px); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
+    from {
+      transform: translateX(400px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
   }
 
   .swatch {
@@ -1126,7 +1617,9 @@
     border-radius: var(--radius-sm);
     font-size: 0.8125rem;
     color: var(--text-secondary);
-    transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+    transition:
+      background var(--dur-fast) ease,
+      color var(--dur-fast) ease;
   }
 
   .part-button:hover {

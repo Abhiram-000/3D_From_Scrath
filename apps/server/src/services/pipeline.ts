@@ -68,7 +68,10 @@ export async function runPipeline(
   topic: string,
   complexity: 'simple' | 'balanced' | 'detailed' | 'maximum',
   deps: PipelineDeps,
-): Promise<{ ok: true; bundle: ModelBundle; audit: { score: number; deficiencies: string[] } } | { ok: false; failure: PipelineFailure }> {
+): Promise<
+  | { ok: true; bundle: ModelBundle; audit: { score: number; deficiencies: string[] } }
+  | { ok: false; failure: PipelineFailure }
+> {
   const started = Date.now();
 
   // ── Heartbeat loop: the thing that makes silence diagnostic (`04` stage 5) ──────────────
@@ -125,12 +128,22 @@ export async function runPipeline(
       },
     });
     if (!first.ok) {
-      return { ok: false, failure: { code: mapAiFailure(first.code), message: first.message, ...(first.retryAfterSeconds ? { retryAfterSeconds: first.retryAfterSeconds } : {}) } };
+      return {
+        ok: false,
+        failure: {
+          code: mapAiFailure(first.code),
+          message: first.message,
+          ...(first.retryAfterSeconds ? { retryAfterSeconds: first.retryAfterSeconds } : {}),
+        },
+      };
     }
 
     // ── Stage 3: extract + gate ──────────────────────────────────────────────
     enter('extract', 'Reading the program the model wrote…');
-    let prepared = prepareProgram(first.text, { apiSurface: apiSurface().qualified, finishReason: first.finishReason ?? undefined });
+    let prepared = prepareProgram(first.text, {
+      apiSurface: apiSurface().qualified,
+      finishReason: first.finishReason ?? undefined,
+    });
 
     // Truncation is a named failure and never shipped. One re-ask is allowed: the program may be
     // complete on a second sample without the full prompt being re-sent (`04`).
@@ -146,7 +159,11 @@ export async function runPipeline(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
           { role: 'assistant', content: first.text },
-          { role: 'user', content: 'Your reply was cut off before the program was complete. Return the COMPLETE program in one fenced block.' },
+          {
+            role: 'user',
+            content:
+              'Your reply was cut off before the program was complete. Return the COMPLETE program in one fenced block.',
+          },
         ],
         maxOutputTokens: deps.maxOutputTokens,
         temperature: 0.3,
@@ -154,9 +171,18 @@ export async function runPipeline(
       if (!retry.ok) {
         return { ok: false, failure: { code: mapAiFailure(retry.code), message: retry.message } };
       }
-      prepared = prepareProgram(retry.text, { apiSurface: apiSurface().qualified, finishReason: retry.finishReason ?? undefined });
+      prepared = prepareProgram(retry.text, {
+        apiSurface: apiSurface().qualified,
+        finishReason: retry.finishReason ?? undefined,
+      });
       if (prepared.truncated) {
-        return { ok: false, failure: { code: 'upstream_truncated', message: 'The response was cut off before the model was complete. Try again.' } };
+        return {
+          ok: false,
+          failure: {
+            code: 'upstream_truncated',
+            message: 'The response was cut off before the model was complete. Try again.',
+          },
+        };
       }
     }
 
@@ -166,7 +192,10 @@ export async function runPipeline(
     while (!prepared.ok && repairPasses < MAX_REPAIR_PASSES) {
       repairPasses += 1;
       enter('repair', `Repairing the program (pass ${repairPasses} of ${MAX_REPAIR_PASSES})…`);
-      const errors = [...(prepared.truncated ? ['The reply was cut off before the program ended.'] : []), ...describeViolations(prepared.gate)];
+      const errors = [
+        ...(prepared.truncated ? ['The reply was cut off before the program ended.'] : []),
+        ...describeViolations(prepared.gate),
+      ];
       deps.sink({
         type: 'notice',
         kind: 'repair',
@@ -185,10 +214,16 @@ export async function runPipeline(
         temperature: 0.2,
       });
       if (!repaired.ok) {
-        return { ok: false, failure: { code: mapAiFailure(repaired.code), message: repaired.message } };
+        return {
+          ok: false,
+          failure: { code: mapAiFailure(repaired.code), message: repaired.message },
+        };
       }
       rawOutput = repaired.text;
-      prepared = prepareProgram(repaired.text, { apiSurface: apiSurface().qualified, finishReason: repaired.finishReason ?? undefined });
+      prepared = prepareProgram(repaired.text, {
+        apiSurface: apiSurface().qualified,
+        finishReason: repaired.finishReason ?? undefined,
+      });
     }
 
     if (!prepared.ok) {
@@ -210,7 +245,12 @@ export async function runPipeline(
       if (repairPasses >= MAX_REPAIR_PASSES) {
         return { ok: false, failure: { code: 'generation_unrepairable', message: audit.message } };
       }
-      deps.sink({ type: 'notice', kind: 'repair', message: 'The program failed to build; asking the model to fix it…', at: nowSec() });
+      deps.sink({
+        type: 'notice',
+        kind: 'repair',
+        message: 'The program failed to build; asking the model to fix it…',
+        at: nowSec(),
+      });
       const fixed = await deps.ai.complete({
         messages: [
           { role: 'system', content: systemPrompt },
@@ -225,9 +265,19 @@ export async function runPipeline(
         return { ok: false, failure: { code: mapAiFailure(fixed.code), message: fixed.message } };
       }
       rawOutput = fixed.text;
-      prepared = prepareProgram(fixed.text, { apiSurface: apiSurface().qualified, finishReason: fixed.finishReason ?? undefined });
+      prepared = prepareProgram(fixed.text, {
+        apiSurface: apiSurface().qualified,
+        finishReason: fixed.finishReason ?? undefined,
+      });
       if (!prepared.ok) {
-        return { ok: false, failure: { code: 'generation_unrepairable', message: describeViolations(prepared.gate)[0] ?? 'The repaired program failed the gate.' } };
+        return {
+          ok: false,
+          failure: {
+            code: 'generation_unrepairable',
+            message:
+              describeViolations(prepared.gate)[0] ?? 'The repaired program failed the gate.',
+          },
+        };
       }
       audit = auditModel({ code: prepared.instrumented, tier: deps.tier, seed: 0x5eed });
       if (!audit.ok) {
@@ -236,7 +286,14 @@ export async function runPipeline(
     }
 
     if (audit.report.blocked) {
-      return { ok: false, failure: { code: 'generation_rejected', message: 'The generated model was empty or unusable, so it was refused rather than shown. Try again.' } };
+      return {
+        ok: false,
+        failure: {
+          code: 'generation_rejected',
+          message:
+            'The generated model was empty or unusable, so it was refused rather than shown. Try again.',
+        },
+      };
     }
 
     // ── Stage 6: one refinement pass, accepted only if genuinely better ──────
@@ -258,15 +315,28 @@ export async function runPipeline(
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
           { role: 'assistant', content: rawOutput },
-          { role: 'user', content: buildRefinementPrompt(prepared.code, majorDeficiencies.map((d) => `${d.finding} → ${d.instruction}`)) },
+          {
+            role: 'user',
+            content: buildRefinementPrompt(
+              prepared.code,
+              majorDeficiencies.map((d) => `${d.finding} → ${d.instruction}`),
+            ),
+          },
         ],
         maxOutputTokens: deps.maxOutputTokens,
         temperature: 0.3,
       });
       if (refined.ok) {
-        const reprepared = prepareProgram(refined.text, { apiSurface: apiSurface().qualified, finishReason: refined.finishReason ?? undefined });
+        const reprepared = prepareProgram(refined.text, {
+          apiSurface: apiSurface().qualified,
+          finishReason: refined.finishReason ?? undefined,
+        });
         if (reprepared.ok) {
-          const reaudit = auditModel({ code: reprepared.instrumented, tier: deps.tier, seed: 0x5eed });
+          const reaudit = auditModel({
+            code: reprepared.instrumented,
+            tier: deps.tier,
+            seed: 0x5eed,
+          });
           // "Genuinely better" is score not worse AND fewer blockers — a degenerate second attempt
           // must never replace a decent first one (`04`).
           if (reaudit.ok && !reaudit.report.blocked && reaudit.report.score >= audit.report.score) {

@@ -228,7 +228,8 @@ export class Ambient {
   /** Glass surfaces that catch a light sweep. */
   sheen(selector: string): this {
     if (!this.tracking) return this;
-    for (const element of document.querySelectorAll<HTMLElement>(selector)) this.sheens.push(element);
+    for (const element of document.querySelectorAll<HTMLElement>(selector))
+      this.sheens.push(element);
     if (this.sheens.length > 0) this.start();
     return this;
   }

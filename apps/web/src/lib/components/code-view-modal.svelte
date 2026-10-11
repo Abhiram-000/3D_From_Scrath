@@ -23,7 +23,8 @@
   let rawCode = $state('');
 
   $effect(() => {
-    rawCode = peekBundleCode() ?? '(the model came from the reference set — no AI output for this session)';
+    rawCode =
+      peekBundleCode() ?? '(the model came from the reference set — no AI output for this session)';
   });
 
   async function copy() {
@@ -32,7 +33,9 @@
   }
 
   function download() {
-    const blob = new Blob([tab === 'raw' ? rawCode : JSON.stringify(manifest, null, 2)], { type: 'text/plain' });
+    const blob = new Blob([tab === 'raw' ? rawCode : JSON.stringify(manifest, null, 2)], {
+      type: 'text/plain',
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -61,8 +64,12 @@
   </div>
 
   <div class="code-view-tabs">
-    <button class="code-view-tab" class:active={tab === 'raw'} onclick={() => ontab('raw')}>Model output (raw)</button>
-    <button class="code-view-tab" class:active={tab === 'spec'} onclick={() => ontab('spec')}>Scene spec (validated)</button>
+    <button class="code-view-tab" class:active={tab === 'raw'} onclick={() => ontab('raw')}
+      >Model output (raw)</button
+    >
+    <button class="code-view-tab" class:active={tab === 'spec'} onclick={() => ontab('spec')}
+      >Scene spec (validated)</button
+    >
   </div>
 
   <div class="modal-body">
@@ -75,7 +82,9 @@
 
   <div class="modal-footer">
     <span class="code-view-note">
-      {tab === 'raw' ? 'The exact text the model wrote, before extraction.' : 'The manifest the engine validated and built from.'}
+      {tab === 'raw'
+        ? 'The exact text the model wrote, before extraction.'
+        : 'The manifest the engine validated and built from.'}
     </span>
     <div class="code-view-actions">
       <button class="modal-btn" onclick={() => void copy()}>Copy</button>

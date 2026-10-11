@@ -93,7 +93,11 @@ export function detectTier(): { tier: DeviceTier; pixelRatio: number; reasons: s
   // Known-weak GPU families. String matching is a heuristic, and `08` is explicit that the live frame-time monitor
   // is the truth — this only decides where to *start*. Software rasterizers are weak by definition: a model that
   // runs at full detail under SwiftShader/llvmpipe renders at a few frames per second.
-  if (/mali-[46]|adreno [345]|powervr|intel.*hd graphics [23]|swiftshader|llvmpipe|softpipe|software/i.test(renderer)) {
+  if (
+    /mali-[46]|adreno [345]|powervr|intel.*hd graphics [23]|swiftshader|llvmpipe|softpipe|software/i.test(
+      renderer,
+    )
+  ) {
     tier = 'low';
     reasons.push(`GPU "${renderer}" is a low-tier family`);
   } else if (/rtx|radeon rx|apple m[1-9]|adreno 7|arc a/i.test(renderer)) {
@@ -219,8 +223,13 @@ export class SandboxHost {
     worker.addEventListener('error', (event: ErrorEvent) => {
       // A worker-level error is not recoverable in place: the realm may be half-hardened. Kill and report.
       const where = [event.filename, event.lineno, event.colno].filter(Boolean).join(':');
-      const detail = event.error instanceof Error && event.error.stack ? ` ${event.error.stack.split('\n')[1]?.trim() ?? ''}` : '';
-      this.kill(`The 3D engine stopped unexpectedly: ${event.message}${where ? ` (${where})` : ''}${detail}`);
+      const detail =
+        event.error instanceof Error && event.error.stack
+          ? ` ${event.error.stack.split('\n')[1]?.trim() ?? ''}`
+          : '';
+      this.kill(
+        `The 3D engine stopped unexpectedly: ${event.message}${where ? ` (${where})` : ''}${detail}`,
+      );
     });
 
     const rect = this.container.getBoundingClientRect();
@@ -351,8 +360,12 @@ export class SandboxHost {
    * seconds its own frames prove it needs.
    */
   private currentHeartbeatTimeoutMs(): number {
-    const adaptive = WATCHDOG.heartbeatTimeoutMs + this.lastFrameMillis * WATCHDOG.frameSlackMultiplier;
-    return Math.min(WATCHDOG.maxHeartbeatTimeoutMs, Math.max(WATCHDOG.heartbeatTimeoutMs, adaptive));
+    const adaptive =
+      WATCHDOG.heartbeatTimeoutMs + this.lastFrameMillis * WATCHDOG.frameSlackMultiplier;
+    return Math.min(
+      WATCHDOG.maxHeartbeatTimeoutMs,
+      Math.max(WATCHDOG.heartbeatTimeoutMs, adaptive),
+    );
   }
 
   /**

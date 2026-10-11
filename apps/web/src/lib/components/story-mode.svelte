@@ -65,10 +65,7 @@
       utterance.onend = () => {
         // Narration done: advance sooner than the reading-time fallback.
         if (advanceTimer) clearTimeout(advanceTimer);
-        advanceTimer = setTimeout(
-          () => (index < story.length - 1 ? (index += 1) : onclose()),
-          700,
-        );
+        advanceTimer = setTimeout(() => (index < story.length - 1 ? (index += 1) : onclose()), 700);
       };
       utterance.onerror = () => {
         /* advance on error, never stall — the reading-time timer still runs */

@@ -113,7 +113,8 @@ export function auditModel(input: AuditInput): AuditOutcome {
   // ── Liveliness: frames actually wrote to parts ────────────────────────────
   const touched = builder.touchedParts();
   const movableParts = manifest.parts.filter((part) => part.kind !== 'group').length;
-  const touchedFraction = movableParts === 0 ? 0 : Math.min(1, touched.size / Math.min(12, movableParts));
+  const touchedFraction =
+    movableParts === 0 ? 0 : Math.min(1, touched.size / Math.min(12, movableParts));
   dimensions.push(
     score('liveliness', touchedFraction, [
       `${touched.size} parts received frame writes`,
@@ -134,7 +135,9 @@ export function auditModel(input: AuditInput): AuditOutcome {
   const informational = manifest.parts.filter((part) => part.info && part.kind !== 'group');
   const infoFraction = movableParts === 0 ? 0 : informational.length / movableParts;
   dimensions.push(
-    score('information', infoFraction, [`${informational.length}/${movableParts} parts carry info text`]),
+    score('information', infoFraction, [
+      `${informational.length}/${movableParts} parts carry info text`,
+    ]),
   );
   if (infoFraction < 0.5) {
     deficiencies.push({
@@ -147,11 +150,17 @@ export function auditModel(input: AuditInput): AuditOutcome {
   }
 
   // ── Completeness: structure exists, no orphan single-child chains ──────────
-  const completenessEvidence: string[] = [`root parts: ${manifest.parts.filter((p) => p.parentId === null).length}`];
+  const completenessEvidence: string[] = [
+    `root parts: ${manifest.parts.filter((p) => p.parentId === null).length}`,
+  ];
   const hasHero = manifest.parts.some((part) => part.hero);
   if (hasHero) completenessEvidence.push('hero part declared');
   const completeness =
-    0.4 + (hasHero ? 0.2 : 0) + Math.min(0.2, manifest.parts.length / 150) + (manifest.parameters.length > 0 ? 0.1 : 0) + (manifest.motions.length > 0 ? 0.1 : 0);
+    0.4 +
+    (hasHero ? 0.2 : 0) +
+    Math.min(0.2, manifest.parts.length / 150) +
+    (manifest.parameters.length > 0 ? 0.1 : 0) +
+    (manifest.motions.length > 0 ? 0.1 : 0);
   dimensions.push(score('completeness', completeness, completenessEvidence));
   if (!hasHero) {
     deficiencies.push({
@@ -168,7 +177,9 @@ export function auditModel(input: AuditInput): AuditOutcome {
   const fidelityEvidence: string[] = [];
   let fidelity = 0.7;
   // The canonical defect from `01`: boxy gears, stacked-cylinder springs, static flow dots.
-  const gearParts = manifest.parts.filter((part) => part.geometry?.builder === 'gear' || part.geometry?.builder === 'gearProfile');
+  const gearParts = manifest.parts.filter(
+    (part) => part.geometry?.builder === 'gear' || part.geometry?.builder === 'gearProfile',
+  );
   if (gearParts.length > 0) fidelityEvidence.push(`${gearParts.length} involute gear parts`);
   const helixParts = manifest.parts.filter((part) => part.geometry?.builder === 'helix');
   if (helixParts.length > 0) fidelityEvidence.push(`${helixParts.length} true helical parts`);
@@ -178,16 +189,21 @@ export function auditModel(input: AuditInput): AuditOutcome {
     fidelity += 0.1;
     fidelityEvidence.push('organic forms via SDF blending');
   }
-  const primitiveOnly = manifest.parts.length > 8 && [...buildersUsed].every((builder) =>
-    ['box', 'sphere', 'cylinder', 'cone', 'torus', 'disc', 'plane', 'capsule'].includes(builder ?? ''),
-  );
+  const primitiveOnly =
+    manifest.parts.length > 8 &&
+    [...buildersUsed].every((builder) =>
+      ['box', 'sphere', 'cylinder', 'cone', 'torus', 'disc', 'plane', 'capsule'].includes(
+        builder ?? '',
+      ),
+    );
   if (primitiveOnly) {
     fidelity -= 0.5;
     fidelityEvidence.push('assembled from raw primitives only');
     deficiencies.push({
       dimension: 'representationFidelity',
       severity: 'major',
-      finding: 'The model is assembled only from raw primitives, so no shape is matched to its behavior.',
+      finding:
+        'The model is assembled only from raw primitives, so no shape is matched to its behavior.',
       instruction:
         'Use motion-correct builders: geom.gear for gears, geom.gearProfile + extrude for real teeth, helix + sweep for springs, geom.path + particles for flow, sdf/parametric for organic forms. A static lookalike is exposed the moment the model moves.',
     });
@@ -251,9 +267,7 @@ export function auditModel(input: AuditInput): AuditOutcome {
   );
 
   // ── Cleanliness and attractiveness proxies ────────────────────────────────
-  dimensions.push(
-    score('cleanliness', hasHero ? 0.8 : 0.5, ['focal hierarchy from hero flags']),
-  );
+  dimensions.push(score('cleanliness', hasHero ? 0.8 : 0.5, ['focal hierarchy from hero flags']));
   const delightSignals =
     (manifest.environment?.preset !== 'studio' ? 1 : 0) +
     (manifest.lights.length > 0 ? 1 : 0) +
@@ -303,8 +317,10 @@ export function auditModel(input: AuditInput): AuditOutcome {
     });
   }
 
-  const weighted =
-    dimensions.reduce((sum, dimension) => sum + dimension.score * AUDIT_WEIGHTS[dimension.dimension], 0);
+  const weighted = dimensions.reduce(
+    (sum, dimension) => sum + dimension.score * AUDIT_WEIGHTS[dimension.dimension],
+    0,
+  );
   const blocked = deficiencies.some((deficiency) => deficiency.severity === 'blocker');
 
   return {

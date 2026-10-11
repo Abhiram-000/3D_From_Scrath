@@ -52,8 +52,20 @@ const newRequestId = (): string =>
  * The one error shape every endpoint returns (`04`, `06`): a code the client branches on, a message
  * written for a learner, a request id — never a stack, never provider internals.
  */
-export function apiError(code: ErrorCode, message: string, requestId: string, retryAfterSeconds?: number) {
-  return { error: { code, message, requestId, ...(retryAfterSeconds ? { retryAfterSeconds } : {}) } satisfies ApiError['error'] };
+export function apiError(
+  code: ErrorCode,
+  message: string,
+  requestId: string,
+  retryAfterSeconds?: number,
+) {
+  return {
+    error: {
+      code,
+      message,
+      requestId,
+      ...(retryAfterSeconds ? { retryAfterSeconds } : {}),
+    } satisfies ApiError['error'],
+  };
 }
 
 /** Guard a write endpoint with the bearer token, compared in constant time (`06`). */
@@ -85,7 +97,8 @@ export function buildApp(state: AppState): Hono<AppContext> {
     context.header('x-content-type-options', 'nosniff');
     context.header('referrer-policy', 'strict-origin-when-cross-origin');
     context.header('x-frame-options', 'SAMEORIGIN');
-    if (config.security.hsts) context.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
+    if (config.security.hsts)
+      context.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
   });
 
   // ── CORS: allow-list, never * in production (`06`) ────────────────────────
@@ -149,12 +162,18 @@ export function buildApp(state: AppState): Hono<AppContext> {
     // not the server's key situation.
     const parsed = GenerateRequest.safeParse(await context.req.json().catch(() => null));
     if (!parsed.success) {
-      return context.json(apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, requestId), 400);
+      return context.json(
+        apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, requestId),
+        400,
+      );
     }
     const request = parsed.data;
 
     if (!config.ai.configured) {
-      return context.json(apiError('capability_absent', DEFAULT_ERROR_MESSAGE.capability_absent, requestId), 503);
+      return context.json(
+        apiError('capability_absent', DEFAULT_ERROR_MESSAGE.capability_absent, requestId),
+        503,
+      );
     }
 
     if (!request.stream) {
@@ -203,7 +222,12 @@ export function buildApp(state: AppState): Hono<AppContext> {
         };
         state.openStreams += 1;
         try {
-          write({ type: 'phase', phase: 'queued', message: 'Sending your topic to the model…', at: Date.now() });
+          write({
+            type: 'phase',
+            phase: 'queued',
+            message: 'Sending your topic to the model…',
+            at: Date.now(),
+          });
           const result = await tracked(state, () =>
             runPipeline(request.topic, request.complexity, {
               ai: state.ai,
@@ -215,11 +239,26 @@ export function buildApp(state: AppState): Hono<AppContext> {
           if (result.ok) {
             write({ type: 'ready', bundle: result.bundle, audit: result.audit, at: Date.now() });
           } else {
-            write({ type: 'error', code: result.failure.code, message: result.failure.message, requestId, ...(result.failure.retryAfterSeconds ? { retryAfterSeconds: result.failure.retryAfterSeconds } : {}), at: Date.now() });
+            write({
+              type: 'error',
+              code: result.failure.code,
+              message: result.failure.message,
+              requestId,
+              ...(result.failure.retryAfterSeconds
+                ? { retryAfterSeconds: result.failure.retryAfterSeconds }
+                : {}),
+              at: Date.now(),
+            });
           }
         } catch {
           // The catch-all the client depends on: a stream must end with exactly one terminal event.
-          write({ type: 'error', code: 'internal', message: DEFAULT_ERROR_MESSAGE.internal, requestId, at: Date.now() });
+          write({
+            type: 'error',
+            code: 'internal',
+            message: DEFAULT_ERROR_MESSAGE.internal,
+            requestId,
+            at: Date.now(),
+          });
         } finally {
           state.openStreams -= 1;
           // Closing an already-closed controller throws; guard it the same way.
@@ -248,15 +287,27 @@ export function buildApp(state: AppState): Hono<AppContext> {
     const guard = limitWith(state.limiters.chat, config.trustProxy, state.remoteAddress);
     const limited = await guard(context, async () => undefined);
     if (limited) return limited;
-    if (state.draining) return context.json(apiError('draining', DEFAULT_ERROR_MESSAGE.draining, requestId), 503);
+    if (state.draining)
+      return context.json(apiError('draining', DEFAULT_ERROR_MESSAGE.draining, requestId), 503);
 
     const parsed = ChatRequest.safeParse(await context.req.json().catch(() => null));
-    if (!parsed.success) return context.json(apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, requestId), 400);
+    if (!parsed.success)
+      return context.json(
+        apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, requestId),
+        400,
+      );
     const request = parsed.data;
 
-    if (!config.ai.configured) return context.json(apiError('capability_absent', DEFAULT_ERROR_MESSAGE.capability_absent, requestId), 503);
+    if (!config.ai.configured)
+      return context.json(
+        apiError('capability_absent', DEFAULT_ERROR_MESSAGE.capability_absent, requestId),
+        503,
+      );
 
-    const systemPrompt = buildChatPrompt(request.persona, request.context ? JSON.stringify(request.context) : 'no model loaded');
+    const systemPrompt = buildChatPrompt(
+      request.persona,
+      request.context ? JSON.stringify(request.context) : 'no model loaded',
+    );
     const completion = await state.ai.complete({
       messages: [
         { role: 'system', content: systemPrompt },
@@ -270,7 +321,11 @@ export function buildApp(state: AppState): Hono<AppContext> {
 
     if (!completion.ok) {
       return context.json(
-        apiError(completion.code === 'quota' ? 'upstream_quota' : 'upstream_failed', completion.message, requestId),
+        apiError(
+          completion.code === 'quota' ? 'upstream_quota' : 'upstream_failed',
+          completion.message,
+          requestId,
+        ),
         (completion.code === 'quota' ? 429 : 502) as 429 | 502,
       );
     }
@@ -288,7 +343,9 @@ export function buildApp(state: AppState): Hono<AppContext> {
           controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'delta', text: chunk })}\n`));
           await new Promise((resolve) => setTimeout(resolve, 15));
         }
-        controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'done', text: completion.text })}\n`));
+        controller.enqueue(
+          encoder.encode(`${JSON.stringify({ type: 'done', text: completion.text })}\n`),
+        );
         controller.close();
       },
     });
@@ -304,14 +361,25 @@ export function buildApp(state: AppState): Hono<AppContext> {
     const limited = await guard(context, async () => undefined);
     if (limited) return limited;
     const parsed = QuizRequest.safeParse(await context.req.json().catch(() => null));
-    if (!parsed.success) return context.json(apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, requestId), 400);
+    if (!parsed.success)
+      return context.json(
+        apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, requestId),
+        400,
+      );
 
-    if (!config.ai.configured) return context.json(apiError('capability_absent', DEFAULT_ERROR_MESSAGE.capability_absent, requestId), 503);
+    if (!config.ai.configured)
+      return context.json(
+        apiError('capability_absent', DEFAULT_ERROR_MESSAGE.capability_absent, requestId),
+        503,
+      );
 
     const summary = JSON.stringify(parsed.data.context);
     const completion = await state.ai.complete({
       messages: [
-        { role: 'system', content: buildQuizPrompt(summary, parsed.data.count, parsed.data.difficulty) },
+        {
+          role: 'system',
+          content: buildQuizPrompt(summary, parsed.data.count, parsed.data.difficulty),
+        },
         { role: 'user', content: `Generate the questions now.` },
       ],
       maxOutputTokens: 4000,
@@ -334,7 +402,11 @@ export function buildApp(state: AppState): Hono<AppContext> {
       limit: context.req.query('limit') || undefined,
       offset: context.req.query('offset') || undefined,
     });
-    if (!query.success) return context.json(apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, context.get('requestId')), 400);
+    if (!query.success)
+      return context.json(
+        apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, context.get('requestId')),
+        400,
+      );
     const list = await state.store.list(query.data);
     return context.json({ ...list, limit: query.data.limit, offset: query.data.offset });
   });
@@ -343,10 +415,17 @@ export function buildApp(state: AppState): Hono<AppContext> {
     const id = context.req.param('id');
     // Anything not shaped like a UUID is rejected at the route, before the query layer (`06`).
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-      return context.json(apiError('bad_request', 'That model id is malformed.', context.get('requestId')), 400);
+      return context.json(
+        apiError('bad_request', 'That model id is malformed.', context.get('requestId')),
+        400,
+      );
     }
     const record = await state.store.get(id);
-    if (!record) return context.json(apiError('not_found', DEFAULT_ERROR_MESSAGE.not_found, context.get('requestId')), 404);
+    if (!record)
+      return context.json(
+        apiError('not_found', DEFAULT_ERROR_MESSAGE.not_found, context.get('requestId')),
+        404,
+      );
     return context.json(record);
   });
 
@@ -356,12 +435,19 @@ export function buildApp(state: AppState): Hono<AppContext> {
     const limited = await guard(context, async () => undefined);
     if (limited) return limited;
     if (!requireWriteToken(state, context.req.header('authorization'))) {
-      return context.json(apiError('unauthorized', DEFAULT_ERROR_MESSAGE.unauthorized, requestId), 401);
+      return context.json(
+        apiError('unauthorized', DEFAULT_ERROR_MESSAGE.unauthorized, requestId),
+        401,
+      );
     }
 
     const body = await context.req.json().catch(() => null);
     const parsed = PublishRequest.safeParse(body);
-    if (!parsed.success) return context.json(apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, requestId), 400);
+    if (!parsed.success)
+      return context.json(
+        apiError('bad_request', DEFAULT_ERROR_MESSAGE.bad_request, requestId),
+        400,
+      );
 
     let snapshotUrl: string | null = null;
     if (parsed.data.snapshot) {
@@ -373,7 +459,14 @@ export function buildApp(state: AppState): Hono<AppContext> {
       }
       const mime = sniffSnapshot(new Uint8Array(bytes));
       if (!mime) {
-        return context.json(apiError('bad_request', 'That snapshot is not a recognised PNG, JPEG, WebP or AVIF image.', requestId), 400);
+        return context.json(
+          apiError(
+            'bad_request',
+            'That snapshot is not a recognised PNG, JPEG, WebP or AVIF image.',
+            requestId,
+          ),
+          400,
+        );
       }
       snapshotUrl = await state.store.putSnapshot(new Uint8Array(bytes), mime);
     }
@@ -393,14 +486,18 @@ export function buildApp(state: AppState): Hono<AppContext> {
     const limited = await guard(context, async () => undefined);
     if (limited) return limited;
     if (!requireWriteToken(state, context.req.header('authorization'))) {
-      return context.json(apiError('unauthorized', DEFAULT_ERROR_MESSAGE.unauthorized, requestId), 401);
+      return context.json(
+        apiError('unauthorized', DEFAULT_ERROR_MESSAGE.unauthorized, requestId),
+        401,
+      );
     }
     const id = context.req.param('id');
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
       return context.json(apiError('bad_request', 'That model id is malformed.', requestId), 400);
     }
     const removed = await state.store.delete(id);
-    if (!removed) return context.json(apiError('not_found', DEFAULT_ERROR_MESSAGE.not_found, requestId), 404);
+    if (!removed)
+      return context.json(apiError('not_found', DEFAULT_ERROR_MESSAGE.not_found, requestId), 404);
     return context.json({ ok: true, requestId });
   });
 
@@ -410,21 +507,32 @@ export function buildApp(state: AppState): Hono<AppContext> {
     // Allow the file extension the fallback store appends, but reject path traversal outright.
     const safe = id.replace(/[^a-zA-Z0-9.-]/g, '');
     const snapshot = await state.store.getSnapshot(safe.split('.')[0] ?? safe);
-    if (!snapshot) return context.json(apiError('not_found', DEFAULT_ERROR_MESSAGE.not_found, context.get('requestId')), 404);
+    if (!snapshot)
+      return context.json(
+        apiError('not_found', DEFAULT_ERROR_MESSAGE.not_found, context.get('requestId')),
+        404,
+      );
     return new Response(new Uint8Array(snapshot.bytes), {
-      headers: { 'content-type': snapshot.mime, 'cache-control': 'public, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' },
+      headers: {
+        'content-type': snapshot.mime,
+        'cache-control': 'public, max-age=31536000, immutable',
+        'x-content-type-options': 'nosniff',
+      },
     });
   });
 
   // ── Static frontend (mounted last: the API owns /api, everything else is pages) ──
-  app.use('*', staticSiteMiddleware)
+  app.use('*', staticSiteMiddleware);
 
   // ── 404 with the same shape, so clients have one parser ───────────────────
   // API paths keep the JSON error; anything else already had its chance at a page above.
   app.notFound((context) => {
     const pathname = new URL(context.req.url).pathname;
     if (pathname.startsWith('/api/')) {
-      return context.json(apiError('not_found', 'No such endpoint.', context.get('requestId')), 404);
+      return context.json(
+        apiError('not_found', 'No such endpoint.', context.get('requestId')),
+        404,
+      );
     }
     return context.text('Not found.', 404);
   });

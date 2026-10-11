@@ -81,7 +81,10 @@ async function main(): Promise<void> {
     logger.error({ reason: String(reason) }, 'unhandled rejection');
   });
   process.on('uncaughtException', (error) => {
-    logger.error({ error: error.message, stack: error.stack?.split('\n').slice(0, 4).join(' ') }, 'uncaught exception — draining');
+    logger.error(
+      { error: error.message, stack: error.stack?.split('\n').slice(0, 4).join(' ') },
+      'uncaught exception — draining',
+    );
     void shutdown('uncaught exception');
   });
 
@@ -89,7 +92,9 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`\n${signal} received — draining (in-flight requests finish, streams are told, hard exit in ${SHUTDOWN_HARD_EXIT_MS / 1000}s)`);
+    console.log(
+      `\n${signal} received — draining (in-flight requests finish, streams are told, hard exit in ${SHUTDOWN_HARD_EXIT_MS / 1000}s)`,
+    );
 
     // 1. Drain flag: readiness fails, new expensive requests are refused with an explanation.
     state.draining = true;

@@ -250,10 +250,32 @@
 <div class="landing-container">
   <header class="landing-header">
     <div class="brand-logo" data-magnetic data-parallax="6">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" class="logo-icon" aria-hidden="true">
-        <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="url(#gradient1)" stroke-width="2" stroke-linejoin="round" />
-        <path d="M2 17L12 22L22 17" stroke="url(#gradient1)" stroke-width="2" stroke-linejoin="round" />
-        <path d="M2 12L12 17L22 12" stroke="url(#gradient1)" stroke-width="2" stroke-linejoin="round" />
+      <svg
+        width="28"
+        height="28"
+        viewBox="0 0 24 24"
+        fill="none"
+        class="logo-icon"
+        aria-hidden="true"
+      >
+        <path
+          d="M12 2L2 7L12 12L22 7L12 2Z"
+          stroke="url(#gradient1)"
+          stroke-width="2"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M2 17L12 22L22 17"
+          stroke="url(#gradient1)"
+          stroke-width="2"
+          stroke-linejoin="round"
+        />
+        <path
+          d="M2 12L12 17L22 12"
+          stroke="url(#gradient1)"
+          stroke-width="2"
+          stroke-linejoin="round"
+        />
         <defs>
           <linearGradient id="gradient1" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="#F4ECD8" />
@@ -265,8 +287,24 @@
       <span class="brand-name">EDU-3D</span>
     </div>
 
-    <button id="themeToggle" class="theme-toggle" data-magnetic data-parallax="6" aria-label="Toggle theme" onclick={toggleTheme}>
-      <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <button
+      id="themeToggle"
+      class="theme-toggle"
+      data-magnetic
+      data-parallax="6"
+      aria-label="Toggle theme"
+      onclick={toggleTheme}
+    >
+      <svg
+        class="sun-icon"
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        aria-hidden="true"
+      >
         <circle cx="12" cy="12" r="5" />
         <line x1="12" y1="1" x2="12" y2="3" />
         <line x1="12" y1="21" x2="12" y2="23" />
@@ -277,7 +315,16 @@
         <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
         <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
       </svg>
-      <svg class="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <svg
+        class="moon-icon"
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        aria-hidden="true"
+      >
         <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
       </svg>
     </button>
@@ -288,13 +335,16 @@
       <p class="hero-eyebrow" data-parallax="8">AI-powered interactive learning</p>
 
       <h1 class="hero-title" data-parallax="14">
-        <span class="gradient-text typing-animation" bind:this={heroTextElement}>{typed}</span><span class="cursor-blink" aria-hidden="true">|</span>
+        <span class="gradient-text typing-animation" bind:this={heroTextElement}>{typed}</span><span
+          class="cursor-blink"
+          aria-hidden="true">|</span
+        >
         <span class="hero-subtitle fade-in-delayed">in Interactive 3D</span>
       </h1>
 
       <p class="hero-description fade-in-delayed-2" data-parallax="10">
-        Transform any concept into an immersive 3D experience.
-        Interactive models, guided tours, and intelligent assessments — generated in minutes.
+        Transform any concept into an immersive 3D experience. Interactive models, guided tours, and
+        intelligent assessments — generated in minutes.
       </p>
 
       <div class="prompt-card glass-card has-sheen has-glow-border" data-magnetic data-parallax="7">
@@ -312,8 +362,7 @@
             if (event.shiftKey) return;
             event.preventDefault();
             handleGenerate();
-          }}
-        ></textarea>
+          }}></textarea>
         <div class="input-footer">
           <div class="input-meta">
             <div
@@ -324,11 +373,27 @@
             >
               {topic.length} / 500
             </div>
-            <span class="input-hint">Press <kbd>Enter</kbd> to generate · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</span>
+            <span class="input-hint"
+              >Press <kbd>Enter</kbd> to generate · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</span
+            >
           </div>
-          <button id="generateBtn" class="generate-btn" class:loading={submitting} aria-label="Generate 3D model" onclick={handleGenerate} disabled={submitting}>
+          <button
+            id="generateBtn"
+            class="generate-btn"
+            class:loading={submitting}
+            aria-label="Generate 3D model"
+            onclick={handleGenerate}
+            disabled={submitting}
+          >
             <span class="btn-text">{submitting ? 'Generating' : 'Generate 3D Model'}</span>
-            <svg class="btn-icon" width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <svg
+              class="btn-icon"
+              width="18"
+              height="18"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
               <path d="M10 3L18 10L10 17V12H2V8H10V3Z" />
             </svg>
           </button>
@@ -345,7 +410,8 @@
               onclick={(event) => {
                 topic = chip.topic;
                 document.getElementById('topicInput')?.focus();
-                if (!window.matchMedia('(pointer: coarse)').matches) createRipple(event.currentTarget, event);
+                if (!window.matchMedia('(pointer: coarse)').matches)
+                  createRipple(event.currentTarget, event);
               }}
             >
               {chip.label}
@@ -367,7 +433,9 @@
   /* V1's landing.css is imported globally below; the only scoped addition is the fade-out class,
      which is new-app behavior (V1 navigated between flat pages with the same fade). */
   .landing-container {
-    transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+    transition:
+      opacity 0.5s ease-out,
+      transform 0.5s ease-out;
   }
 
   .landing-container.is-leaving {

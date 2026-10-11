@@ -281,7 +281,11 @@ a {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: radial-gradient(circle 260px at var(--sx, 50%) var(--sy, 50%), var(--sheen-color) 0%, transparent 68%);
+  background: radial-gradient(
+    circle 260px at var(--sx, 50%) var(--sy, 50%),
+    var(--sheen-color) 0%,
+    transparent 68%
+  );
   opacity: 0;
   transition: opacity 0.45s ease;
   pointer-events: none;
@@ -300,7 +304,11 @@ a {
   inset: 0;
   border-radius: inherit;
   padding: 1px;
-  background: radial-gradient(circle 220px at var(--sx, 50%) var(--sy, 50%), var(--accent-ring), transparent 72%);
+  background: radial-gradient(
+    circle 220px at var(--sx, 50%) var(--sy, 50%),
+    var(--accent-ring),
+    transparent 72%
+  );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
     linear-gradient(#000 0 0);

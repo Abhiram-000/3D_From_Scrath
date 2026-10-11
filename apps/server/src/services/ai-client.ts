@@ -36,17 +36,17 @@ export type CompletionResult =
       finishReason: string | null;
       usage: { promptTokens: number; completionTokens: number };
     }
-  | { ok: false; code: AiFailureCode; message: string; retryable: boolean; retryAfterSeconds?: number };
+  | {
+      ok: false;
+      code: AiFailureCode;
+      message: string;
+      retryable: boolean;
+      retryAfterSeconds?: number;
+    };
 
 /** The failure vocabulary, kept local so the mapping to `ErrorCode` lives in one place. */
 export type AiFailureCode =
-  | 'quota'
-  | 'refused'
-  | 'truncated'
-  | 'timeout'
-  | 'network'
-  | 'malformed'
-  | 'status';
+  'quota' | 'refused' | 'truncated' | 'timeout' | 'network' | 'malformed' | 'status';
 
 /** Retry policy. Two retries with backoff — enough to ride out a blip, bounded so cost cannot run away (`04`). */
 const MAX_ATTEMPTS = 3;
@@ -72,7 +72,11 @@ const REQUEST_TIMEOUT_MS = 540_000;
 /** A rough status → failure mapping. Everything unrecognised is `status` and retryable at this layer. */
 function classifyStatus(status: number, bodyText: string): AiFailure {
   if (status === 401 || status === 403) {
-    return failure('status', 'The AI service rejected this server’s credentials. Check AI_API_KEY.', false);
+    return failure(
+      'status',
+      'The AI service rejected this server’s credentials. Check AI_API_KEY.',
+      false,
+    );
   }
   if (status === 429) {
     return failure(
@@ -96,13 +100,21 @@ function classifyStatus(status: number, bodyText: string): AiFailure {
     // Free tiers rotate model names constantly; a 404 means THIS model is retired/absent, not that
     // the request was wrong. Classified `status` so the model cascade advances to the next entry
     // instead of dying here (the generic 4xx branch would mark it non-retryable and stop everything).
-    return failure('status', 'The AI service no longer offers that model; trying the next one.', true);
+    return failure(
+      'status',
+      'The AI service no longer offers that model; trying the next one.',
+      true,
+    );
   }
   if (status >= 500) {
     return failure('status', 'The AI service failed to answer. Try again in a moment.', true);
   }
   // 4xx other than auth: our request shape is wrong somewhere. Not retryable — that would burn money.
-  return failure('malformed', `The AI service rejected the request: ${bodyText.slice(0, 200)}`, false);
+  return failure(
+    'malformed',
+    `The AI service rejected the request: ${bodyText.slice(0, 200)}`,
+    false,
+  );
 }
 
 interface AiFailure {
@@ -152,7 +164,12 @@ export class AiClient {
     const fallback = this.config.ai.fallback;
     if (fallback?.apiKey && lastFailure && !lastFailure.ok) {
       for (const model of [fallback.model, ...this.cascadeFor(fallback.baseUrl)]) {
-        const crossed = await this.completeWithProvider(fallback.baseUrl, fallback.apiKey, model, request);
+        const crossed = await this.completeWithProvider(
+          fallback.baseUrl,
+          fallback.apiKey,
+          model,
+          request,
+        );
         if (crossed.ok) return crossed;
         if (crossed.code !== 'quota' && crossed.code !== 'status') break;
       }
@@ -252,19 +269,20 @@ export class AiClient {
       // Streaming mode: reassemble SSE chunks into the same shape the non-streaming path returns,
       // reporting character progress as tokens arrive. Falls back to JSON if the provider ignored
       // `stream: true` (content-type is the tell).
-      if (request.onProgress && (response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+      if (
+        request.onProgress &&
+        (response.headers.get('content-type') ?? '').includes('text/event-stream')
+      ) {
         return await this.consumeStream(response, request.onProgress);
       }
 
-      const json = (await response.json().catch(() => null)) as
-        | {
-            choices?: Array<{
-              message?: { content?: string | Array<{ text?: string }> };
-              finish_reason?: string;
-            }>;
-            usage?: { prompt_tokens?: number; completion_tokens?: number };
-          }
-        | null;
+      const json = (await response.json().catch(() => null)) as {
+        choices?: Array<{
+          message?: { content?: string | Array<{ text?: string }> };
+          finish_reason?: string;
+        }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      } | null;
 
       if (!json) {
         return {
@@ -304,7 +322,11 @@ export class AiClient {
         if (finish === 'length') {
           return {
             ok: false,
-            ...failure('truncated', 'The response was cut off before the model was complete. Try again.', true),
+            ...failure(
+              'truncated',
+              'The response was cut off before the model was complete. Try again.',
+              true,
+            ),
           };
         }
         // Empty on a clean stop is a gateway flake (observed on long high-reasoning generations):
@@ -401,7 +423,8 @@ export class AiClient {
             if (delta?.reasoning_content) reasoningChars += delta.reasoning_content.length;
             const content = delta?.content;
             if (typeof content === 'string') text += content;
-            else if (Array.isArray(content)) text += content.map((part) => part?.text ?? '').join('');
+            else if (Array.isArray(content))
+              text += content.map((part) => part?.text ?? '').join('');
 
             // Throttled progress: every ~400 chars, so a fast stream does not spam the callback.
             const total = text.length + reasoningChars;
@@ -426,10 +449,17 @@ export class AiClient {
       if (finishReason === 'length') {
         return {
           ok: false,
-          ...failure('truncated', 'The response was cut off before the model was complete. Try again.', true),
+          ...failure(
+            'truncated',
+            'The response was cut off before the model was complete. Try again.',
+            true,
+          ),
         };
       }
-      return { ok: false, ...failure('malformed', 'The AI returned an empty reply. Try again.', true) };
+      return {
+        ok: false,
+        ...failure('malformed', 'The AI returned an empty reply. Try again.', true),
+      };
     }
 
     return { ok: true, text, finishReason, usage };

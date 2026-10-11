@@ -33,7 +33,12 @@ export class LandingBackground {
   init(canvas: HTMLCanvasElement): void {
     try {
       this.scene = new THREE.Scene();
-      this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+      this.camera = new THREE.PerspectiveCamera(
+        60,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        2000,
+      );
 
       this.renderer = new THREE.WebGLRenderer({
         canvas,
@@ -56,7 +61,8 @@ export class LandingBackground {
       ];
 
       const shapeCount = this.isLowEnd ? 12 : 20;
-      const theme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+      const theme =
+        document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
       const colors = theme === 'light' ? LIGHT_SHAPE_COLORS : DARK_SHAPE_COLORS;
 
       for (let i = 0; i < shapeCount; i++) {
@@ -82,10 +88,18 @@ export class LandingBackground {
 
           let baseAngle: number;
           switch (quadrant) {
-            case 0: baseAngle = -2.356; break; // top-left (-135°)
-            case 1: baseAngle = -0.785; break; // top-right (-45°)
-            case 2: baseAngle = 0.785; break; // bottom-right (45°)
-            default: baseAngle = 2.356; break; // bottom-left (135°)
+            case 0:
+              baseAngle = -2.356;
+              break; // top-left (-135°)
+            case 1:
+              baseAngle = -0.785;
+              break; // top-right (-45°)
+            case 2:
+              baseAngle = 0.785;
+              break; // bottom-right (45°)
+            default:
+              baseAngle = 2.356;
+              break; // bottom-left (135°)
           }
           const angle = baseAngle + angleOffset;
           x = Math.cos(angle) * baseDist;
@@ -151,8 +165,12 @@ export class LandingBackground {
 
     this.shapes.forEach((shape, index) => {
       if (shape.material) {
-        (shape.material as THREE.MeshBasicMaterial).color.setHex(colors[index % colors.length] as number);
-        (shape.material as THREE.MeshBasicMaterial).opacity = this.isLowEnd ? Math.min(opacity, 0.09) : opacity;
+        (shape.material as THREE.MeshBasicMaterial).color.setHex(
+          colors[index % colors.length] as number,
+        );
+        (shape.material as THREE.MeshBasicMaterial).opacity = this.isLowEnd
+          ? Math.min(opacity, 0.09)
+          : opacity;
       }
     });
   };

@@ -7,7 +7,12 @@
  * previous version's bug — the two entries behaving differently for the same action — cannot recur
  * here.
  */
-import { STALL_HEARTBEATS, HEARTBEAT_INTERVAL_MS, type GenerationEvent, type ModelBundle } from '@edu3d/contracts';
+import {
+  STALL_HEARTBEATS,
+  HEARTBEAT_INTERVAL_MS,
+  type GenerationEvent,
+  type ModelBundle,
+} from '@edu3d/contracts';
 
 /** Where the API lives. The dev proxy and production same-origin both answer at `/api`. */
 export const API_BASE = '/api';
@@ -62,20 +67,26 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
 
     if (!response.ok) {
       // Non-streaming failures arrive with the standard error envelope.
-      const body = (await response.json().catch(() => null)) as
-        | { error?: { code?: string; message?: string; retryAfterSeconds?: number } }
-        | null;
+      const body = (await response.json().catch(() => null)) as {
+        error?: { code?: string; message?: string; retryAfterSeconds?: number };
+      } | null;
       return {
         ok: false,
         code: body?.error?.code ?? 'internal',
         message: body?.error?.message ?? 'The server could not start this generation.',
-        ...(body?.error?.retryAfterSeconds ? { retryAfterSeconds: body.error.retryAfterSeconds } : {}),
+        ...(body?.error?.retryAfterSeconds
+          ? { retryAfterSeconds: body.error.retryAfterSeconds }
+          : {}),
       };
     }
 
     const reader = response.body?.getReader();
     if (!reader) {
-      return { ok: false, code: 'internal', message: 'This browser cannot read the generation stream.' };
+      return {
+        ok: false,
+        code: 'internal',
+        message: 'This browser cannot read the generation stream.',
+      };
     }
 
     const decoder = new TextDecoder();
@@ -103,7 +114,11 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
         options.onEvent?.(event);
 
         if (event.type === 'ready') {
-          terminal = { ok: true, bundle: event.bundle, ...(event.audit ? { audit: event.audit } : {}) };
+          terminal = {
+            ok: true,
+            bundle: event.bundle,
+            ...(event.audit ? { audit: event.audit } : {}),
+          };
         } else if (event.type === 'error') {
           terminal = {
             ok: false,
@@ -116,14 +131,28 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
     }
 
     // The rule the client depends on: no terminal event means the stream itself failed.
-    return terminal ?? { ok: false, code: 'internal', message: 'The connection ended before the model was ready. Try again.' };
+    return (
+      terminal ?? {
+        ok: false,
+        code: 'internal',
+        message: 'The connection ended before the model was ready. Try again.',
+      }
+    );
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
       return options.signal?.aborted
         ? { ok: false, code: 'aborted', message: 'Generation was cancelled.' }
-        : { ok: false, code: 'stalled', message: 'The model stopped responding. Try again in a moment.' };
+        : {
+            ok: false,
+            code: 'stalled',
+            message: 'The model stopped responding. Try again in a moment.',
+          };
     }
-    return { ok: false, code: 'network', message: 'The server could not be reached. Is the backend running?' };
+    return {
+      ok: false,
+      code: 'network',
+      message: 'The server could not be reached. Is the backend running?',
+    };
   } finally {
     clearInterval(stallTimer);
     clearTimeout(totalTimer);
@@ -132,10 +161,14 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
 }
 
 /** A small typed fetch for the non-streaming endpoints. Errors come back as values, never throws. */
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; code: string; message: string }> {
+export async function apiFetch<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<{ ok: true; data: T } | { ok: false; code: string; message: string }> {
   try {
     const response = await fetch(`${API_BASE}${path}`, init);
-    const body = (await response.json().catch(() => null)) as (T & { error?: { code: string; message: string } }) | null;
+    const body = (await response.json().catch(() => null)) as
+      (T & { error?: { code: string; message: string } }) | null;
     if (!response.ok) {
       return {
         ok: false,

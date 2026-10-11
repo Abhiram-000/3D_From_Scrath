@@ -10,7 +10,8 @@
   import { onMount } from 'svelte';
   import { apiFetch } from '$lib/core/api.ts';
 
-  const { onclose, onload }: { onclose: () => void; onload: (code: string, name: string) => void } = $props();
+  const { onclose, onload }: { onclose: () => void; onload: (code: string, name: string) => void } =
+    $props();
 
   interface Entry {
     id: string;
@@ -41,10 +42,16 @@
     error = null;
     const params = [`limit=${PAGE}`, `offset=${offset}`];
     if (search.trim()) params.push(`search=${encodeURIComponent(search.trim())}`);
-    const result = await apiFetch<{ entries: Entry[]; total: number }>(`/gallery?${params.join('&')}`);
+    const result = await apiFetch<{ entries: Entry[]; total: number }>(
+      `/gallery?${params.join('&')}`,
+    );
     loading = false;
     if (result.ok) {
-      entries = result.ok ? (reset ? result.data.entries : [...entries, ...result.data.entries]) : entries;
+      entries = result.ok
+        ? reset
+          ? result.data.entries
+          : [...entries, ...result.data.entries]
+        : entries;
       total = result.data.total;
     } else {
       error = 'The gallery could not be reached. Is the backend running?';
@@ -106,7 +113,14 @@
       {:else if entries.length === 0 && !error}
         <div class="chat-empty-state">
           <div class="chat-empty-icon">
-            <svg width="36" height="36" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <svg
+              width="36"
+              height="36"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
               <rect x="2" y="3" width="5" height="5" /><rect x="9" y="3" width="5" height="5" />
               <rect x="2" y="10" width="5" height="3" /><rect x="9" y="10" width="5" height="3" />
             </svg>
@@ -127,8 +141,18 @@
                 {#if entry.snapshotUrl}
                   <img src={entry.snapshotUrl} alt={entry.name} loading="lazy" />
                 {:else}
-                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
-                    <path d="M12 2L2 7L12 12L22 7L12 2Z" /><path d="M2 17L12 22L22 17" /><path d="M2 12L12 17L22 12" />
+                  <svg
+                    width="40"
+                    height="40"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" /><path d="M2 17L12 22L22 17" /><path
+                      d="M2 12L12 17L22 12"
+                    />
                   </svg>
                 {/if}
               </div>
@@ -147,7 +171,14 @@
 
         {#if entries.length < total}
           <div class="gallery-more">
-            <button class="modal-btn" onclick={() => { offset += PAGE; void refresh(); }} disabled={loading}>
+            <button
+              class="modal-btn"
+              onclick={() => {
+                offset += PAGE;
+                void refresh();
+              }}
+              disabled={loading}
+            >
               {loading ? 'Loading…' : `Show more (${entries.length} of ${total})`}
             </button>
           </div>
@@ -191,7 +222,9 @@
     border-radius: var(--radius-md);
     overflow: hidden;
     cursor: pointer;
-    transition: border-color var(--dur-fast) ease, transform var(--dur-fast) var(--ease-out);
+    transition:
+      border-color var(--dur-fast) ease,
+      transform var(--dur-fast) var(--ease-out);
   }
 
   .gallery-card:hover:not(:disabled) {

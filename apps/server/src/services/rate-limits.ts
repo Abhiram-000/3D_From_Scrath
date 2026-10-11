@@ -94,7 +94,10 @@ export function clientKey(context: Context, trustProxy: number, remoteAddress: s
     const forwarded = context.req.header('x-forwarded-for');
     if (forwarded) {
       // The header lists client, proxy1, proxy2… — take from the right, past `trustProxy` hops.
-      const hops = forwarded.split(',').map((item) => item.trim()).filter(Boolean);
+      const hops = forwarded
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
       const index = Math.max(0, hops.length - trustProxy - 1);
       return hops[index] ?? remoteAddress;
     }

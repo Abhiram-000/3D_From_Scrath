@@ -90,7 +90,13 @@ export interface GalleryStore {
   list(query: GalleryQuery): Promise<GalleryList>;
   get(id: string): Promise<GalleryRecord | null>;
   /** Insert or replace by id. UUIDs are minted here so a retried publish cannot double-insert. */
-  put(record: { name: string; subject: string; tags: string[]; bundle: unknown; id?: string }): Promise<GalleryRecord>;
+  put(record: {
+    name: string;
+    subject: string;
+    tags: string[];
+    bundle: unknown;
+    id?: string;
+  }): Promise<GalleryRecord>;
   delete(id: string): Promise<boolean>;
   /** Store snapshot bytes; returns the URL they are served from. Content-addressed by uuid. */
   putSnapshot(bytes: Uint8Array, mime: string): Promise<string>;
@@ -130,8 +136,12 @@ export class PostgresStore implements GalleryStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )`);
-    await this.client.query(`CREATE INDEX IF NOT EXISTS blueprints_subject_idx ON blueprints (subject)`);
-    await this.client.query(`CREATE INDEX IF NOT EXISTS blueprints_created_idx ON blueprints (created_at DESC)`);
+    await this.client.query(
+      `CREATE INDEX IF NOT EXISTS blueprints_subject_idx ON blueprints (subject)`,
+    );
+    await this.client.query(
+      `CREATE INDEX IF NOT EXISTS blueprints_created_idx ON blueprints (created_at DESC)`,
+    );
     await this.client.query(`
       CREATE TABLE IF NOT EXISTS snapshots (
         id UUID PRIMARY KEY,
@@ -198,7 +208,11 @@ export class PostgresStore implements GalleryStore {
   }
 
   async put(input: {
-    name: string; subject: string; tags: string[]; bundle: unknown; id?: string;
+    name: string;
+    subject: string;
+    tags: string[];
+    bundle: unknown;
+    id?: string;
   }): Promise<GalleryRecord> {
     const id = input.id ?? randomUUID();
     const now = new Date().toISOString();
@@ -241,10 +255,7 @@ export class PostgresStore implements GalleryStore {
   }
 
   async getSnapshot(id: string): Promise<{ bytes: Uint8Array; mime: string } | null> {
-    const result = await this.client.query(
-      'SELECT mime, bytes FROM snapshots WHERE id = $1',
-      [id],
-    );
+    const result = await this.client.query('SELECT mime, bytes FROM snapshots WHERE id = $1', [id]);
     const row = result.rows[0];
     if (!row) return null;
     return { bytes: new Uint8Array(row.bytes as Buffer), mime: String(row.mime) };
@@ -285,10 +296,13 @@ export class FileStore implements GalleryStore {
     this.snapshotDir = path.join(config.storage.dataDir, 'snapshots');
     this.announcement = {
       backend: 'file',
-      notice: 'the gallery is stored in a local file; published models are lost if this filesystem is replaced',
+      notice:
+        'the gallery is stored in a local file; published models are lost if this filesystem is replaced',
       warnings:
         reason === 'unreachable'
-          ? ['DATABASE_URL is set but unreachable: the gallery fell back to the local file. Check the database.']
+          ? [
+              'DATABASE_URL is set but unreachable: the gallery fell back to the local file. Check the database.',
+            ]
           : [],
     };
   }
@@ -372,15 +386,22 @@ export class FileStore implements GalleryStore {
   }
 
   async put(input: {
-    name: string; subject: string; tags: string[]; bundle: unknown; id?: string;
+    name: string;
+    subject: string;
+    tags: string[];
+    bundle: unknown;
+    id?: string;
   }): Promise<GalleryRecord> {
     await this.init();
     const now = Date.now();
     const existing = input.id ? this.rows.find((row) => row.id === input.id) : undefined;
     if (existing) {
       Object.assign(existing, {
-        name: input.name, subject: input.subject, tags: [...input.tags],
-        bundle: input.bundle, updatedAt: now,
+        name: input.name,
+        subject: input.subject,
+        tags: [...input.tags],
+        bundle: input.bundle,
+        updatedAt: now,
       });
       this.schedulePersist();
       return existing;
@@ -460,7 +481,9 @@ export async function openGalleryStore(config: ServerConfig): Promise<GallerySto
       connectionString: config.storage.databaseUrl,
       // Managed providers require TLS; a local Docker Postgres refuses it. Detect from the error
       // direction and retry with the other setting, never overriding an explicit sslmode (`06`).
-      ssl: /sslmode=/.test(config.storage.databaseUrl) ? undefined : { rejectUnauthorized: config.storage.sslRejectUnauthorized },
+      ssl: /sslmode=/.test(config.storage.databaseUrl)
+        ? undefined
+        : { rejectUnauthorized: config.storage.sslRejectUnauthorized },
       max: 8,
     });
     // An idle pool client dying must be a warning and a replacement, never a crash (`06`).

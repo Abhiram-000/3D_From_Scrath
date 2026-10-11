@@ -34,10 +34,15 @@ export function validateQuizQuestions(raw: string): QuizValidation {
   let dropped = 0;
 
   for (const entry of parsed) {
-    if (!entry || typeof entry !== 'object') { dropped += 1; continue; }
+    if (!entry || typeof entry !== 'object') {
+      dropped += 1;
+      continue;
+    }
     const record = entry as Record<string, unknown>;
     const options = Array.isArray(record.options)
-      ? record.options.filter((option): option is string => typeof option === 'string' && option.length > 0)
+      ? record.options.filter(
+          (option): option is string => typeof option === 'string' && option.length > 0,
+        )
       : [];
     const correctIndex = Number(record.correctIndex);
 
@@ -58,7 +63,9 @@ export function validateQuizQuestions(raw: string): QuizValidation {
       question: record.question.slice(0, 400),
       options: options.slice(0, 6).map((option) => option.slice(0, 200)),
       correctIndex: Math.min(correctIndex, 5),
-      explanation: String(record.explanation ?? 'See the model: the answer is visible on screen.').slice(0, 800),
+      explanation: String(
+        record.explanation ?? 'See the model: the answer is visible on screen.',
+      ).slice(0, 800),
       difficulty: 'application',
     });
   }

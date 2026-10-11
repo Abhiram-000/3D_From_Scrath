@@ -18,7 +18,12 @@ export class LoadingBackground {
     const isLowEnd = (navigator.hardwareConcurrency ?? 4) <= 4 || isMobile;
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const camera = new THREE.PerspectiveCamera(
+      75,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      1000,
+    );
     const renderer = new THREE.WebGLRenderer({
       canvas,
       alpha: true,
@@ -116,13 +121,23 @@ export class LoadingBackground {
             const dy = ay - Number(pos[b + 1]);
             const dz = az - Number(pos[b + 2]);
             if (Math.sqrt(dx * dx + dy * dy + dz * dz) < 3.5) {
-              linePositions.push(ax, ay, az, Number(pos[b]), Number(pos[b + 1]), Number(pos[b + 2]));
+              linePositions.push(
+                ax,
+                ay,
+                az,
+                Number(pos[b]),
+                Number(pos[b + 1]),
+                Number(pos[b + 2]),
+              );
             }
           }
         }
         linesMesh.geometry.dispose();
         linesMesh.geometry = new THREE.BufferGeometry();
-        linesMesh.geometry.setAttribute('position', new THREE.Float32BufferAttribute(linePositions, 3));
+        linesMesh.geometry.setAttribute(
+          'position',
+          new THREE.Float32BufferAttribute(linePositions, 3),
+        );
       }
 
       scene.rotation.y += 0.001;

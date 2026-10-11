@@ -71,7 +71,10 @@
 
     // Arriving without a topic is a lost session, not a generation to bill (`07`).
     if (!topic) {
-      showError('No topic to generate. Start from the landing page and describe what you want to see.', { canRetry: false });
+      showError(
+        'No topic to generate. Start from the landing page and describe what you want to see.',
+        { canRetry: false },
+      );
       return cleanup;
     }
 
@@ -207,10 +210,32 @@
           <span class="scene-loader__orbit scene-loader__orbit--one"><i></i></span>
           <span class="scene-loader__orbit scene-loader__orbit--two"><i></i></span>
           <span class="scene-loader__orbit scene-loader__orbit--three"><i></i></span>
-          <svg width="42" height="42" viewBox="0 0 24 24" fill="none" class="rotating-logo" aria-hidden="true">
-            <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="url(#logoGradient)" stroke-width="1.5" stroke-linejoin="round" />
-            <path d="M2 17L12 22L22 17" stroke="url(#logoGradient)" stroke-width="1.5" stroke-linejoin="round" />
-            <path d="M2 12L12 17L22 12" stroke="url(#logoGradient)" stroke-width="1.5" stroke-linejoin="round" />
+          <svg
+            width="42"
+            height="42"
+            viewBox="0 0 24 24"
+            fill="none"
+            class="rotating-logo"
+            aria-hidden="true"
+          >
+            <path
+              d="M12 2L2 7L12 12L22 7L12 2Z"
+              stroke="url(#logoGradient)"
+              stroke-width="1.5"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M2 17L12 22L22 17"
+              stroke="url(#logoGradient)"
+              stroke-width="1.5"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M2 12L12 17L22 12"
+              stroke="url(#logoGradient)"
+              stroke-width="1.5"
+              stroke-linejoin="round"
+            />
             <defs>
               <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" stop-color="var(--cream)" />
@@ -239,13 +264,48 @@
           >
             <div class="stage-icon">
               {#if index === 0}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></svg>
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"
+                  ><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></svg
+                >
               {:else if index === 1}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 2L2 7L12 12L22 7L12 2Z" /><path d="M2 17L12 22L22 17" /></svg>
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"
+                  ><path d="M12 2L2 7L12 12L22 7L12 2Z" /><path d="M2 17L12 22L22 17" /></svg
+                >
               {:else if index === 2}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg>
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"
+                  ><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg
+                >
               {:else}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg
+                >
               {/if}
               <div class="stage-spinner" aria-hidden="true"></div>
             </div>
@@ -278,7 +338,15 @@
     {:else}
       <div class="error-container" role="alert">
         <div class="error-icon-wrap">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <svg
+            width="28"
+            height="28"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
+          >
             <circle cx="12" cy="12" r="10" />
             <line x1="15" y1="9" x2="9" y2="15" />
             <line x1="9" y1="9" x2="15" y2="15" />
@@ -292,7 +360,8 @@
           {/if}
           <!-- Retrying keeps the same topic, so there has to be a way to change it: a topic the
                model cannot build will fail again. -->
-          <button class="back-btn" onclick={() => (window.location.href = '/')}>Change topic</button>
+          <button class="back-btn" onclick={() => (window.location.href = '/')}>Change topic</button
+          >
         </div>
       </div>
     {/if}

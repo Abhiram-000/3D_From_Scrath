@@ -15,7 +15,11 @@
     questions,
     onclose,
     source = 'authored',
-  }: { questions: QuizQuestion[]; onclose: () => void; source?: 'authored' | 'generated' } = $props();
+  }: {
+    questions: QuizQuestion[];
+    onclose: () => void;
+    source?: 'authored' | 'generated';
+  } = $props();
 
   const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'] as const;
 
@@ -54,7 +58,10 @@
 <div class="modal-container quiz-modal glass-panel">
   <div class="modal-header">
     <h2>Quiz Mode</h2>
-    <span class="quiz-source-badge" title={source === 'authored' ? 'Written for this exact model' : 'Generated for this model'}>
+    <span
+      class="quiz-source-badge"
+      title={source === 'authored' ? 'Written for this exact model' : 'Generated for this model'}
+    >
       {source === 'authored' ? 'authored' : 'generated'}
     </span>
     <button class="modal-close-btn" onclick={onclose} aria-label="Close quiz">×</button>
@@ -72,7 +79,8 @@
           {#each question.options as option, index (index)}
             <button
               class="quiz-option"
-              class:is-correct={answered[question.id] !== undefined && index === question.correctIndex}
+              class:is-correct={answered[question.id] !== undefined &&
+                index === question.correctIndex}
               class:is-wrong={answered[question.id] === index && index !== question.correctIndex}
               class:is-selected={answered[question.id] === index}
               onclick={() => answer(index)}
@@ -85,7 +93,11 @@
         </div>
 
         {#if answered[question.id] !== undefined}
-          <div class="quiz-status visible" class:correct={answered[question.id] === question.correctIndex} class:wrong={answered[question.id] !== question.correctIndex}>
+          <div
+            class="quiz-status visible"
+            class:correct={answered[question.id] === question.correctIndex}
+            class:wrong={answered[question.id] !== question.correctIndex}
+          >
             <div class="feedback-title">
               {answered[question.id] === question.correctIndex ? '✓ Correct!' : '✗ Not quite.'}
             </div>
@@ -95,9 +107,16 @@
       </div>
     </div>
 
-    <div class="modal-footer" style="display:flex; justify-content:space-between; align-items:center; padding: 0 24px 20px;">
+    <div
+      class="modal-footer"
+      style="display:flex; justify-content:space-between; align-items:center; padding: 0 24px 20px;"
+    >
       <span class="quiz-score">Score: {score}</span>
-      <button class="modal-btn" onclick={next} disabled={question ? answered[question.id] === undefined : true}>
+      <button
+        class="modal-btn"
+        onclick={next}
+        disabled={question ? answered[question.id] === undefined : true}
+      >
         {current === questions.length - 1 ? 'Finish' : 'Next'}
       </button>
     </div>
@@ -106,8 +125,13 @@
       <p class="results-percentage">{Math.round((score / questions.length) * 100)}%</p>
       <p class="results-grade">{grade((score / questions.length) * 100)}</p>
       <p class="results-line">{score} of {questions.length} correct</p>
-      <p class="results-guidance">Try changing the parameters to see the same principles in motion.</p>
-      <div class="results-actions" style="display:flex; gap:12px; justify-content:center; margin-top:20px;">
+      <p class="results-guidance">
+        Try changing the parameters to see the same principles in motion.
+      </p>
+      <div
+        class="results-actions"
+        style="display:flex; gap:12px; justify-content:center; margin-top:20px;"
+      >
         <button class="modal-btn" onclick={restart}>Try again</button>
         <button class="modal-btn" onclick={onclose}>Back to the model</button>
       </div>

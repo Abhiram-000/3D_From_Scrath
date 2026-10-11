@@ -118,7 +118,9 @@ test.describe('the viewer', () => {
       await page.getByRole('button', { name: mode, exact: true }).click();
       await page.waitForTimeout(350);
       // Still rendering after the switch: a mode that kills the loop is the failure this catches.
-      const fps = await page.getByTitle('Frames per second, measured over a rolling window').textContent();
+      const fps = await page
+        .getByTitle('Frames per second, measured over a rolling window')
+        .textContent();
       expect(Number.parseFloat(fps ?? '0')).toBeGreaterThan(0);
     }
   });
@@ -178,7 +180,8 @@ test.describe('the viewer', () => {
 
     // Feed a program that passes the gate and fails at build time, through the same host the AI's code uses.
     await page.evaluate(() => {
-      const host = (window as unknown as { __edu3dHost?: { load: (code: string) => void } }).__edu3dHost;
+      const host = (window as unknown as { __edu3dHost?: { load: (code: string) => void } })
+        .__edu3dHost;
       host?.load(`
         scene.describe({ name: 'Broken', description: 'Fails at build.', concept: 'x', objectives: ['y'] });
         scene.mesh({ id: 'a', geometry: geom.sphere({ radius: 0 / 0 }), material: mat.metal({}) });
@@ -198,7 +201,8 @@ test.describe('the viewer', () => {
     await waitForModel(page);
 
     await page.evaluate(() => {
-      const host = (window as unknown as { __edu3dHost?: { load: (code: string) => void } }).__edu3dHost;
+      const host = (window as unknown as { __edu3dHost?: { load: (code: string) => void } })
+        .__edu3dHost;
       host?.load(`
         scene.describe({ name: 'Runaway', description: 'Never finishes.', concept: 'x', objectives: ['y'] });
         var n = 0;

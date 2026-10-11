@@ -16,7 +16,10 @@
   import { apiFetch } from '$lib/core/api.ts';
   import { toContext } from '$lib/core/model-context.ts';
 
-  const { manifest, selectedPart = null }: { manifest: ModelManifest | null; selectedPart?: string | null } = $props();
+  const {
+    manifest,
+    selectedPart = null,
+  }: { manifest: ModelManifest | null; selectedPart?: string | null } = $props();
 
   const PERSONAS: ReadonlyArray<{ id: ChatPersona; label: string }> = [
     { id: 'teacher', label: 'Teacher — Professor Paradox' },
@@ -33,8 +36,7 @@
     timestamp: string;
   }
 
-  const now = () =>
-    new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const now = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   let messages = $state<Message[]>([
     {
@@ -72,19 +74,24 @@
 
   function onScroll() {
     if (!messagesElement) return;
-    const distance = messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight;
+    const distance =
+      messagesElement.scrollHeight - messagesElement.scrollTop - messagesElement.clientHeight;
     nearBottom = distance < 60;
     showScrollButton = distance > 160;
   }
 
   async function scrollToBottom(smooth = true) {
     await tick();
-    messagesElement?.scrollTo({ top: messagesElement.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+    messagesElement?.scrollTo({
+      top: messagesElement.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto',
+    });
   }
 
   /** Suggestion chips seeded from the model's own content (`05`). */
   const suggestions = $derived.by(() => {
-    if (!manifest) return ['Explain this concept', 'How does this work?', 'What are the key principles?'];
+    if (!manifest)
+      return ['Explain this concept', 'How does this work?', 'What are the key principles?'];
     const context = toContext(manifest, selectedPart);
     return [
       ...context.parts.slice(0, 2).map((part) => `What does the ${part.name.toLowerCase()} do?`),
@@ -122,7 +129,10 @@
 
     thinking = false;
     if (result.ok) {
-      messages = [...messages, { id: sequence++, role: 'assistant', text: result.data.text, timestamp: now() }];
+      messages = [
+        ...messages,
+        { id: sequence++, role: 'assistant', text: result.data.text, timestamp: now() },
+      ];
     } else {
       input = content;
       messages = [
@@ -151,7 +161,12 @@
 <div class="chat-container">
   <div class="chat-controls">
     <label class="chat-mode-label" for="chatModeSelector">Tutor style</label>
-    <select id="chatModeSelector" class="chat-mode-select" bind:value={persona} onchange={rememberPersona}>
+    <select
+      id="chatModeSelector"
+      class="chat-mode-select"
+      bind:value={persona}
+      onchange={rememberPersona}
+    >
       {#each PERSONAS as entry (entry.id)}
         <option value={entry.id}>{entry.label}</option>
       {/each}
@@ -179,7 +194,8 @@
         <div class="message-avatar">AI</div>
         <div class="message-content">
           <div class="message-bubble">
-            <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+            <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"
+            ></span>
           </div>
         </div>
       </div>
@@ -221,7 +237,13 @@
           }
         }}
       />
-      <button class="chat-send-btn" onclick={() => void send()} disabled={thinking || input.trim().length === 0} title="Send message" aria-label="Send message">
+      <button
+        class="chat-send-btn"
+        onclick={() => void send()}
+        disabled={thinking || input.trim().length === 0}
+        title="Send message"
+        aria-label="Send message"
+      >
         <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
           <path d="M2 10l16-8-8 16-2-8-6-0z" />
         </svg>

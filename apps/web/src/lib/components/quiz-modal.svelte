@@ -16,7 +16,11 @@
     questions,
     onclose,
     source = 'authored',
-  }: { questions: QuizQuestion[]; onclose: () => void; source?: 'authored' | 'generated' } = $props();
+  }: {
+    questions: QuizQuestion[];
+    onclose: () => void;
+    source?: 'authored' | 'generated';
+  } = $props();
 
   const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'] as const;
 
@@ -53,7 +57,12 @@
     <header class="head">
       <h2>
         Quiz — {questions.length} question{questions.length === 1 ? '' : 's'}
-        <span class="source" title={source === 'authored' ? 'Written for this exact model' : 'Generated for this model'}>
+        <span
+          class="source"
+          title={source === 'authored'
+            ? 'Written for this exact model'
+            : 'Generated for this model'}
+        >
           {source === 'authored' ? 'authored' : 'generated'}
         </span>
       </h2>
@@ -69,7 +78,8 @@
               {#each question.options as option, index (index)}
                 <button
                   class="option"
-                  class:correct={answered[question.id] !== undefined && index === question.correctIndex}
+                  class:correct={answered[question.id] !== undefined &&
+                    index === question.correctIndex}
                   class:wrong={answered[question.id] === index && index !== question.correctIndex}
                   onclick={() => answer(question, index)}
                   disabled={answered[question.id] !== undefined}
@@ -92,7 +102,14 @@
         <p class="score-line">{score} of {questions.length} correct</p>
         <p class="guidance">Try changing the parameters to see the same principles in motion.</p>
         <div class="result-actions">
-          <button class="primary" onclick={() => { answered = {}; score = 0; finished = false; }}>Try again</button>
+          <button
+            class="primary"
+            onclick={() => {
+              answered = {};
+              score = 0;
+              finished = false;
+            }}>Try again</button
+          >
           <button class="secondary" onclick={onclose}>Back to the model</button>
         </div>
       </div>
@@ -192,7 +209,9 @@
     border-radius: var(--radius-sm);
     font-size: var(--text-sm);
     color: var(--text-muted);
-    transition: border-color var(--duration-fast) ease, color var(--duration-fast) ease;
+    transition:
+      border-color var(--duration-fast) ease,
+      color var(--duration-fast) ease;
   }
 
   .option:hover:not(:disabled) {

@@ -61,7 +61,11 @@
 
     if (outcome.ok) {
       // Store the session bundle the same way the loading page does, then hand over.
-      storeBundle({ code: outcome.bundle.code, manifest: outcome.bundle.manifest, raw: outcome.bundle });
+      storeBundle({
+        code: outcome.bundle.code,
+        manifest: outcome.bundle.manifest,
+        raw: outcome.bundle,
+      });
       ongenerated(outcome.bundle.code, outcome.bundle.manifest.name);
     } else if (outcome.code === 'aborted') {
       failureMessage = null;
@@ -84,7 +88,14 @@
   <div class="modal-container generate-modal glass-panel">
     <div class="modal-header">
       <h2>✨ Generate a new model</h2>
-      <button class="modal-close-btn" onclick={() => { cancel(); onclose(); }} aria-label="Close generator">×</button>
+      <button
+        class="modal-close-btn"
+        onclick={() => {
+          cancel();
+          onclose();
+        }}
+        aria-label="Close generator">×</button
+      >
     </div>
 
     <div class="modal-body">

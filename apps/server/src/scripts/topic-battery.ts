@@ -27,7 +27,10 @@ const API = 'http://127.0.0.1:8787';
 const BATTERY: ReadonlyArray<{ topic: string; domain: string }> = [
   { topic: 'how does a pendulum work', domain: 'physics/mechanism' },
   { topic: 'how does a four-stroke engine cycle work', domain: 'mechanical/machines' },
-  { topic: 'how does a photovoltaic solar cell convert light into electricity', domain: 'electronics/circuits' },
+  {
+    topic: 'how does a photovoltaic solar cell convert light into electricity',
+    domain: 'electronics/circuits',
+  },
   { topic: 'how does DNA replication work', domain: 'biology' },
   { topic: 'why do the planets orbit the sun', domain: 'astronomy/space' },
   { topic: 'what does the sine function look like in 3D', domain: 'mathematics' },
@@ -152,7 +155,9 @@ async function runTopic(topic: string, domain: string): Promise<TopicResult> {
           // bindingCount: parameters that are NOT named in a parameterLeverage deficiency. The
           // audit's deficiency strings carry the parameter id; count parameters not accused.
           const deficiencyText = (audit?.deficiencies ?? []).join('\n').toLowerCase();
-          const unbound = manifest.parameters.filter((p) => deficiencyText.includes(p.id.toLowerCase()));
+          const unbound = manifest.parameters.filter((p) =>
+            deficiencyText.includes(p.id.toLowerCase()),
+          );
           base.bindingCount = Math.max(0, manifest.parameters.length - unbound.length);
         } else if (event.type === 'error') {
           base.failureCode = String(event.code);
@@ -173,7 +178,13 @@ async function main(): Promise<void> {
   const selected = BATTERY.slice(0, limit);
   console.log(`\nEDU-3D topic battery — ${selected.length} topic(s), streaming pipeline\n`);
   console.log(
-    'topic'.padEnd(52) + 'built'.padEnd(7) + 'parts'.padEnd(7) + 'binds'.padEnd(7) + 'score'.padEnd(7) + 'reps'.padEnd(5) + 'secs',
+    'topic'.padEnd(52) +
+      'built'.padEnd(7) +
+      'parts'.padEnd(7) +
+      'binds'.padEnd(7) +
+      'score'.padEnd(7) +
+      'reps'.padEnd(5) +
+      'secs',
   );
   console.log('-'.repeat(91));
 

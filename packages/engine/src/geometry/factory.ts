@@ -130,9 +130,12 @@ function requireVec3(value: unknown, name: string): Vec3 {
     const y = record.y ?? record.height;
     const z = record.z ?? record.length ?? record.depth;
     if (
-      typeof x === 'number' && Number.isFinite(x) &&
-      typeof y === 'number' && Number.isFinite(y) &&
-      typeof z === 'number' && Number.isFinite(z)
+      typeof x === 'number' &&
+      Number.isFinite(x) &&
+      typeof y === 'number' &&
+      Number.isFinite(y) &&
+      typeof z === 'number' &&
+      Number.isFinite(z)
     ) {
       return [x, y, z];
     }
@@ -435,7 +438,12 @@ export class GeometryFactory {
         if (Array.isArray(spec)) {
           size = spec;
         } else {
-          const record = spec as { size?: unknown; width?: unknown; height?: unknown; length?: unknown };
+          const record = spec as {
+            size?: unknown;
+            width?: unknown;
+            height?: unknown;
+            length?: unknown;
+          };
           size = record.size ?? { x: record.width, y: record.height, z: record.length };
         }
         const [w, h, d] = requireVec3(size, 'box size');
@@ -626,8 +634,9 @@ export class GeometryFactory {
         // given length; requiring `pitch` alone failed live generations that passed everything else.
         const specRecord = spec as { pitch?: number; height?: number; turns?: number } | undefined;
         const pitchSource =
-          specRecord?.pitch ?? (specRecord?.height !== undefined && specRecord.turns !== undefined)
-            ? specRecord.pitch ?? (specRecord.height ?? 0) / (specRecord.turns || 1)
+          (specRecord?.pitch ??
+          (specRecord?.height !== undefined && specRecord.turns !== undefined))
+            ? (specRecord.pitch ?? (specRecord.height ?? 0) / (specRecord.turns || 1))
             : undefined;
         const pitch = requireFinite(pitchSource, 'helix pitch (or height to derive it)');
         const segmentsPerTurn = clampSegments(spec?.segmentsPerTurn, 24, 128);

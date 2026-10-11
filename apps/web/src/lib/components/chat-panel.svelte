@@ -149,12 +149,7 @@
     {/each}
   </select>
 
-  <div
-    class="messages"
-    bind:this={listElement}
-    onscroll={onScroll}
-    aria-live="polite"
-  >
+  <div class="messages" bind:this={listElement} onscroll={onScroll} aria-live="polite">
     {#each messages as message (message.id)}
       <div class="message {message.role}">
         <span class="avatar" aria-hidden="true">{message.role === 'user' ? 'You' : 'AI'}</span>
@@ -174,7 +169,11 @@
   </div>
 
   {#if showScrollButton}
-    <button class="scroll-down" onclick={() => scrollToBottom()} aria-label="Scroll to latest message">↓</button>
+    <button
+      class="scroll-down"
+      onclick={() => scrollToBottom()}
+      aria-label="Scroll to latest message">↓</button
+    >
   {/if}
 
   {#if suggestions.length > 0}
@@ -205,7 +204,12 @@
         }
       }}
     />
-    <button class="send" type="submit" disabled={thinking || input.trim().length === 0} aria-label="Send message">
+    <button
+      class="send"
+      type="submit"
+      disabled={thinking || input.trim().length === 0}
+      aria-label="Send message"
+    >
       ➤
     </button>
   </form>
@@ -351,7 +355,9 @@
     background: var(--surface);
     color: var(--text-muted);
     font-size: var(--text-xs);
-    transition: color var(--duration-fast) ease, border-color var(--duration-fast) ease;
+    transition:
+      color var(--duration-fast) ease,
+      border-color var(--duration-fast) ease;
   }
 
   .chip:hover {

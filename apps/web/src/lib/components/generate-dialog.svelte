@@ -8,7 +8,7 @@
 -->
 <script lang="ts">
   import { detectTier } from '$lib/engine/sandbox-host.ts';
-  import { generateStream } from '$lib/core/api.ts';
+  import { generateStream, storeBundle } from '$lib/core/api.ts';
   import { ProgressModel, STAGES } from '$lib/core/loading-progress.ts';
 
   const {
@@ -61,12 +61,7 @@
 
     if (outcome.ok) {
       // Store the session bundle the same way the loading page does, then hand over.
-      try {
-        sessionStorage.setItem('edu3d.bundle.code', outcome.bundle.code);
-        sessionStorage.setItem('edu3d.bundle.manifest', JSON.stringify(outcome.bundle.manifest));
-      } catch {
-        /* diagnostics best-effort */
-      }
+      storeBundle({ code: outcome.bundle.code, manifest: outcome.bundle.manifest, raw: outcome.bundle });
       ongenerated(outcome.bundle.code, outcome.bundle.manifest.name);
     } else if (outcome.code === 'aborted') {
       failureMessage = null;

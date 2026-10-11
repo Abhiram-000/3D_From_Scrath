@@ -185,8 +185,10 @@
     if (sharedId) {
       void loadFromGallery(sharedId);
     } else if (generated) {
-      host.load(generated, 7);
-      topicName = 'Generated model';
+      host.load(generated.code, 7);
+      topicName = typeof (generated.manifest as { name?: string })?.name === 'string'
+        ? (generated.manifest as { name: string }).name
+        : 'Generated model';
     } else {
       host.load(REFERENCE_MODEL_SOURCE, 7);
     }

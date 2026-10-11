@@ -65,6 +65,8 @@ const heartbeatEvent = z.object({
   phase: GenerationPhase,
   /** Seconds elapsed in the current phase, so a stalled provider is visibly a stall, not a mystery. */
   phaseSeconds: z.number().min(0),
+  /** Characters the provider has streamed this phase — proof of life while the program is written. */
+  charsWritten: z.number().int().nonnegative().optional(),
   at: z.number().int().nonnegative(),
 });
 

@@ -6,6 +6,7 @@
 -->
 <script lang="ts">
   import type { ModelManifest } from '@edu3d/contracts';
+  import { peekBundleCode } from '$lib/core/api.ts';
 
   const {
     manifest,
@@ -22,11 +23,7 @@
   let rawCode = $state('');
 
   $effect(() => {
-    try {
-      rawCode = sessionStorage.getItem('edu3d.bundle.code') ?? '(the model came from the reference set — no AI output for this session)';
-    } catch {
-      rawCode = '(session storage unavailable)';
-    }
+    rawCode = peekBundleCode() ?? '(the model came from the reference set — no AI output for this session)';
   });
 
   async function copy() {

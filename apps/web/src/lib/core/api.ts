@@ -149,24 +149,63 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<{ o
   }
 }
 
-/** The bundle the viewer loads, handed over between pages in sessionStorage. */
-const BUNDLE_KEY = 'edu3d.bundle';
+/**
+ * The generated bundle's handoff between pages — THE single owner of the storage contract.
+ *
+ * History worth not repeating: three call sites once used two different naming schemes
+ * (`edu3d.bundle` vs `edu3d.bundle.code`), the loading page wrote one, the viewer read the other,
+ * and EVERY generated model silently fell back to the reference turbofan. All bundle persistence
+ * goes through these functions now; nothing touches the raw keys.
+ *
+ * Stored as one JSON document under one key so the code, manifest and raw bundle can never
+ * disagree about which generation they came from.
+ */
+const BUNDLE_KEY = 'edu3d.bundle.v2';
 
-/** Size guard: session storage is limited and a big bundle must not evict the topic on some browsers. */
-export function storeBundle(code: string): boolean {
+export interface StoredBundle {
+  code: string;
+  manifest: unknown;
+  /** The full wire bundle, kept for the diagnostics/code panel. */
+  raw?: unknown;
+}
+
+/** Store the generated bundle. Returns false when storage is unavailable (private mode). */
+export function storeBundle(bundle: StoredBundle): boolean {
   try {
-    sessionStorage.setItem(BUNDLE_KEY, code);
+    sessionStorage.setItem(BUNDLE_KEY, JSON.stringify(bundle));
     return true;
   } catch {
     return false;
   }
 }
 
-export function takeBundle(): string | null {
+/**
+ * Take the generated bundle: returns it and clears storage (one generation → one load), or null
+ * when none is waiting. A corrupt entry is discarded rather than trusted — a half-written bundle
+ * must not render.
+ */
+export function takeBundle(): StoredBundle | null {
   try {
-    const code = sessionStorage.getItem(BUNDLE_KEY);
-    if (code !== null) sessionStorage.removeItem(BUNDLE_KEY);
-    return code;
+    const raw = sessionStorage.getItem(BUNDLE_KEY);
+    if (raw === null) return null;
+    sessionStorage.removeItem(BUNDLE_KEY);
+    const parsed = JSON.parse(raw) as StoredBundle;
+    if (typeof parsed?.code !== 'string' || parsed.code.length === 0) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/** Peek without consuming: the code panel wants the raw output for the CURRENT model even after load. */
+export function peekBundleCode(): string | null {
+  try {
+    // The take on load clears the waiting key; the panel re-stores what it needs under the same
+    // shape, so a peek is the same parse without the remove.
+    const raw = sessionStorage.getItem(BUNDLE_KEY);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw) as StoredBundle;
+    return typeof parsed?.code === 'string' ? parsed.code : null;
   } catch {
     return null;
   }

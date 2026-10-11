@@ -74,12 +74,15 @@ export async function runPipeline(
   // ── Heartbeat loop: the thing that makes silence diagnostic (`04` stage 5) ──────────────
   let heartbeatsStopped = false;
   const phaseStart = { phase: 'queued' as GenerationPhase, at: Date.now() };
+  /** Characters the provider has streamed in the current phase — the learner's proof of life. */
+  let charsWritten = 0;
   const heartbeatTimer = setInterval(() => {
     if (heartbeatsStopped) return;
     deps.sink({
       type: 'heartbeat',
       phase: phaseStart.phase,
       phaseSeconds: (Date.now() - phaseStart.at) / 1000,
+      ...(charsWritten > 0 ? { charsWritten } : {}),
       at: nowSec(),
     });
   }, HEARTBEAT_INTERVAL_MS);
@@ -100,6 +103,7 @@ export async function runPipeline(
 
     // ── Stage 2: the AI call ─────────────────────────────────────────────────
     enter('model', 'The model is designing your 3D scene…');
+    charsWritten = 0;
     const first = await deps.ai.complete({
       messages: [
         { role: 'system', content: systemPrompt },
@@ -107,6 +111,18 @@ export async function runPipeline(
       ],
       maxOutputTokens: deps.maxOutputTokens,
       temperature: 0.4,
+      onProgress: (chars) => {
+        charsWritten = chars;
+        // Immediate sink on progress: the heartbeat interval is 10s, but a learner staring at a
+        // stalled bar needs the number the moment it moves (`07`).
+        deps.sink({
+          type: 'heartbeat',
+          phase: 'model',
+          phaseSeconds: (Date.now() - phaseStart.at) / 1000,
+          charsWritten: chars,
+          at: nowSec(),
+        });
+      },
     });
     if (!first.ok) {
       return { ok: false, failure: { code: mapAiFailure(first.code), message: first.message, ...(first.retryAfterSeconds ? { retryAfterSeconds: first.retryAfterSeconds } : {}) } };

@@ -7,7 +7,7 @@
   import { onMount } from 'svelte';
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import type { ModelManifest } from '@edu3d/contracts';
-  import { apiFetch } from '$lib/core/api.ts';
+  import { apiFetch, peekBundleCode } from '$lib/core/api.ts';
 
   const { manifest, onclose }: { manifest: ModelManifest | null; onclose: () => void } = $props();
 
@@ -28,11 +28,10 @@
     if (!manifest) return;
     publishing = true;
 
-    // The generated bundle when this session made one; the reference source otherwise — publishing
-    // the reference model is legitimate (it is a real model) and previously failed silently.
-    const code =
-      (sessionStorage.getItem('edu3d.bundle.code') ?? '').trim() ||
-      REFERENCE_MODEL_SOURCE;
+    // The generated bundle when one is waiting in this session; the reference source otherwise —
+    // publishing the reference model is legitimate (it is a real model).
+    const waiting = peekBundleCode();
+    const code = (waiting ?? '').trim() || REFERENCE_MODEL_SOURCE;
     const manifestToStore = manifest;
 
     try {

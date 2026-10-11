@@ -12,7 +12,7 @@
   import { onMount } from 'svelte';
   import { Ambient } from '$lib/ambient.ts';
   import { LoadingBackground, initParticles } from '$lib/loading-background.ts';
-  import { generateStream } from '$lib/core/api.ts';
+  import { generateStream, storeBundle } from '$lib/core/api.ts';
   import { FactQueue, ProgressModel, STAGES } from '$lib/core/loading-progress.ts';
   import { detectTier } from '$lib/engine/sandbox-host.ts';
   // V1's loading stylesheet, verbatim.
@@ -140,13 +140,11 @@
       // The success flourish: orbits pause, the badge goes green, then the viewer takes over.
       success = true;
       stopProgressTimers();
-      try {
-        sessionStorage.setItem('edu3d.bundle.code', outcome.bundle.code);
-        sessionStorage.setItem('edu3d.bundle.manifest', JSON.stringify(outcome.bundle.manifest));
-        sessionStorage.setItem('edu3d.bundle.raw', JSON.stringify(outcome.bundle));
-      } catch {
-        /* diagnostics are best-effort; the code itself is what must survive */
-      }
+      storeBundle({
+        code: outcome.bundle.code,
+        manifest: outcome.bundle.manifest,
+        raw: outcome.bundle,
+      });
       // A short beat so the completed state is actually seen (V1's 900ms).
       setTimeout(() => {
         window.location.href = '/viewer';

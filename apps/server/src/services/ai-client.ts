@@ -21,6 +21,11 @@ export interface CompletionRequest {
   temperature?: number;
   /** Per-call timeout, milliseconds. Overrides the client default so chat can be snappier than generation. */
   timeoutMs?: number;
+  /**
+   * Called as the provider streams tokens, with the running character count — the learner's proof
+   * of life during a minutes-long model phase (`07`: progress must be honest AND visible).
+   */
+  onProgress?: (chars: number) => void;
 }
 
 export type CompletionResult =
@@ -230,6 +235,9 @@ export class AiClient {
           // was written (finish=length, empty content); 'medium' still plans thoroughly while
           // leaving room for the program itself. Unknown providers ignore the field.
           reasoning_effort: 'medium',
+          // Streaming whenever the caller wants progress, so token arrival is observable instead
+          // of a minutes-long opaque wait. The text is reassembled below; behavior is identical.
+          ...(request.onProgress ? { stream: true } : {}),
         }),
         signal: controller.signal,
       });
@@ -239,6 +247,13 @@ export class AiClient {
         const classified = classifyStatus(response.status, bodyText);
         if (!classified.retryable || finalAttempt) return { ok: false, ...classified };
         return { ok: false, ...classified };
+      }
+
+      // Streaming mode: reassemble SSE chunks into the same shape the non-streaming path returns,
+      // reporting character progress as tokens arrive. Falls back to JSON if the provider ignored
+      // `stream: true` (content-type is the tell).
+      if (request.onProgress && (response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+        return await this.consumeStream(response, request.onProgress);
       }
 
       const json = (await response.json().catch(() => null)) as
@@ -328,5 +343,95 @@ export class AiClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * Consume an SSE stream, reassembling it into the non-streaming result shape.
+   *
+   * Chunks carry `delta.content` fragments (and `delta.reasoning_content` on reasoning models —
+   * counted as progress too: thinking IS progress, it is just not text the program keeps). The
+   * finish reason arrives on the final chunk; usage where providers send it.
+   */
+  private async consumeStream(
+    response: Response,
+    onProgress: (chars: number) => void,
+  ): Promise<CompletionResult> {
+    const reader = response.body?.getReader();
+    if (!reader) {
+      return { ok: false, ...failure('malformed', 'The AI stream closed unexpectedly.', true) };
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let reasoningChars = 0;
+    let finishReason: string | null = null;
+    let usage = { promptTokens: 0, completionTokens: 0 };
+    let lastReport = 0;
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            const chunk = JSON.parse(payload) as {
+              choices?: Array<{
+                delta?: { content?: string | Array<{ text?: string }>; reasoning_content?: string };
+                finish_reason?: string | null;
+              }>;
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
+            };
+            const choice = chunk.choices?.[0];
+            if (choice?.finish_reason) finishReason = choice.finish_reason;
+            if (chunk.usage) {
+              usage = {
+                promptTokens: chunk.usage.prompt_tokens ?? usage.promptTokens,
+                completionTokens: chunk.usage.completion_tokens ?? usage.completionTokens,
+              };
+            }
+            const delta = choice?.delta;
+            if (delta?.reasoning_content) reasoningChars += delta.reasoning_content.length;
+            const content = delta?.content;
+            if (typeof content === 'string') text += content;
+            else if (Array.isArray(content)) text += content.map((part) => part?.text ?? '').join('');
+
+            // Throttled progress: every ~400 chars, so a fast stream does not spam the callback.
+            const total = text.length + reasoningChars;
+            if (total - lastReport >= 400) {
+              lastReport = total;
+              onProgress(total);
+            }
+          } catch {
+            /* a malformed chunk never kills the stream; the next one usually heals it */
+          }
+        }
+      }
+      onProgress(text.length + reasoningChars);
+    } catch {
+      if (text.length === 0) {
+        return { ok: false, ...failure('network', 'The AI stream was interrupted.', true) };
+      }
+      // Partial text with an aborted stream still parses in most cases; let the gate judge it.
+    }
+
+    if (text.length === 0) {
+      if (finishReason === 'length') {
+        return {
+          ok: false,
+          ...failure('truncated', 'The response was cut off before the model was complete. Try again.', true),
+        };
+      }
+      return { ok: false, ...failure('malformed', 'The AI returned an empty reply. Try again.', true) };
+    }
+
+    return { ok: true, text, finishReason, usage };
   }
 }

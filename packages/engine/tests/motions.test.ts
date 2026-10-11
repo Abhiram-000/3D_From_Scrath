@@ -277,6 +277,43 @@ describe('applyMotions — pause and time', () => {
     );
   });
 
+  it('runs a runsWhilePaused motion on the wall clock while the model clock is frozen', () => {
+    // The worker freezes `elapsed` while paused, so a paused pulse used to recompute the same
+    // scale every frame — the schema's own example ("glow pulses may differ", behavior.ts:69)
+    // was unreachable. Hosts that track one pass `unpausedElapsed`; a runsWhilePaused motion
+    // consumes it while everything else keeps the pausable clock.
+    const r = rig(
+      {
+        fan: { position: [0, 0, 0], scale: [1, 1, 1] },
+        glow: { position: [0, 0, 0], scale: [1, 1, 1] },
+      },
+      [
+        motion({ id: 'spin', partId: 'fan', kind: 'spin', rate: { const: 1 } }),
+        motion({
+          id: 'pulse',
+          partId: 'glow',
+          kind: 'pulse',
+          rate: { const: 1 },
+          amplitude: { const: 0.5 },
+          runsWhilePaused: true,
+        }),
+      ],
+    );
+
+    // Two paused ticks: model time pinned at 5 s, wall time advancing 5 → 6.2 s.
+    r.resetToBase();
+    applyMotions(r.host, ctx({ elapsed: 5, unpausedElapsed: 5 }), true);
+    const glowAtFirstTick = r.live('glow').scale[0] ?? Number.NaN;
+    r.resetToBase();
+    applyMotions(r.host, ctx({ elapsed: 5, unpausedElapsed: 6.2 }), true);
+    const glowAtSecondTick = r.live('glow').scale[0] ?? Number.NaN;
+
+    // The pulse breathes on wall time…
+    expect(glowAtSecondTick).not.toBeCloseTo(glowAtFirstTick, 6);
+    // …and the normal motion, skipped while paused, holds the identical pose at both ticks.
+    expect(r.live('fan').rotation).toBeUndefined();
+  });
+
   it('yields the earlier pose exactly when time goes backwards — the reset-exactness property', () => {
     const motions = [motion({ id: 'spin', partId: 'fan', kind: 'spin', rate: { param: 'rpm' } })];
     const r = rig({ fan: { position: [0, 0, 0], scale: [1, 1, 1] } }, motions);
@@ -416,6 +453,29 @@ describe('applyMotions — position and scale kinds', () => {
     applyMotions(r.host, ctx({ elapsed: 0.25 }), false);
     expect(r.live('flame').scale[0]).toBeLessThanOrEqual(2 * 1e-4);
     expect(r.live('flame').scale[0]).toBeGreaterThan(0);
+  });
+
+  it('holds pulse at unity on a non-finite wave instead of collapsing the part', () => {
+    // A non-finite wave means a host bug upstream (a NaN elapsed reaching the applicator). Every
+    // other kind degrades to "hold still"; pulse used to clamp to PULSE_MIN_FACTOR (1e-6),
+    // shrinking the part to near-invisibility — a different, quieter corruption.
+    const r = rig({ flame: { position: [0, 0, 0], scale: [2, 2, 2] } }, [
+      motion({
+        id: 'pulse',
+        partId: 'flame',
+        kind: 'pulse',
+        rate: { const: 1 },
+        amplitude: { const: 0.5 },
+      }),
+    ]);
+
+    r.resetToBase();
+    applyMotions(r.host, ctx({ elapsed: Number.NaN }), false);
+
+    // Factor exactly 1: the part keeps its base scale rather than collapsing to 2e-6.
+    expect(r.live('flame').scale[0]).toBe(2);
+    expect(r.live('flame').scale[1]).toBe(2);
+    expect(r.live('flame').scale[2]).toBe(2);
   });
 
   it('flows along a path, wrapping the sample fraction at 1', () => {

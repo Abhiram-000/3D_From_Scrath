@@ -234,6 +234,13 @@ interface WorkerState {
   paused: boolean;
   timeScale: number;
   elapsed: number;
+  /**
+   * Wall-clock seconds — advances every frame regardless of pause, and is consumed only by
+   * `runsWhilePaused` motions. The pausable `elapsed` freezes with the model, so without this
+   * second clock a paused pulse recomputed the same scale forever ("glow pulses may differ",
+   * behavior.ts's own example, was unreachable).
+   */
+  wallElapsed: number;
   frame: number;
   lastFrameAt: number;
   /** Wall-clock of the last heartbeat/stats post, so slow frames cannot starve the watchdog. */
@@ -439,6 +446,7 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     paused: false,
     timeScale: 1,
     elapsed: 0,
+    wallElapsed: 0,
     frame: 0,
     lastFrameAt: 0,
     lastHeartbeatMs: 0,
@@ -819,6 +827,8 @@ function applyDeclaredMotions(target: WorkerState): void {
   const context: ScalarContext = {
     params,
     elapsed: target.elapsed,
+    // The never-pausing clock, consumed only by runsWhilePaused motions inside the applicator.
+    unpausedElapsed: target.wallElapsed,
     frame: target.frame,
     probes: target.lastProbes,
   };
@@ -833,6 +843,8 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   // Clamped so a backgrounded tab resumes rather than fast-forwards (`08`).
   const delta = Math.min(TIMING.maxDelta, Math.max(0, rawDelta)) * target.timeScale;
   if (!target.paused) target.elapsed += delta;
+  // Always advances, paused or not: the clock runsWhilePaused motions live on.
+  target.wallElapsed += delta;
 
   const frameStart = now();
 
@@ -1209,6 +1221,9 @@ function loop(timestamp: number): void {
       case 'resetTime': {
         if (!state) return;
         state.elapsed = 0;
+        // The wall clock restarts with the model: a scrub-to-start must not leave a paused glow
+        // mid-breath.
+        state.wallElapsed = 0;
         if (state.manifest) state.physics?.reset(state.manifest);
         break;
       }

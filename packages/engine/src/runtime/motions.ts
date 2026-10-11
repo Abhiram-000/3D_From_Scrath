@@ -42,7 +42,7 @@ const PULSE_MIN_FACTOR = 1e-6;
  */
 const FALLBACK_FPS = 60;
 
-/** Half-angle epsilon inside which a Y rotation of ±90° is treated as gimbal lock. */
+/** Threshold on |sin(y)| — the asin slot of the XYZ decomposition: at or above it (approaching 1, i.e. Y ≈ ±90°) the Euler triple is gimbal-locked. */
 const GIMBAL_EPSILON = 1 - 1e-6;
 
 // ── Scalar resolution ────────────────────────────────────────────────────────
@@ -52,6 +52,13 @@ export interface ScalarContext {
   params: Readonly<Record<string, number>>;
   /** Model time in seconds — the same clock runFrame uses. */
   elapsed: number;
+  /**
+   * Wall-clock seconds — advanced by the host even while the model is paused. Consumed only by
+   * `runsWhilePaused` motions (and only while paused): the pausable clock freezes with the model,
+   * so without this field a paused pulse recomputed the same scale every frame and the schema's
+   * own "glow pulses may differ" example was unreachable.
+   */
+  unpausedElapsed?: number;
   /** Monotonic frame counter, if the host tracks one; else derive from elapsed at 60fps. */
   frame?: number;
   /** Physics probe read-outs by id, when a model runs physics. */
@@ -285,11 +292,23 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
       livePosition[2] - basePosition[2],
     ];
 
-    // `elapsed` is the whole clock; phase distributes a set of same-rate motions around a turn.
-    // A manifest missing its rate entirely (hand-built) resolves to 0 — still, never NaN.
+    // The clock this motion runs on. While paused, a runsWhilePaused motion consumes the host's
+    // always-advancing wall clock when one is provided — the whole point of the flag — while every
+    // other motion keeps the pausable clock and is skipped below anyway. The scoped context (built
+    // only when the clocks differ) makes rate/amplitude resolution read the same clock as the
+    // phase, so `{ signal: 'time' }` sources stay consistent with the motion's own timeline.
+    const clock =
+      paused && motion.runsWhilePaused && ctx.unpausedElapsed !== undefined
+        ? ctx.unpausedElapsed
+        : ctx.elapsed;
+    const scoped: ScalarContext = clock === ctx.elapsed ? ctx : { ...ctx, elapsed: clock };
+
+    // `clock` is the whole timeline for this motion; phase distributes a set of same-rate motions
+    // around a turn. A manifest missing its rate entirely (hand-built) resolves to 0 — still,
+    // never NaN.
     const phase = motion.phase ?? 0;
-    const rate = resolveScalar(motion.rate ?? { const: 0 }, ctx);
-    const angle = finiteOrZero(rate * ctx.elapsed + phase);
+    const rate = resolveScalar(motion.rate ?? { const: 0 }, scoped);
+    const angle = finiteOrZero(rate * clock + phase);
 
     switch (motion.kind) {
       case 'spin': {
@@ -305,8 +324,8 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
       case 'oscillate': {
         // rate is Hz, amplitude is metres (resolved through the same context so a slider can
         // drive stroke as directly as it drives speed).
-        const amplitude = resolveScalar(motion.amplitude ?? { const: 1 }, ctx);
-        const offset = finiteOrZero(amplitude * Math.sin(TAU * rate * ctx.elapsed + phase));
+        const amplitude = resolveScalar(motion.amplitude ?? { const: 1 }, scoped);
+        const offset = finiteOrZero(amplitude * Math.sin(TAU * rate * clock + phase));
         live.position = [
           livePosition[0] + axis[0] * offset,
           livePosition[1] + axis[1] * offset,
@@ -338,8 +357,8 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
 
       case 'translate': {
         // rate is m/s: displacement is velocity × time, amplitude scaling it (default 1).
-        const amplitude = resolveScalar(motion.amplitude ?? { const: 1 }, ctx);
-        const distance = finiteOrZero(amplitude * rate * ctx.elapsed);
+        const amplitude = resolveScalar(motion.amplitude ?? { const: 1 }, scoped);
+        const distance = finiteOrZero(amplitude * rate * clock);
         live.position = [
           livePosition[0] + axis[0] * distance,
           livePosition[1] + axis[1] * distance,
@@ -352,9 +371,14 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
         // rate is Hz. The factor breathes in [1, 1 + amplitude] for positive amplitude and is
         // clamped at PULSE_MIN_FACTOR below, so an over-negative amplitude shrinks the part to
         // (effectively) nothing instead of inverting it — a mirrored mesh is geometry corruption.
-        const amplitude = resolveScalar(motion.amplitude ?? { const: 1 }, ctx);
-        const wave = 0.5 + 0.5 * Math.sin(TAU * rate * ctx.elapsed + phase);
-        const factor = Math.max(PULSE_MIN_FACTOR, finiteOrZero(1 + amplitude * wave));
+        const amplitude = resolveScalar(motion.amplitude ?? { const: 1 }, scoped);
+        const wave = 0.5 + 0.5 * Math.sin(TAU * rate * clock + phase);
+        // A non-finite wave is a host bug upstream (a NaN clock reached the applicator). Every
+        // other kind degrades to "hold still"; pulse must too — holding at unity — rather than
+        // clamp to PULSE_MIN_FACTOR, which quietly collapsed the part to near-invisibility.
+        const factor = Number.isFinite(wave)
+          ? Math.max(PULSE_MIN_FACTOR, finiteOrZero(1 + amplitude * wave))
+          : 1;
         live.scale = [
           finiteOrZero(liveScale[0] * factor),
           finiteOrZero(liveScale[1] * factor),

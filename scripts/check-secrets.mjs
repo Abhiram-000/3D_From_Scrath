@@ -9,6 +9,7 @@
  * disabled, which is the actual failure mode this file exists to avoid.
  */
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { join, relative, extname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -161,20 +162,37 @@ async function scan(root) {
   return findings;
 }
 
-const findings = await scan(ROOT);
-
-if (findings.length > 0) {
-  console.error(`\nSecret scan FAILED — ${findings.length} finding(s):\n`);
-  for (const f of findings) {
-    console.error(`  ${f.file}:${f.line}  ${f.name}  ${f.text}`);
+/**
+ * True only when this file is the process entry point. The CLI must not run on import: the test
+ * suite imports `scan` directly, and an import that could `process.exit` would kill the runner.
+ */
+const isEntryPoint = () => {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
   }
-  console.error(
-    '\nRemove the value, move it to an untracked .env, and add the variable name to the matching' +
-      ' .env.example. If a match is a false positive, append the marker comment `' +
-      ALLOW_MARKER +
-      '` to that line.\n',
-  );
-  process.exit(1);
+};
+
+if (isEntryPoint()) {
+  const findings = await scan(ROOT);
+
+  if (findings.length > 0) {
+    console.error(`\nSecret scan FAILED — ${findings.length} finding(s):\n`);
+    for (const f of findings) {
+      console.error(`  ${f.file}:${f.line}  ${f.name}  ${f.text}`);
+    }
+    console.error(
+      '\nRemove the value, move it to an untracked .env, and add the variable name to the matching' +
+        ' .env.example. If a match is a false positive, append the marker comment `' +
+        ALLOW_MARKER +
+        '` to that line.\n',
+    );
+    process.exit(1);
+  }
+
+  console.log('Secret scan passed: no credentials found in tracked files.');
 }
 
-console.log('Secret scan passed: no credentials found in tracked files.');
+export { scan };

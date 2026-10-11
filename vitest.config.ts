@@ -16,6 +16,8 @@ export default defineConfig({
       'packages/*/src/**/*.test.ts',
       'packages/*/tests/**/*.test.ts',
       'apps/*/tests/**/*.test.ts',
+      // Repo-level gate scripts (check-secrets and friends) are tested where they live, in scripts/.
+      'scripts/*.test.ts',
     ],
     exclude: ['**/node_modules/**', '**/dist/**', '**/.svelte-kit/**', '**/tests/e2e/**'],
     reporters: ['default'],

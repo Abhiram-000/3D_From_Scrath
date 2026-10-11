@@ -141,13 +141,37 @@ const DEFAULTS = {
 } as const;
 
 /**
+ * Inputs the resolver cannot derive from the environment map.
+ *
+ * `resolveConfig` is a pure function of its arguments, and that purity is what lets the whole
+ * production-refusal matrix be unit-tested without touching the filesystem. "Does this process have a
+ * built frontend to serve" is a fact about the disk, so it arrives as a caller-supplied probe rather
+ * than an `existsSync` inside the resolver: `main.ts` passes the real answer, tests pass it explicitly,
+ * and neither makes the other depend on what happens to be built on the machine.
+ */
+export interface ResolveConfigDeps {
+  /**
+   * Whether this process will serve a built frontend from its own origin.
+   *
+   * Defaults to `false` — absent — deliberately, and the direction is not arbitrary. A caller that
+   * forgets to probe lands in the fail-safe direction, where a missing `PUBLIC_ORIGIN` is a refusal.
+   * Defaulting to `true` would fail open: a split deployment would boot, allow no origin, and hand
+   * learners a blank page with the reason buried in a browser console.
+   */
+  readonly staticSitePresent?: boolean;
+}
+
+/**
  * Resolve configuration from an environment map.
  *
  * Takes the environment as an argument rather than reading `process.env` directly so the resolver is a
  * pure function — which is what lets the whole production-refusal matrix be unit-tested without spawning
  * processes or mutating global state.
  */
-export function resolveConfig(env: Record<string, string | undefined>): ServerConfig {
+export function resolveConfig(
+  env: Record<string, string | undefined>,
+  deps: ResolveConfigDeps = {},
+): ServerConfig {
   const problems: ConfigProblem[] = [];
   const warnings: ConfigWarning[] = [];
 
@@ -155,6 +179,9 @@ export function resolveConfig(env: Record<string, string | undefined>): ServerCo
   const nodeEnv =
     rawEnv === 'production' ? 'production' : rawEnv === 'test' ? 'test' : 'development';
   const isProduction = nodeEnv === 'production';
+
+  // See `ResolveConfigDeps.staticSitePresent`: unknown is treated as absent, which refuses.
+  const staticSitePresent = deps.staticSitePresent ?? false;
 
   // ── AI ─────────────────────────────────────────────────────────────────────
   const apiKey = env.AI_API_KEY?.trim() || null;
@@ -238,14 +265,24 @@ export function resolveConfig(env: Record<string, string | undefined>): ServerCo
   }
 
   if (isProduction && origins.size === 0) {
-    // Single-container deployments serve the frontend from this same origin (static-pages.ts), so
-    // there is no cross-origin request to allow and no variable to set. The refusal only fires for
-    // split deployments — which signal themselves by configuring ALLOWED_ORIGINS/PUBLIC_ORIGIN.
-    warnings.push({
-      variable: 'PUBLIC_ORIGIN',
-      message:
-        'No CORS origins configured. Fine when this server also serves the frontend (single container); if the frontend deploys separately, set PUBLIC_ORIGIN to its URL.',
-    });
+    // Whether PUBLIC_ORIGIN is required at all depends on the deployment shape, not on taste. Serving
+    // the built site from this same origin (static-pages.ts) makes every request same-origin, so there
+    // is nothing to declare. Having no site to serve means this process is API-only, so the browser is
+    // necessarily on another origin — and with none allowed, every learner request is a CORS failure.
+    if (staticSitePresent) {
+      warnings.push({
+        variable: 'PUBLIC_ORIGIN',
+        message:
+          'No CORS origins configured. Fine because this server also serves the built frontend from its own origin; if you meant to deploy it separately, set PUBLIC_ORIGIN to its URL.',
+      });
+    } else {
+      problems.push({
+        variable: 'PUBLIC_ORIGIN',
+        message:
+          'No built frontend to serve and no origin allowed, so this server is API-only and every browser request from the frontend fails CORS.',
+        fix: 'Set PUBLIC_ORIGIN to the URL the frontend is served from (or list it in ALLOWED_ORIGINS), or build apps/web so this server serves it from this same origin.',
+      });
+    }
   }
 
   if (configuredOrigins.includes('*')) {

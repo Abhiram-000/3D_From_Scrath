@@ -17,6 +17,7 @@ import { buildApp, type AppState } from './app.ts';
 import { AiClient } from './services/ai-client.ts';
 import { buildLimiters } from './services/rate-limits.ts';
 import { openGalleryStore } from './services/gallery-store.ts';
+import { STATIC_SITE_PRESENT } from './services/static-pages.ts';
 
 /** Hard exit deadline. Generous enough for a flush; absolute, so nothing can hang the process (`06`). */
 const SHUTDOWN_HARD_EXIT_MS = 15_000;
@@ -29,7 +30,10 @@ async function main(): Promise<void> {
     /* dotenv is optional in production, where env comes from the platform. */
   }
 
-  const config = resolveConfig(process.env);
+  // The filesystem probe lives here, at the boundary, rather than inside the resolver: PUBLIC_ORIGIN is
+  // only load-bearing when this process has no built frontend to serve, and the answer comes from the
+  // same module that decides whether to serve one.
+  const config = resolveConfig(process.env, { staticSitePresent: STATIC_SITE_PRESENT });
   const logger = pino({
     level: config.logging.level,
     ...(config.logging.pretty ? { transport: { target: 'pino-pretty' } } : {}),

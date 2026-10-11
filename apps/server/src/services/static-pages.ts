@@ -24,7 +24,17 @@ const STATIC_ROOT = process.env.STATIC_ROOT
   : path.resolve(import.meta.dirname ?? '.', '../../../web/build');
 
 const INDEX = path.join(STATIC_ROOT, 'index.html');
-const HAS_BUILD = existsSync(INDEX);
+
+/**
+ * Whether this process will actually serve a built frontend.
+ *
+ * Exported so `main.ts` can hand the config resolver the same answer this middleware acts on. If the two
+ * disagreed the consequences are both bad and both silent: a server refusing to boot over a frontend it
+ * is serving, or booting certain it serves one it does not. Probing `index.html` rather than the
+ * directory is deliberate — a build interrupted midway leaves the directory present and the site
+ * unreachable, and a directory check would call that deployment single-origin.
+ */
+export const STATIC_SITE_PRESENT = existsSync(INDEX);
 
 /** Hashed assets get a year: the filename changes when the content does (`08`). */
 const IMMUTABLE_PREFIXES = ['/_app/'];
@@ -59,7 +69,7 @@ function fileResponse(filePath: string, context: Context): Response {
  * namespace always — an unknown API path falls to the JSON 404, never the SPA shell.
  */
 export async function staticSiteMiddleware(context: Context, next: Next): Promise<Response | void> {
-  if (!HAS_BUILD) {
+  if (!STATIC_SITE_PRESENT) {
     await next();
     return;
   }

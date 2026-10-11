@@ -140,8 +140,39 @@ describe('production refusals', () => {
     expect(config.problems.map((p) => p.variable)).toContain('ALLOWED_ORIGINS');
   });
 
+  it('refuses PUBLIC_ORIGIN when there is no built frontend to serve', () => {
+    // The refusal is conditional because PUBLIC_ORIGIN is only load-bearing in a split deployment. With
+    // no `index.html` under the static root this process is API-only, so a browser on the frontend's
+    // origin is cross-origin by definition — and with nothing allowed, every request is a CORS failure
+    // the learner sees as a blank page.
+    const { PUBLIC_ORIGIN: _omitted, ...env } = validProduction;
+    const config = resolveConfig(env, { staticSitePresent: false });
+    expect(shouldRefuseToStart(config)).toBe(true);
+    const problem = config.problems.find((p) => p.variable === 'PUBLIC_ORIGIN');
+    expect(problem?.fix).toMatch(/PUBLIC_ORIGIN|ALLOWED_ORIGINS/);
+  });
+
+  it('accepts a missing PUBLIC_ORIGIN when this server serves the frontend itself', () => {
+    // Same origin, so there is no cross-origin request to allow: refusing to boot here would be a false
+    // alarm on the single-container deployment the README documents.
+    const { PUBLIC_ORIGIN: _omitted, ...env } = validProduction;
+    const config = resolveConfig(env, { staticSitePresent: true });
+    expect(config.problems.map((p) => p.variable)).not.toContain('PUBLIC_ORIGIN');
+    expect(config.warnings.map((w) => w.variable)).toContain('PUBLIC_ORIGIN');
+  });
+
+  it('defaults the probe to absent, so a caller that forgets it fails closed', () => {
+    // Not `true`: a deploy that never passes the probe and has a separately hosted frontend would
+    // otherwise boot with no origin allowed and serve a platform no browser can reach.
+    const { PUBLIC_ORIGIN: _omitted, ...env } = validProduction;
+    const config = resolveConfig(env);
+    expect(config.problems.map((p) => p.variable)).toContain('PUBLIC_ORIGIN');
+  });
+
   it('reports every problem at once rather than the first', () => {
     // The exhaustiveness requirement, stated as a test: four things wrong, four problems reported.
+    // PUBLIC_ORIGIN is among them because the probe defaults to "no built frontend" — refusing is the
+    // direction that matters when a deploy forgets to say how its frontend is reached.
     const config = resolveConfig({ NODE_ENV: 'production' });
     expect(shouldRefuseToStart(config)).toBe(true);
     const variables = config.problems.map((p) => p.variable);

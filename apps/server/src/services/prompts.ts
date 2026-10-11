@@ -35,7 +35,7 @@
 import { describeApiSurface } from '@edu3d/engine';
 import type { ComplexityPreference } from '@edu3d/contracts';
 
-export const PROMPT_VERSION = '2026-10-v3-teaching';
+export const PROMPT_VERSION = '2026-10-v4-signatures';
 
 /** The domain grammar table from `00`, compressed to the rows the model can act on. */
 const DOMAIN_GRAMMARS: ReadonlyArray<{ domain: string; entities: string; motion: string }> = [
@@ -220,6 +220,38 @@ scene.quiz([
 scene.camera({ position: [3.2, -0.4, 3.6], target: [0, -1.1, 0], fov: 42 });`;
 
 /**
+ * The mandated mechanisms, as short worked forms.
+ *
+ * v4: the exemplar above demonstrates none of the mechanisms the hard contract mandates (instances,
+ * components, patterns, param-bound motion), so models met mandate #4 with guesswork. These are
+ * verified executable — the same snippets run through the authoring builder in CI via the
+ * api-reference tests' scaffold — and each is deliberately 2–4 lines: dense patterns to copy, not a
+ * second exemplar.
+ */
+const WORKED_MECHANISMS = `// Repetition as instances: one geometry, N placements, ONE draw call.
+var blade = geom.box({ size: [0.02, 0.004, 0.12] });
+scene.instances({
+  id: 'blades', geometry: blade, material: steel,
+  placements: geom.pattern.radial(24, 0.28, { axis: 'y', faceOutward: true }),
+});
+// A component defined once, placed many times, differing per instance via ctx.params.
+scene.defineComponent('bolt', function (ctx) {
+  var length = ctx.params.length ?? 0.05;
+  ctx.mesh({ id: 'shank', geometry: geom.cylinder({ radius: 0.006, height: length }), material: steel });
+  ctx.mesh({ id: 'head', geometry: geom.cylinder({ radius: 0.012, height: 0.008 }), material: steel, position: [0, length / 2 + 0.004, 0] });
+});
+for (var i = 0; i < 6; i++) {
+  scene.place('bolt', {
+    id: 'b' + i,
+    position: [Math.cos((i / 6) * M.TAU) * 0.3, 0, Math.sin((i / 6) * M.TAU) * 0.3],
+    params: { length: 0.04 + i * 0.01 },
+  });
+}
+// Declared motion with the rate BOUND to a parameter — auditable, and the slider provably drives it.
+scene.param({ id: 'rpm', label: 'Rotor speed', kind: 'number', min: 0, max: 300, default: 60, unit: 'rpm' });
+scene.motion({ id: 'spin', partId: 'blades', kind: 'spin', axis: [0, 1, 0], rate: { param: 'rpm' }, reason: 'The rotor turns at the learner-chosen speed.' });`;
+
+/**
  * Assemble the generation system prompt.
  *
  * Structure order matters as much as content: exemplar FIRST (primacy), reference table second
@@ -261,24 +293,33 @@ PASS 3 — 3D ENGINEER (what builds). Write the program against the API below.
 === COMPLETE WORKING EXAMPLE (your program must reach this standard) ===
 ${EXEMPLAR}
 
-=== API REFERENCE (every name your program may call) ===
+=== THE MANDATED MECHANISMS (short worked forms — copy these patterns) ===
+${WORKED_MECHANISMS}
+
+=== API REFERENCE (every call you may make, with its exact argument names) ===
+Call exactly these shapes: the argument names below are the ones the gate accepts. Angles are
+radians; positions/sizes are metres; [x,y,z] means an array of three numbers.
 ${surface}
 
-Rules for geometry arguments (the example shows each correct form):
-- Vectors are arrays: position: [x, y, z]. size: [w, h, d].
-- geom.box takes { size: [w, h, d] } or [w, h, d] — never {width, height, length}.
-- Round shapes take { radius, height?/halfHeight?, segments? }.
+Rules for geometry arguments (the reference table above shows each correct form):
+- Vectors are arrays: position: [x, y, z]. size: [w, h, d]. Angles are radians.
+- geom.box accepts { size: [w, h, d] }, [w, h, d] or { width, height, length } — prefer { size }.
+- Round shapes take { radius, height?/halfHeight?, segments? }; cylinders take radius or
+  radiusTop + radiusBottom.
 - Springs: geom.helix({ radius, wireRadius, turns, pitch }) — pitch is metres per turn; or pass
   height instead and pitch is derived. A spring that cannot compress is a picture of a spring.
 - Paths: geom.path([[x,y,z], [x,y,z], ...]) creates the handle; sweep/pipe/flow take that handle
   (or a raw array of points).
+- Profiles (geom.rect, geom.circleProfile, …) are for solid operators: extrude, revolve, sweep,
+  loft. The curve constructors (profile, bezierProfile, splineProfile, path) take their points as
+  POSITIONAL arguments, not an object.
 - scene.mesh returns a part id string, NOT an object: never bob.position.set(...) — use
   ctx.part('bob').setPosition(...) inside onFrame instead.
 - Every part needs a unique id. Every param needs a unique id.
 
 NEVER (each of these broke a real generated model):
 - bob.position.set / .rotation.set — part ids are strings, not objects
-- geom.box({ width, height, length }) — use { size: [w, h, d] }
+- inventing argument names not in the reference table — the shapes above are the contract
 - import statements, eval, fetch, document, window — the sandbox rejects them
 - calling scene.anything before scene.describe
 - duplicate part or parameter ids
@@ -350,7 +391,9 @@ export function wrapTopic(topic: string): string {
  * The self-repair prompt: the model's own code plus the specific, enumerated errors.
  *
  * "Targeted revision beats re-rolling" (`04`). The exemplar rides along: repair imitates the same
- * way generation does.
+ * way generation does. v4 also sends the full signature reference: repair is where an invented
+ * argument shape was first rejected, and re-sending exemplar-only made the model guess again
+ * against the same gap.
  */
 export function buildRepairPrompt(code: string, errors: readonly string[]): string {
   return `Your program was rejected. Fix it and return the COMPLETE corrected program in one fenced
@@ -358,6 +401,9 @@ block. Change only what the errors name — everything else already passed.
 
 THE CORRECT CALL SHAPES (compare your failing lines against these):
 ${EXEMPLAR}
+
+API REFERENCE (exact argument names the gate accepts):
+${describeApiSurface()}
 
 NUMBERED ERRORS TO FIX:
 ${errors.map((error, index) => `${index + 1}. ${error}`).join('\n')}

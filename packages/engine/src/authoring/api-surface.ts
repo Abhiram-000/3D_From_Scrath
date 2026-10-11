@@ -19,6 +19,7 @@ import { GeometryFactory } from '../geometry/factory.ts';
 import { MaterialFactory } from '../materials/factory.ts';
 import { SceneBuilder } from './scene.ts';
 import * as M from '../math/index.ts';
+import { API_REFERENCE } from './api-reference.ts';
 
 /** A callable member of the guest API, in `namespace.method` form. */
 export interface ApiMember {
@@ -132,10 +133,17 @@ export function apiSurface(): ReturnType<typeof buildApiSurface> {
 export const apiSurfaceSet = (): ReadonlySet<string> => apiSurface().qualified;
 
 /**
- * Render the surface as prompt documentation.
+ * Render the surface as prompt documentation: the authored reference, grouped by namespace.
  *
- * Grouped by namespace and alphabetised so the same surface always produces the same text — a prompt that
+ * Grouped by namespace and alphabetised (default code-unit sort — never `localeCompare`, whose
+ * order varies by machine) so the same surface always produces the same text — a prompt that
  * reorders between runs would invalidate response caching and make A/B comparisons meaningless.
+ *
+ * Reflection stays the source of truth for *what exists*; `API_REFERENCE` carries *how to call
+ * it*, and the two-way completeness test in tests/api-reference.test.ts welds them. A member that
+ * somehow reaches here without an entry (a process that skipped the suite) still renders its bare
+ * qualified name: generation must not die to a documentation gap the build already flags — the
+ * gate's accepted surface is untouched either way.
  */
 export function describeApiSurface(): string {
   const { byNamespace } = apiSurface();
@@ -143,7 +151,17 @@ export function describeApiSurface(): string {
 
   for (const namespace of [...byNamespace.keys()].sort()) {
     const members = [...new Set(byNamespace.get(namespace) ?? [])].sort();
-    lines.push(`${namespace}: ${members.join(', ')}`);
+    lines.push(`${namespace}:`);
+    for (const member of members) {
+      const entry = API_REFERENCE[`${namespace}.${member}`];
+      if (!entry) {
+        lines.push(`  ${namespace}.${member}`);
+        continue;
+      }
+      // `signature` begins with the qualified call name, so the line reads as the call itself.
+      lines.push(`  ${entry.signature} — ${entry.summary}`);
+      for (const exampleLine of entry.example.split('\n')) lines.push(`      ${exampleLine}`);
+    }
   }
 
   return lines.join('\n');

@@ -67,8 +67,10 @@ describe('the API surface descriptor', () => {
   it('renders deterministic prompt documentation', () => {
     // A prompt that reorders between runs invalidates response caching and makes A/B comparison meaningless.
     expect(describeApiSurface()).toBe(describeApiSurface());
-    expect(describeApiSurface()).toMatch(/^geom: /m);
-    expect(describeApiSurface()).toMatch(/^scene: /m);
+    // Namespace headers group the authored reference; the per-member rendering itself (signature,
+    // summary, example per member) is pinned by api-reference.test.ts.
+    expect(describeApiSurface()).toMatch(/^geom:$/m);
+    expect(describeApiSurface()).toMatch(/^scene:$/m);
   });
 });
 

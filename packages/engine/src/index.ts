@@ -77,6 +77,10 @@ export {
   describeApiSurface,
   type ApiMember,
 } from './authoring/api-surface.ts';
+// The authored half of the surface documentation: reflection says what exists, this says how to
+// call it. Exported so the server's prompt (and anything else that renders the contract) and the
+// completeness test read one and the same table.
+export { API_REFERENCE, type ApiReferenceEntry } from './authoring/api-reference.ts';
 
 // Hosts. The browser worker entry lives in the web app, because it needs DOM-worker globals
 // (`OffscreenCanvas`, `requestAnimationFrame`) that this package deliberately does not declare — the

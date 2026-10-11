@@ -46,12 +46,17 @@ const RAW_PRIMITIVE_BUILDERS = new Set([
 ]);
 
 /**
- * Part-name vocabulary that claims a mechanism. All three signals must agree before the audit
- * speaks — the name claims the mechanism, a motion targeting the part proves it performs it, and
- * `geometry.builder` (the manifest's per-part provenance) says whether the representation can
- * deliver it. A name alone is not evidence: false refinement instructions burn real API money.
+ * Part-name vocabulary that claims a gear; `cog` is the same word. `01:45-50` names gears
+ * specifically — "trapezoid teeth… visibly slip and jerk the moment the gear train turns" — and
+ * the instruction this check emits is gear-specific. Wheels, pulleys and cams are deliberately
+ * absent: the spec demands nothing of them, a wheel honestly *is* a cylinder, and flagging one
+ * sent a gear instruction down the paid refinement path on an honest model. All three signals
+ * must still agree before the audit speaks — the name claims the mechanism, a motion targeting
+ * the part proves it performs it, and `geometry.builder` (the manifest's per-part provenance)
+ * says whether the representation can deliver it. A name alone is not evidence: false
+ * refinement instructions burn real API money.
  */
-const GEAR_VOCABULARY = /gear|cog|wheel|pulley|cam/i;
+const GEAR_VOCABULARY = /gear|cog/i;
 
 /** Spring vocabulary, paired with compress-like motion kinds (oscillate/translate/pulse). */
 const SPRING_VOCABULARY = /spring|coil/i;

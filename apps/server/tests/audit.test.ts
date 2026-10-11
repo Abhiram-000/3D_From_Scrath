@@ -155,6 +155,32 @@ describe('representation fidelity — moving parts that are static-shape lookali
     expect(flagged?.instruction).toMatch(/helix/i);
   });
 
+  it('does not flag an honest wheel — a wheel is a cylinder, and 01 says nothing about wheels', () => {
+    // The controller's ruling on the fix round: `01:45-50` names gears specifically ("trapezoid
+    // teeth… visibly slip and jerk the moment the gear train turns"); wheel/pulley/cam was the
+    // brief's extension beyond the spec, not the spec's demand. A raw cylinder named wheel with a
+    // spin motion is honest geometry — flagging it sent a gear-specific instruction at major
+    // severity down the paid refinement path, a false instruction on an honest model.
+    const result = audit(`
+      scene.describe({ name: 'Pulley rig', description: 'An honest wheel.',
+        concept: 'wheels turn', objectives: ['see the wheel turn'] });
+      scene.param({ id: 'speed', kind: 'number', label: 'Speed', min: 0, max: 10, default: 5,
+        affects: [{ channel: 'motionRate' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'driveWheel', name: 'Drive wheel',
+        geometry: geom.cylinder({ radius: 0.3, height: 0.06, segments: 24 }), material: m });
+      scene.motion({ id: 'spin', partId: 'driveWheel', kind: 'spin', axis: [0, 0, 1],
+        rate: { param: 'speed' }, reason: 'The wheel turns at the speed the learner sets.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    expect(
+      deficienciesFor(result, 'representationFidelity'),
+      'an honest primitive wheel must not be flagged',
+    ).toEqual([]);
+  });
+
   it('does not flag the same names when the geometry is motion-correct — the check reads provenance, not names', () => {
     // The pins that keep this honest: identical vocabulary, identical motion, but builder 'gear'
     // and 'helix'. A name-heuristic with no geometry signal would flag these and burn real API

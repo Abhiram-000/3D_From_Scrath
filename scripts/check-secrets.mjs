@@ -90,6 +90,19 @@ const ALLOW_MARKER = 'secret-scan-ok';
 /** Files whose whole purpose is to name variables without values. */
 const isExampleEnv = (path) => basename(path).startsWith('.env') && path.includes('.example');
 
+/**
+ * Environment files that are themselves the finding, whatever they are called.
+ *
+ * `deploy.env` belongs here because it is the one env file `.gitignore` names outright, and a name
+ * there buys nothing unless this scan still reads it: the ignore rule exists to keep `git add .` from
+ * staging the key, and a scan that honoured ignore rules would therefore skip the very file the ignore
+ * rule was added for. The rule below matches on *name* and this scan walks the working tree, never
+ * `git ls-files`, so ignored-but-present stays visible — a present secret is the dangerous state, an
+ * absent one needs no scanning. Deriving candidates from git would reinstate the blind spot this
+ * constant exists to close.
+ */
+const SECRET_ENV_FILES = new Set(['.env', 'deploy.env']);
+
 async function* walk(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
@@ -116,8 +129,10 @@ async function scan(root) {
 
     const rel = relative(root, path);
 
-    // A committed `.env` is itself the finding — no pattern needed.
-    if (basename(path) === '.env' || (basename(path).startsWith('.env.') && !isExampleEnv(path))) {
+    const name = basename(path);
+
+    // A real environment file is itself the finding — no pattern needed.
+    if (SECRET_ENV_FILES.has(name) || (name.startsWith('.env.') && !isExampleEnv(path))) {
       findings.push({ file: rel, line: 0, name: 'environment file committed', text: '' });
       continue;
     }

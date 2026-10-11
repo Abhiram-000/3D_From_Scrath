@@ -332,6 +332,40 @@ describe('the reference turbofan', () => {
       expect(writes, `parameter '${id}' wrote nothing`).toBeDefined();
       expect((writes as Set<string>).size).toBeGreaterThan(0);
     }
+
+    // `cutaway` must show a *visibility* write, not the coincidental material/transform writes any
+    // frame callback produces — the channel its own declaration promises (affects: visibility).
+    const cutawayWrites = result.builder.observedWrites.get('cutaway');
+    expect(
+      [...(cutawayWrites ?? [])],
+      "cutaway must write the visibility channel it declares",
+    ).toContain('visibility');
+  });
+
+  it('sweeps cutaway into a genuine visibility change, not a warning', () => {
+    // The dead-control fix from the audit-honesty pass: the declaration always promised
+    // `affects: [{ channel: 'visibility' }]`, but the handler only called scene.warn. Sweeping
+    // both values must now leave observable visibility differences between the two nacelle halves.
+    const result = author(REFERENCE_MODEL_SOURCE);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const nacelle = () => result.manifest.parts.find((part) => part.id === 'nacelle');
+    const nacelleFull = () => result.manifest.parts.find((part) => part.id === 'nacelleFull');
+
+    result.builder.sweepParameter('cutaway', true);
+    const cutOpenVisible = nacelle()?.visible;
+    const cutOpenFull = nacelleFull()?.visible;
+
+    result.builder.sweepParameter('cutaway', false);
+    const closedVisible = nacelle()?.visible;
+    const closedFull = nacelleFull()?.visible;
+
+    // true → the cutaway half shows and the closed half hides; false → swapped.
+    expect(cutOpenVisible).toBe(true);
+    expect(cutOpenFull).toBe(false);
+    expect(closedVisible).toBe(false);
+    expect(closedFull).toBe(true);
   });
 
   it('carries a story that follows the causal arc and targets real parts', () => {

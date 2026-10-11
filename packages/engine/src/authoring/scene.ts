@@ -105,6 +105,33 @@ export interface CallbackTable {
 /** Which channels each parameter was observed to write, filled by the dry-run sweep. */
 export type ObservedWrites = Map<string, Set<string>>;
 
+/**
+ * One recorded sweep point: the quantised observable state of the whole model, and the time it
+ * was sampled at. Consumers compare points *within the same time* only (see `SWEEP_TIMES` in the
+ * audit) — comparing across times would make every time-driven write read as parameter causality.
+ */
+export interface SweepPoint {
+  time: number;
+  state: string;
+}
+
+/**
+ * Decimal places a swept value is rounded to before sweep points are compared.
+ *
+ * Models are authored in metres, radians, 0–1 opacity and 0–64 emissive intensity, so three
+ * decimals puts the change threshold at a millimetre / milliradian / a thousandth of a unit — far
+ * below the smallest effect a learner can see (the reference model's subtlest binding moves a
+ * channel by ~0.02) and far above the float jitter of recomputing the same expression, which is
+ * exactly the band an honest differential sweep must draw its line in.
+ */
+const SWEEP_QUANTUM_DECIMALS = 3;
+
+/** Quantise one number to the sweep's comparison precision, normalising −0 so it equals 0. */
+const quantise = (value: number): number => {
+  const scaled = Math.round(value * 10 ** SWEEP_QUANTUM_DECIMALS) / 10 ** SWEEP_QUANTUM_DECIMALS;
+  return Object.is(scaled, -0) ? 0 : scaled;
+};
+
 interface PartRecord {
   node: PartNode;
   /** Set on any frame that wrote to this part, so the audit can see which parts are actually alive. */
@@ -162,6 +189,42 @@ export class SceneBuilder {
   readonly observedWrites: ObservedWrites = new Map();
   /** The parameter currently being swept, so writes can be attributed to it. */
   private sweepingParameter: string | null = null;
+
+  /**
+   * Quantised model state at each sweep point, keyed by parameter id — the evidence the
+   * differential sweep compares. A parameter is causally live only if these states differ between
+   * points sampled at the same time; write presence alone proves nothing, because a frame
+   * callback writes every frame regardless of any parameter's value.
+   */
+  readonly sweepStates: Map<string, SweepPoint[]> = new Map();
+
+  /**
+   * The authored state every sweep point starts from: parameter values, part transforms,
+   * visibility, materials, metrics and motor targets, deep-copied at the first sweep call.
+   *
+   * Restoring it before each point is what makes a point's snapshot a pure function of
+   * (parameter value, sample time). Without the restore, incremental frame code
+   * (`rotation += rate·dt`) accumulates across points and every parameter looks live — the same
+   * false pass the differential sweep exists to remove, arriving through the back door.
+   */
+  private sweepBaseline: {
+    parameterValues: Array<[string, number | boolean | string]>;
+    parts: Array<
+      [
+        string,
+        {
+          position: [number, number, number];
+          rotation: [number, number, number] | undefined;
+          scale: [number, number, number];
+          visible: boolean;
+          /** The authored material reference; sweep-time setters fork copies, so this object is never mutated. */
+          material: PartNode['material'];
+        },
+      ]
+    >;
+    metrics: Array<[string, number]>;
+    motors: Array<[string, number]>;
+  } | null = null;
 
   private authorStart = 0;
 
@@ -330,18 +393,123 @@ export class SceneBuilder {
 
   // ── Dry-run support, used by the audit ────────────────────────────────────
 
-  /** Set a parameter and run the frame callbacks, attributing every write to that parameter. */
+  /**
+   * Set a parameter, run the reaction and frame callbacks, and record the *observable state* the
+   * point produced — not just which channels were written.
+   *
+   * The frame dispatch stays (deliberately): many legitimate models drive parameters from inside
+   * `onFrame` (`00:206` endorses exactly that), and removing it would false-flag every one of
+   * them. What changed is the verdict the audit draws: writes are coincidental evidence (a frame
+   * callback writes every frame regardless of parameter values); the *differential* between
+   * points' recorded states is the causal proof.
+   */
   sweepParameter(id: string, value: number | boolean | string, ctxTime = 0): void {
     if (!this.parameters.has(id)) return;
+    this.sweepBaseline ??= this.captureSweepBaseline();
+    this.restoreSweepBaseline();
     this.parameterValues.set(id, value);
     this.sweepingParameter = id;
     try {
       for (const callback of this.callbacks.parameterChange) callback(id, value);
       const ctx = this.createFrameContext(ctxTime, 1 / 60, false);
       for (const callback of this.callbacks.frame) callback(ctx);
+      const points = this.sweepStates.get(id) ?? [];
+      points.push({ time: ctxTime, state: this.sweepStateSignature() });
+      this.sweepStates.set(id, points);
     } finally {
       this.sweepingParameter = null;
     }
+  }
+
+  /**
+   * Restore the authored state after sweeping, so the manifest the audit returns — and anything
+   * that inspects the builder afterwards — sees the model as built, not as the last sweep point
+   * left it.
+   */
+  endParameterSweep(): void {
+    if (!this.sweepBaseline) return;
+    this.restoreSweepBaseline();
+  }
+
+  /** Snapshot the authored state the first sweep finds, before any point has mutated it. */
+  private captureSweepBaseline() {
+    return {
+      parameterValues: [...this.parameterValues.entries()],
+      parts: this.order.map((id) => {
+        const node = (this.parts.get(id) as PartRecord).node;
+        return [
+          id,
+          {
+            position: [...node.transform.position] as [number, number, number],
+            rotation: node.transform.rotation
+              ? ([...node.transform.rotation] as [number, number, number])
+              : undefined,
+            scale: [...node.transform.scale] as [number, number, number],
+            visible: node.visible,
+            material: node.material,
+          },
+        ] as [
+          string,
+          {
+            position: [number, number, number];
+            rotation: [number, number, number] | undefined;
+            scale: [number, number, number];
+            visible: boolean;
+            material: PartNode['material'];
+          },
+        ];
+      }),
+      metrics: [...this.metricValues.entries()],
+      motors: [...this.motorTargets.entries()],
+    };
+  }
+
+  /** Put the baseline back: parameters, transforms, visibility, materials, metrics, motors. */
+  private restoreSweepBaseline(): void {
+    if (!this.sweepBaseline) return;
+    this.parameterValues.clear();
+    for (const [key, value] of this.sweepBaseline.parameterValues) this.parameterValues.set(key, value);
+    for (const [id, entry] of this.sweepBaseline.parts) {
+      const record = this.parts.get(id);
+      if (!record) continue;
+      record.node.transform.position = [...entry.position];
+      record.node.transform.rotation = entry.rotation ? [...entry.rotation] : undefined;
+      record.node.transform.scale = [...entry.scale];
+      record.node.visible = entry.visible;
+      record.node.material = entry.material;
+    }
+    this.metricValues.clear();
+    for (const [key, value] of this.sweepBaseline.metrics) this.metricValues.set(key, value);
+    this.motorTargets.clear();
+    for (const [key, value] of this.sweepBaseline.motors) this.motorTargets.set(key, value);
+  }
+
+  /**
+   * Serialise the observable state every part channel a frame callback can write — transform,
+   * visibility, material color/emissive/opacity — plus published metrics and motor targets, with
+   * numbers quantised. A deterministic string per point is all the comparison needs: same string
+   * at every point of one time slice means the swept parameter changed nothing visible.
+   */
+  private sweepStateSignature(): string {
+    const snapshot: unknown[] = [];
+    for (const id of this.order) {
+      const node = (this.parts.get(id) as PartRecord).node;
+      snapshot.push([
+        id,
+        node.transform.position.map(quantise),
+        (node.transform.rotation ?? [0, 0, 0]).map(quantise),
+        node.transform.scale.map(quantise),
+        node.visible ? 1 : 0,
+        node.material?.color ?? null,
+        node.material?.emissiveIntensity !== undefined
+          ? quantise(node.material.emissiveIntensity)
+          : null,
+        node.material?.opacity !== undefined ? quantise(node.material.opacity) : null,
+      ]);
+    }
+    snapshot.push([...this.metricValues.entries()].map(([key, value]) => [key, quantise(value)]));
+    snapshot.push([...this.motorTargets.entries()].map(([key, value]) => [key, quantise(value)]));
+    return JSON.stringify(snapshot);
   }
 
   /** Run one frame without attributing writes — used to check liveliness. */

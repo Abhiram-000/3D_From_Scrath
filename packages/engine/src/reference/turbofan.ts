@@ -643,14 +643,13 @@ scene.onFrame(function (ctx) {
   // A subtle flicker, scaled by fuel so an idling engine is steady and a hot one is turbulent.
   var flicker = 1 + M.sin(ctx.time * 26) * 0.04 * fuel;
   ctx.part('flameVolume').setScale(flicker, flicker, 0.8 + fuel * 0.9);
-});
 
-scene.onParameterChange(function (id, value) {
-  if (id === 'cutaway') {
-    // Two nacelle halves rather than a live boolean: swapping visibility is instant, where re-meshing a
-    // boolean every toggle would stall the frame.
-    scene.warn('cutaway toggled');
-  }
+  // Cutaway: swap the two nacelle halves rather than re-mesh a live boolean — visibility is
+  // instant. Declared-then-reacted (the frame reads the parameter, so the change lands on the
+  // next frame even on a paused model, and the audit's sweep observes the visibility channel).
+  var cut = ctx.params.cutaway === true;
+  ctx.part('nacelle').setVisible(cut);
+  ctx.part('nacelleFull').setVisible(!cut);
 });
 
 // ── Story: the causal arc ───────────────────────────────────────────────────

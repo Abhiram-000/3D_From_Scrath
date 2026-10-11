@@ -3,9 +3,11 @@
  *
  * `01` requires that "'good' must be machine-checkable to drive refinement", and the mechanism is the
  * one this platform is uniquely positioned for: the server *runs the AI's actual code* in `node:vm`
- * (`authorInNodeVm`) and measures what it does. A parameter that writes nothing is observed, not
- * guessed; liveliness is counted frames, not a vibe. Every dimension score below is computed from a
- * proxy the dry run can measure, per `01`'s "scored by proxy signals the audit can measure".
+ * (`authorInNodeVm`) and measures what it does. A parameter that changes nothing is observed, not
+ * guessed — by differencing quantised model state between sweep points, because write presence
+ * alone is coincidental evidence (a frame callback writes every frame regardless of parameter
+ * values); liveliness is counted frames, not a vibe. Every dimension score below is computed from
+ * a proxy the dry run can measure, per `01`'s "scored by proxy signals the audit can measure".
  *
  * Deficiencies are written *for the generator that will fix them* — imperative and specific — because
  * `04` sends them straight back as the refinement prompt and "a finding without an actionable
@@ -25,6 +27,38 @@ import { authorInNodeVm } from '@edu3d/engine/node-host';
 
 /** Sweep samples per parameter: min, quarter, default, three-quarters, max. Enough to catch a dead binding. */
 const SWEEP_FRACTIONS = [0, 0.25, 0.5, 0.75, 1] as const;
+
+/**
+ * Sample times for the differential sweep, in seconds. Time 0 alone is blind to bindings that
+ * modulate time — `sin(t · frequency)` is 0 at t = 0 for *every* frequency — so each value is
+ * also sampled at 1 s. Only states sampled at the same time are ever compared, so a time-driven
+ * write (a flicker) can never read as parameter causality.
+ */
+const SWEEP_TIMES = [0, 1] as const;
+
+/**
+ * The values each parameter kind is swept across.
+ *
+ * Numbers get the fraction ladder plus the default — a sin-driven binding can coincide at two
+ * fractions, and six distinct samples make that negligible. Booleans, choices and colors are
+ * enumerable kinds: sweep every value the widget can take (for colors, whose space is continuous,
+ * the default plus two fixed probes).
+ */
+function sweepValuesFor(
+  parameter: ModelManifest['parameters'][number],
+): Array<number | boolean | string> {
+  if (parameter.kind === 'number') {
+    const span = parameter.max - parameter.min || 1;
+    return [
+      ...new Set([...SWEEP_FRACTIONS.map((fraction) => parameter.min + span * fraction), parameter.default]),
+    ];
+  }
+  if (parameter.kind === 'boolean') return [false, true];
+  if (parameter.kind === 'choice') {
+    return [...new Set([...parameter.options.map((option) => option.value), parameter.default])];
+  }
+  return [...new Set([parameter.default, '#ff0000', '#00ff00'])];
+}
 
 export interface AuditInput {
   /** Instrumented source, exactly what the browser will run. */
@@ -73,37 +107,57 @@ export function auditModel(input: AuditInput): AuditOutcome {
   const deficiencies: Deficiency[] = [];
   const dimensions: DimensionScore[] = [];
 
-  // ── Parameter leverage: the sweep `00` makes provable ──────────────────────
+  // ── Parameter leverage: the differential sweep `00` makes provable ─────────
+  //
+  // `00:210`: "a control that changes nothing is rejected, not shipped." Write *presence* cannot
+  // prove that — a frame callback writes every frame regardless of parameter values, so crediting
+  // writes false-passes every model with an onFrame. Causality is proven by *value change*: the
+  // quantised observable state must differ between sweep points taken at the same sample time.
   const leverageEvidence: string[] = [];
   let liveParameters = 0;
+
+  // Declarative causality: a motion whose rate/amplitude binds `{ param: id }` executes that
+  // binding every frame via the applicator, so the parameter is live by declaration — the audit
+  // does not need to re-run the binding to know the slider is wired to motion.
+  const motionBoundParams = new Set<string>();
+  for (const motion of manifest.motions) {
+    for (const source of [motion.rate, motion.amplitude]) {
+      if (source && typeof source === 'object' && 'param' in source && typeof source.param === 'string') {
+        motionBoundParams.add(source.param);
+      }
+    }
+  }
+
   for (const parameter of manifest.parameters) {
-    if (parameter.kind !== 'number') {
-      // Boolean/choice/color parameters are swept by toggling; a write anywhere counts.
-      builder.sweepParameter(
-        parameter.id,
-        parameter.kind === 'boolean' ? !parameter.default : parameter.default,
-      );
-      if ((builder.observedWrites.get(parameter.id)?.size ?? 0) > 0) liveParameters += 1;
-      continue;
+    const values = sweepValuesFor(parameter);
+    for (const time of SWEEP_TIMES) {
+      for (const value of values) builder.sweepParameter(parameter.id, value, time);
     }
-    const span = parameter.max - parameter.min || 1;
-    for (const fraction of SWEEP_FRACTIONS) {
-      builder.sweepParameter(parameter.id, parameter.min + span * fraction);
-    }
-    const writes = builder.observedWrites.get(parameter.id);
-    if (writes && writes.size > 0) {
+    const points = builder.sweepStates.get(parameter.id) ?? [];
+    const changedInSlice = SWEEP_TIMES.some((time) => {
+      const states = points.filter((point) => point.time === time).map((point) => point.state);
+      return new Set(states).size > 1;
+    });
+    if (changedInSlice || motionBoundParams.has(parameter.id)) {
       liveParameters += 1;
-      leverageEvidence.push(`'${parameter.id}' wrote: ${[...writes].join(', ')}`);
+      leverageEvidence.push(
+        changedInSlice
+          ? `'${parameter.id}': visible state changed across its sweep`
+          : `'${parameter.id}': drives a declared motion's rate/amplitude`,
+      );
     } else {
       deficiencies.push({
         dimension: 'parameterLeverage',
         severity: 'major',
         finding: `Parameter '${parameter.id}' changes nothing visible when swept across its whole range.`,
-        instruction: `Bind '${parameter.id}' to real behavior: use it in an onFrame callback to drive motion, emissive intensity or color of the parts it claims to affect (ctx.params.${parameter.id}).`,
+        instruction: `Bind '${parameter.id}' to real behavior: use it in an onFrame callback to drive motion, emissive intensity or color of the parts it claims to affect (ctx.params.${parameter.id}), or declare it as a motion's rate/amplitude (rate: { param: '${parameter.id}' }).`,
         subjectId: parameter.id,
       });
     }
   }
+  // Hand back the model as it was built: the manifest this audit returns is the one that ships,
+  // and it must not carry the last sweep point's parameter values and poses.
+  builder.endParameterSweep();
   const parameterFraction =
     manifest.parameters.length === 0 ? 0 : liveParameters / manifest.parameters.length;
   dimensions.push(

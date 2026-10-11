@@ -68,6 +68,7 @@ export {
   type ComponentContext,
   type FrameContext,
   type PartRef,
+  type SweepPoint,
 } from './authoring/scene.ts';
 export {
   apiSurface,

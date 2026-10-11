@@ -32,6 +32,7 @@ import {
 } from '@edu3d/contracts';
 import { compileGuest, createGuard, hardenRealm, type GuardHandle } from '@edu3d/sandbox';
 import {
+  applyMotions,
   GeometryError,
   M,
   MaterialError,
@@ -41,7 +42,10 @@ import {
   realize,
   type AdmissionVerdict,
   type MeshData,
+  type MotionHost,
+  type PartTransformLike,
   type RealizedModel,
+  type ScalarContext,
 } from '@edu3d/engine';
 import { PhysicsWorld } from './physics-world.ts';
 
@@ -210,6 +214,22 @@ interface WorkerState {
   /** The simulation, when the model declares one. Null until loaded; `simFailed` says why not. */
   physics: PhysicsWorld | null;
   simFailed: boolean;
+
+  /**
+   * Declared-motion state, captured at load (`applyMotions` is stateless by design):
+   *   - `partNodes` — the manifest's live part nodes, which `onFrame` writes through `ctx.part()`
+   *     and `syncTransforms` reads. The motion applicator writes them too, in the same frame.
+   *   - `motionBases` — each motion-driven part's authored transform, deep-copied at load and
+   *     never mutated: the anchor every animated pose is computed from, so reset and scrub are exact.
+   *   - `runsWhilePausedParts` — parts with at least one `runsWhilePaused` motion; those are the
+   *     only ones reset to base while paused, so a paused fan freezes mid-angle instead of
+   *     snapping to its authored pose while a paused glow keeps pulsing.
+   */
+  partNodes: Map<string, ModelManifest['parts'][number]>;
+  motionBases: Map<string, PartTransformLike>;
+  runsWhilePausedParts: Set<string>;
+  /** The latest physics probe read-outs, so `{ probe: … }` scalar sources resolve per frame. */
+  lastProbes: Readonly<Record<string, number>>;
 
   paused: boolean;
   timeScale: number;
@@ -411,6 +431,11 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     physics: null,
     simFailed: false,
 
+    partNodes: new Map(),
+    motionBases: new Map(),
+    runsWhilePausedParts: new Set(),
+    lastProbes: {},
+
     paused: false,
     timeScale: 1,
     elapsed: 0,
@@ -560,6 +585,29 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
   target.manifest = manifest;
   target.verdict = verdict;
   target.guard = guard;
+
+  // Declared-motion anchors, captured the moment the manifest exists and before any frame runs:
+  // the authored transform per motion-driven part (never mutated again — it is what every animated
+  // pose is computed from, so reset and time-scrub stay exact), the live node lookup, and the
+  // subset that keeps moving while paused.
+  target.partNodes = new Map(manifest.parts.map((node) => [node.id, node]));
+  target.motionBases = new Map();
+  target.runsWhilePausedParts = new Set();
+  for (const motion of manifest.motions) {
+    const node = target.partNodes.get(motion.partId);
+    if (node && !target.motionBases.has(motion.partId)) {
+      target.motionBases.set(motion.partId, {
+        position: [...node.transform.position] as [number, number, number],
+        ...(node.transform.rotation
+          ? { rotation: [...node.transform.rotation] as [number, number, number] }
+          : {}),
+        scale: [...node.transform.scale] as [number, number, number],
+      });
+    }
+    if (motion.runsWhilePaused) target.runsWhilePausedParts.add(motion.partId);
+  }
+  target.lastProbes = {};
+
   target.elapsed = 0;
   target.frame = 0;
   target.overruns = 0;
@@ -722,6 +770,61 @@ function updateHover(target: WorkerState): void {
   }
 }
 
+/**
+ * Reset motion-driven parts to their authored base, before the model's own frame code runs.
+ *
+ * This is the host half of the applicator's contract (`applyMotions` is stateless): after the
+ * reset, the live transform holds `base ⊕ this tick's onFrame writes`, so a declared motion can
+ * compose on top without accumulating and without clobbering what the model just wrote.
+ *
+ * While paused, only `runsWhilePaused` parts reset: everyone else freezes at the last animated
+ * pose — a paused fan stops mid-angle rather than snapping to its authored orientation — while
+ * the parts that keep moving are reset so their paused-time application stays absolute rather
+ * than multiplying on itself every frame.
+ */
+function resetMotionDrivenParts(target: WorkerState, paused: boolean): void {
+  for (const [partId, base] of target.motionBases) {
+    if (paused && !target.runsWhilePausedParts.has(partId)) continue;
+    const live = target.partNodes.get(partId)?.transform;
+    if (!live) continue;
+    live.position = [...base.position] as [number, number, number];
+    live.rotation = base.rotation ? ([...base.rotation] as [number, number, number]) : undefined;
+    live.scale = [...base.scale] as [number, number, number];
+  }
+}
+
+/**
+ * Apply declared motion for this tick — the consumer of `manifest.motions`.
+ *
+ * Runs after `runFrame` (model code reacts to parameters first; declared motion composes on top)
+ * and before `syncTransforms` (the renderer copies the composed pose). Nothing to apply when the
+ * model declares no motion; the map is empty and this is a no-op.
+ */
+function applyDeclaredMotions(target: WorkerState): void {
+  if (target.motionBases.size === 0 || !target.manifest) return;
+  const host: MotionHost = {
+    motions: target.manifest.motions,
+    baseTransform: (partId) => target.motionBases.get(partId),
+    liveTransform: (partId) => target.partNodes.get(partId)?.transform,
+    // `pointOnPath` stays unset: the engine has no runtime path sampler yet, so `flowAlongPath`
+    // skips in the browser (declared, audited, not yet flowing). Adding the sampler is a matter
+    // of resolving manifest.paths here — deliberately not guessed at today.
+  };
+  const params: Record<string, number> = {};
+  if (target.builder) {
+    for (const [id, value] of Object.entries(target.builder.currentParameters())) {
+      if (typeof value === 'number') params[id] = value;
+    }
+  }
+  const context: ScalarContext = {
+    params,
+    elapsed: target.elapsed,
+    frame: target.frame,
+    probes: target.lastProbes,
+  };
+  applyMotions(host, context, target.paused);
+}
+
 /** One frame: advance the model, run guest logic, render, publish. */
 function renderFrame(target: WorkerState, timestamp: number): void {
   const rawDelta = target.lastFrameAt === 0 ? 1 / 60 : (timestamp - target.lastFrameAt) / 1000;
@@ -741,6 +844,9 @@ function renderFrame(target: WorkerState, timestamp: number): void {
     if (Object.keys(stepped.probes).length > 0 && target.builder) {
       target.builder.publishProbes(stepped.probes);
     }
+    // Kept for the motion applicator too: `{ probe: … }` scalar sources resolve from these,
+    // the same measurements the model's own frame code just saw.
+    if (Object.keys(stepped.probes).length > 0) target.lastProbes = stepped.probes;
   }
 
   // Guest frame logic, budgeted. A callback that overruns repeatedly gets the model paused with an explanation
@@ -748,6 +854,9 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   if (target.builder && target.guard && !target.frameDisabled) {
     target.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
     const callbackStart = now();
+    // Declared motion composes with what the model writes, so the base reset happens first —
+    // the applicator's contract, not an optimisation.
+    resetMotionDrivenParts(target, target.paused);
     try {
       target.builder.runFrame(target.elapsed, delta, target.paused);
       const cost = now() - callbackStart;
@@ -769,6 +878,9 @@ function renderFrame(target: WorkerState, timestamp: number): void {
       const described = describeFailure(error);
       post({ type: 'notice', message: `Animation stopped: ${described.message}` });
     }
+
+    // Declared motion, after the model's own writes and before the renderer copies the pose.
+    applyDeclaredMotions(target);
 
     // Push the builder's authored transforms into the Three.js objects.
     syncTransforms(target);
@@ -1069,7 +1181,11 @@ function loop(timestamp: number): void {
         if (!state.frameDisabled && state.guard) {
           state.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
           try {
+            // Same order as the frame loop: base reset, model code, declared motion — so a
+            // paused model whose slider moved re-poses its runsWhilePaused motions immediately.
+            resetMotionDrivenParts(state, state.paused);
             state.builder.runFrame(state.elapsed, 0, state.paused);
+            applyDeclaredMotions(state);
             syncTransforms(state);
           } catch {
             // A parameter change that throws is reported by the next frame's handler; nothing to do here.

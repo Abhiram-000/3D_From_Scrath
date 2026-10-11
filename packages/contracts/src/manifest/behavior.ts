@@ -25,6 +25,18 @@ export const ScalarSource = z.union([
 ]);
 export type ScalarSource = z.infer<typeof ScalarSource>;
 
+/**
+ * The same source as guest code writes it — before zod applies the `scale`/`offset` defaults.
+ *
+ * The builder captures `scene.motion()` declarations verbatim into the manifest and the load path
+ * never round-trips through zod, so runtime consumers see exactly this shape: a `{ param: 'rpm' }`
+ * arrives with no `scale`/`offset` at all. Consumers that resolve scalars must therefore accept the
+ * input shape (the parsed output shape remains assignable to it) and default the missing fields
+ * themselves — `value * undefined` is NaN, the poison the motion applicator exists to keep out of
+ * transforms.
+ */
+export type ScalarSourceInput = z.input<typeof ScalarSource>;
+
 /** Motion archetypes with correct physical meaning; anything else goes through `onFrame`. */
 export const MotionKind = z.enum([
   'spin',
@@ -60,6 +72,13 @@ export const MotionDecl = z.object({
   reason: optionalText(240),
 });
 export type MotionDecl = z.infer<typeof MotionDecl>;
+
+/**
+ * A motion declaration as captured, defaults not yet applied — see {@link ScalarSourceInput}. The
+ * applicator consumes this shape because it consumes the manifest the builder built, not a parsed
+ * document; a fully-defaulted `MotionDecl` is always assignable to it.
+ */
+export type MotionDeclInput = z.input<typeof MotionDecl>;
 
 /** A named 3D path the model authored: flow lines, orbits, camera rails, particle routes. */
 export const PathDecl = z.object({

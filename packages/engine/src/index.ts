@@ -105,6 +105,16 @@ export {
   type RealizationDecisions,
 } from './runtime/admission.ts';
 export { realize, type RealizedModel, type RealizeOptions } from './runtime/realize.ts';
+// Declared-motion application: the consumer of manifest.motions. Pure by the same rule as
+// everything else in this barrel — the worker imports it directly into the frame loop, and the
+// tests import it into Node; it must be identical code in both.
+export {
+  applyMotions,
+  resolveScalar,
+  type MotionHost,
+  type PartTransformLike,
+  type ScalarContext,
+} from './runtime/motions.ts';
 
 // The hand-authored reference model: the on-disk fallback, the few-shot exemplar, and the test fixture.
 export { REFERENCE_MODEL_SOURCE, MINIMAL_MODEL_SOURCE } from './reference/turbofan.ts';

@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 import { prepareProgram, describeViolations, createGuard } from '@edu3d/sandbox';
 import { apiSurfaceSet, describeApiSurface } from '../src/authoring/api-surface.ts';
 import { authorModel, runFrame } from '../src/authoring/guest.ts';
+import { applyMotions, type PartTransformLike } from '../src/runtime/motions.ts';
 import { MINIMAL_MODEL_SOURCE, REFERENCE_MODEL_SOURCE } from '../src/reference/turbofan.ts';
 
 /** Run a program the way the server does: extract, gate, instrument. */
@@ -245,6 +246,68 @@ describe('the reference turbofan', () => {
     expect(spin?.rate).toHaveProperty('param', 'spoolRpm');
     // Every declared motion states why the part moves, which the audit reads to reject motion-for-animation.
     for (const motion of result.manifest.motions) expect(motion.reason).toBeTruthy();
+  });
+
+  it("spins the spool at the slider's speed — the flagship regression test", () => {
+    // The bug this whole phase removes: the spool-speed slider moved the thrust readouts (they
+    // come from onFrame) while the fan stood perfectly still, because nothing anywhere applied
+    // manifest.motions. This is the strongest browser-less proof: load the reference source
+    // through the same gate → instrument → author path the worker uses, then apply declared
+    // motion at two slider values and require *different rotations*, not just any rotation.
+    const result = author(REFERENCE_MODEL_SOURCE);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const nodes = new Map(result.manifest.parts.map((part) => [part.id, part]));
+    const snapshot = (transform: PartTransformLike): PartTransformLike => ({
+      position: [...transform.position],
+      ...(transform.rotation ? { rotation: [...transform.rotation] } : {}),
+      scale: [...transform.scale],
+    });
+    // The authored base per motion-driven part, captured at load exactly as the worker does.
+    const bases = new Map<string, PartTransformLike>();
+    for (const motion of result.manifest.motions) {
+      const transform = nodes.get(motion.partId)?.transform;
+      if (transform && !bases.has(motion.partId)) bases.set(motion.partId, snapshot(transform));
+    }
+
+    const spoolRotationAt = (rpm: number, elapsed: number): number => {
+      // Host reset → model frame code → apply motions: the worker's exact per-frame order.
+      for (const [id, base] of bases) {
+        const live = nodes.get(id)?.transform;
+        if (!live) continue;
+        live.position = [...base.position] as [number, number, number];
+        live.rotation = base.rotation
+          ? ([...base.rotation] as [number, number, number])
+          : undefined;
+        live.scale = [...base.scale] as [number, number, number];
+      }
+      result.builder.setParameter('spoolRpm', rpm);
+      result.builder.runFrame(elapsed, 1 / 60, false);
+      const params = Object.fromEntries(
+        Object.entries(result.builder.currentParameters()).filter(
+          (entry): entry is [string, number] => typeof entry[1] === 'number',
+        ),
+      );
+      applyMotions(
+        {
+          motions: result.manifest.motions,
+          baseTransform: (id) => bases.get(id),
+          liveTransform: (id) => nodes.get(id)?.transform,
+        },
+        { params, elapsed },
+        false,
+      );
+      return (nodes.get('spool')?.transform.rotation ?? [0, 0, 0])[2];
+    };
+
+    // spoolSpin: rate = spoolRpm × 0.000105 rad/s about z, so t = 1 s turns the fan by exactly
+    // that angle — the readouts and the rotation come from the same parameter at last.
+    const idle = spoolRotationAt(1_500, 1);
+    const flatOut = spoolRotationAt(9_000, 1);
+    expect(idle).toBeCloseTo(1_500 * 0.000105, 6);
+    expect(flatOut).toBeCloseTo(9_000 * 0.000105, 6);
+    expect(flatOut).not.toBeCloseTo(idle, 6);
   });
 
   it('proves every parameter drives something', () => {

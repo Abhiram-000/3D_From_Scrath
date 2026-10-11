@@ -165,6 +165,21 @@ export const ModelBundle = z.object({
   manifest: ModelManifest,
   /** The exact program the sandbox ran, after extraction and repair. */
   code: z.string().max(1_500_000),
+  /**
+   * Instrumented source — what actually executes in the browser, loop guard included.
+   *
+   * The pipeline validates the instrumented program (the loop guard is the cheap layer of the
+   * sandbox's five), but `code` must stay clean of `__edu3d_tick` noise because the learner reads
+   * it in the diagnostics panel. Both needs are real; the fix is to carry both strings. Optional
+   * because bundles published before this field existed still have to load — the worker falls back
+   * to `code`, guarded the old (expensive) way.
+   */
+  runtime: z
+    .string()
+    // Instrumentation adds a tick call per loop body, so runtime can exceed code's 1.5 MB cap;
+    // `rawOutput`'s 2 MB bound is the established precedent for the larger of the two strings.
+    .max(2_000_000)
+    .optional(),
   /** The provider's untouched reply, kept for diagnostics when it differed from `code`. */
   rawOutput: z.string().max(2_000_000).optional(),
   provenance: z

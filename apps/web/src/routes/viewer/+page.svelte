@@ -18,7 +18,7 @@
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
-  import { apiFetch, takeBundle } from '$lib/core/api.ts';
+  import { apiFetch, takeBundle, storedRuntime } from '$lib/core/api.ts';
   import { toContext } from '$lib/core/model-context.ts';
   import { Ambient, getTheme, setTheme } from '$lib/ambient.ts';
   // V1's viewer stylesheets, verbatim (app shell + extended modals).
@@ -183,7 +183,9 @@
     if (sharedId) {
       void loadFromGallery(sharedId);
     } else if (generated) {
-      host.load(generated.code, 7);
+      // The stored raw bundle carries the instrumented twin of code; loading it is what gives the
+      // model its browser-side loop guard.
+      host.load(generated.code, 7, storedRuntime(generated));
       topicName =
         typeof (generated.manifest as { name?: string })?.name === 'string'
           ? (generated.manifest as { name: string }).name
@@ -296,11 +298,12 @@
   });
 
   async function loadFromGallery(id: string) {
-    const result = await apiFetch<{ bundle: { code?: string } }>(
+    const result = await apiFetch<{ bundle: { code?: string; runtime?: string } }>(
       `/gallery/${encodeURIComponent(id)}`,
     );
     if (result.ok && result.data.bundle?.code) {
-      host?.load(result.data.bundle.code, 7);
+      // Entries published before the guard carry no runtime; they load clean, as they always did.
+      host?.load(result.data.bundle.code, 7, result.data.bundle.runtime);
       return;
     }
     toast('That shared model could not be loaded; showing the reference model instead.');
@@ -431,13 +434,13 @@
   }
 
   /** A generated or gallery model lands through the same atomic swap as every load (`03` R2). */
-  function swapInModel(code: string, name: string) {
+  function swapInModel(code: string, name: string, runtime?: string) {
     modelLoading = true;
     loadError = null;
     topicName = name;
     generateOpen = false;
     galleryOpen = false;
-    host?.load(code, Math.floor(Math.random() * 0xffffffff));
+    host?.load(code, Math.floor(Math.random() * 0xffffffff), runtime);
   }
 
   // ── Derived data ──────────────────────────────────────────────────────────

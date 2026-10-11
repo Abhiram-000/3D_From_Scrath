@@ -7,7 +7,7 @@
   import { onMount } from 'svelte';
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import type { ModelManifest } from '@edu3d/contracts';
-  import { apiFetch, peekBundleCode } from '$lib/core/api.ts';
+  import { apiFetch, peekBundleCode, peekBundleRuntime } from '$lib/core/api.ts';
 
   const { manifest, onclose }: { manifest: ModelManifest | null; onclose: () => void } = $props();
 
@@ -33,12 +33,17 @@
     const waiting = peekBundleCode();
     const code = (waiting ?? '').trim() || REFERENCE_MODEL_SOURCE;
     const manifestToStore = manifest;
+    // The instrumented twin rides along when the stored bundle has one, so a published model keeps
+    // its browser-side loop guard. The reference fallback ships clean source, as it always has.
+    const runtime = peekBundleRuntime();
 
     try {
       const response = await apiFetch<{ id: string; shareUrl: string }>('/gallery', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ bundle: { manifest: manifestToStore, code } }),
+        body: JSON.stringify({
+          bundle: { manifest: manifestToStore, code, ...(runtime ? { runtime } : {}) },
+        }),
       });
       if (response.ok) {
         shareUrl = `${window.location.origin}${response.data.shareUrl}`;

@@ -167,7 +167,7 @@ export class SandboxHost {
   private disposed = false;
 
   /** Retained so a kill can be recovered from by reloading the same program into a fresh worker. */
-  private lastProgram: { code: string; seed: number } | null = null;
+  private lastProgram: { code: string; seed: number; runtime?: string } | null = null;
   private theme = { top: '#17130f', bottom: '#08070a' };
 
   constructor(container: HTMLElement, callbacks: HostCallbacks = {}) {
@@ -388,9 +388,13 @@ export class SandboxHost {
    * A fresh worker per load, deliberately. Reusing one would leave the previous model's GPU objects, WASM heap and
    * closures alive in a realm that is already hardened — and hardened means the new load could not re-acquire what
    * it needs. Terminating is both the leak fix and the correctness fix.
+   *
+   * `runtime` is the instrumented twin of `code` and the string the worker actually compiles; `code`
+   * travels with it for the diagnostics panel. Omitted for the reference source and pre-guard
+   * bundles, which load the clean string exactly as they always have.
    */
-  load(code: string, seed = Math.floor(Math.random() * 0xffffffff)): void {
-    this.lastProgram = { code, seed };
+  load(code: string, seed = Math.floor(Math.random() * 0xffffffff), runtime?: string): void {
+    this.lastProgram = { code, seed, ...(runtime ? { runtime } : {}) };
     // Restart so each model gets a clean realm.
     this.stopWatchdog();
     this.worker?.terminate();
@@ -399,13 +403,13 @@ export class SandboxHost {
     this.spawnWorker();
 
     this.buildingUntil = performance.now() + WATCHDOG.buildGraceMs;
-    this.send({ type: 'load', code, seed });
+    this.send({ type: 'load', code, seed, ...(runtime ? { runtime } : {}) });
   }
 
   /** Retry the last program in a fresh worker. */
   reload(): void {
     if (!this.lastProgram) return;
-    this.load(this.lastProgram.code, this.lastProgram.seed);
+    this.load(this.lastProgram.code, this.lastProgram.seed, this.lastProgram.runtime);
   }
 
   resize(): void {

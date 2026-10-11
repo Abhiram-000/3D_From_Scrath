@@ -56,7 +56,7 @@ export type WorkerRequest =
       tier: DeviceTier;
       theme: { top: string; bottom: string };
     }
-  | { type: 'load'; code: string; seed: number; deadlineMs?: number }
+  | { type: 'load'; code: string; seed: number; deadlineMs?: number; runtime?: string }
   | { type: 'resize'; width: number; height: number; pixelRatio: number }
   | { type: 'setParameter'; id: string; value: number | boolean | string }
   | { type: 'setPaused'; paused: boolean }
@@ -452,6 +452,12 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
  *
  * The swap is atomic in the sense `03` R2 requires — the previous model is disposed only after the new one is
  * fully realized, so a failure anywhere above leaves the learner looking at what they already had.
+ *
+ * `runtime` is the instrumented twin of `code` and the string that actually executes: `compileGuest`'s
+ * guard closes over `__edu3d_tick` calls the instrumentation spliced in, so compiling the clean `code`
+ * instead meant no model reaching a browser ever had a loop guard — the cheap layer of the sandbox's
+ * five never ran. Old bundles (and the on-disk reference source) carry no `runtime`; they compile the
+ * clean string and fall back to the expensive outer layers, exactly as before.
  */
 function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type: 'load' }>): void {
   logs.length = 0;
@@ -465,7 +471,7 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
   try {
     // Step 2 and 3: facades and compilation, while `new Function` still exists.
     guard = createGuard();
-    compiled = compileGuest(request.code);
+    compiled = compileGuest(request.runtime ?? request.code);
   } catch (error) {
     const described = describeFailure(error);
     builder.dispose();

@@ -354,6 +354,10 @@ export async function runPipeline(
     const bundle: ModelBundle = {
       manifest: finalAudit.manifest,
       code: prepared.code,
+      // The instrumented twin: the audit above validated THIS string, so it is what must run in
+      // the browser — shipping `code` instead meant no model that reached a learner ever had the
+      // loop guard (the cheap layer of the sandbox's five never executed).
+      runtime: prepared.instrumented,
       rawOutput,
       provenance: {
         topic,

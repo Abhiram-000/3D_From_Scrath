@@ -16,7 +16,8 @@
     ongenerated,
   }: {
     onclose: () => void;
-    ongenerated: (code: string, name: string) => void;
+    /** `runtime` is the instrumented twin of `code` — what the worker actually compiles. */
+    ongenerated: (code: string, name: string, runtime?: string) => void;
   } = $props();
 
   let topic = $state('');
@@ -66,7 +67,7 @@
         manifest: outcome.bundle.manifest,
         raw: outcome.bundle,
       });
-      ongenerated(outcome.bundle.code, outcome.bundle.manifest.name);
+      ongenerated(outcome.bundle.code, outcome.bundle.manifest.name, outcome.bundle.runtime);
     } else if (outcome.code === 'aborted') {
       failureMessage = null;
     } else {

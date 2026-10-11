@@ -10,8 +10,14 @@
   import { onMount } from 'svelte';
   import { apiFetch } from '$lib/core/api.ts';
 
-  const { onclose, onload }: { onclose: () => void; onload: (code: string, name: string) => void } =
-    $props();
+  const {
+    onclose,
+    onload,
+  }: {
+    onclose: () => void;
+    /** `runtime` is the instrumented twin of `code` — absent on entries published before the guard. */
+    onload: (code: string, name: string, runtime?: string) => void;
+  } = $props();
 
   interface Entry {
     id: string;
@@ -60,10 +66,12 @@
 
   async function load(entry: Entry) {
     loadingModel = entry.id;
-    const result = await apiFetch<{ bundle: { code?: string } }>(`/gallery/${entry.id}`);
+    const result = await apiFetch<{ bundle: { code?: string; runtime?: string } }>(
+      `/gallery/${entry.id}`,
+    );
     loadingModel = null;
     if (result.ok && result.data.bundle?.code) {
-      onload(result.data.bundle.code, entry.name);
+      onload(result.data.bundle.code, entry.name, result.data.bundle.runtime);
     } else {
       error = 'That model could not be loaded.';
     }

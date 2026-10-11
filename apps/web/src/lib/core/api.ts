@@ -244,6 +244,29 @@ export function peekBundleCode(): string | null {
   }
 }
 
+/**
+ * The instrumented twin of `code`, when the stored bundle carries one.
+ *
+ * `raw` is the full wire bundle, which is what makes this free: the server put `runtime` next to
+ * `code` and the whole document was stored as-is. Callers that lack it (the reference source, a
+ * pre-guard gallery entry) get undefined and load the clean string, as they always did.
+ */
+export function storedRuntime(bundle: StoredBundle): string | undefined {
+  const runtime = (bundle.raw as { runtime?: unknown } | undefined)?.runtime;
+  return typeof runtime === 'string' && runtime.length > 0 ? runtime : undefined;
+}
+
+/** Peek the instrumented runtime without consuming — the share modal publishes it alongside `code`. */
+export function peekBundleRuntime(): string | undefined {
+  try {
+    const raw = sessionStorage.getItem(BUNDLE_KEY);
+    if (raw === null) return undefined;
+    return storedRuntime(JSON.parse(raw) as StoredBundle);
+  } catch {
+    return undefined;
+  }
+}
+
 export function storeTopic(topic: string): void {
   try {
     sessionStorage.setItem('edu3d.topic', topic);

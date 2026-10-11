@@ -29,6 +29,34 @@ import { authorInNodeVm } from '@edu3d/engine/node-host';
 const SWEEP_FRACTIONS = [0, 0.25, 0.5, 0.75, 1] as const;
 
 /**
+ * Builders that carry no authored profile — raw primitives. A mechanism part assembled from these
+ * is the "static-shape lookalike" `01:45-50` rejects; every other builder (gear, gearProfile,
+ * helix, sweep, revolve, extrude, pipe, sdf, mesh, parametric…) represents a deliberate shape
+ * choice and is none of the audit's business.
+ */
+const RAW_PRIMITIVE_BUILDERS = new Set([
+  'box',
+  'sphere',
+  'cylinder',
+  'cone',
+  'torus',
+  'disc',
+  'plane',
+  'capsule',
+]);
+
+/**
+ * Part-name vocabulary that claims a mechanism. All three signals must agree before the audit
+ * speaks — the name claims the mechanism, a motion targeting the part proves it performs it, and
+ * `geometry.builder` (the manifest's per-part provenance) says whether the representation can
+ * deliver it. A name alone is not evidence: false refinement instructions burn real API money.
+ */
+const GEAR_VOCABULARY = /gear|cog|wheel|pulley|cam/i;
+
+/** Spring vocabulary, paired with compress-like motion kinds (oscillate/translate/pulse). */
+const SPRING_VOCABULARY = /spring|coil/i;
+
+/**
  * Sample times for the differential sweep, in seconds. Time 0 alone is blind to bindings that
  * modulate time — `sin(t · frequency)` is 0 at t = 0 for *every* frequency — so each value is
  * also sampled at 1 s. Only states sampled at the same time are ever compared, so a time-driven
@@ -261,6 +289,52 @@ export function auditModel(input: AuditInput): AuditOutcome {
       instruction:
         'Use motion-correct builders: geom.gear for gears, geom.gearProfile + extrude for real teeth, helix + sweep for springs, geom.path + particles for flow, sdf/parametric for organic forms. A static lookalike is exposed the moment the model moves.',
     });
+  }
+
+  // ── Per-part lookalikes: mechanism names on raw primitives that move ───────
+  // `01:45-50` names this defect class exactly — trapezoid teeth and stacked cylinders are
+  // exposed *the moment the model moves*, which is precisely when a learner is watching. The
+  // narrowest honest check the manifest's provenance supports: name + motion + builder, all
+  // three, per part. The whole-model primitive penalty above stays as the coarse sibling.
+  const motionKindsByPart = new Map<string, Set<string>>();
+  for (const motion of manifest.motions) {
+    const kinds = motionKindsByPart.get(motion.partId) ?? new Set<string>();
+    kinds.add(motion.kind);
+    motionKindsByPart.set(motion.partId, kinds);
+  }
+  let lookalikes = 0;
+  for (const part of manifest.parts) {
+    const builder = part.geometry?.builder;
+    if (!builder || !RAW_PRIMITIVE_BUILDERS.has(builder)) continue;
+    const kinds = motionKindsByPart.get(part.id);
+    if (!kinds) continue;
+
+    if (kinds.has('spin') && GEAR_VOCABULARY.test(part.name)) {
+      lookalikes += 1;
+      deficiencies.push({
+        dimension: 'representationFidelity',
+        severity: 'major',
+        finding: `Part '${part.id}' ('${part.name}') spins, but its geometry is the raw primitive '${builder}' — a mechanism part named for its motion must be built to perform it.`,
+        instruction: `Rebuild '${part.id}' with geom.gear / gearProfile for an involute profile — trapezoid teeth visibly slip the moment the train turns.`,
+        subjectId: part.id,
+      });
+    } else if (
+      (kinds.has('oscillate') || kinds.has('translate') || kinds.has('pulse')) &&
+      SPRING_VOCABULARY.test(part.name)
+    ) {
+      lookalikes += 1;
+      deficiencies.push({
+        dimension: 'representationFidelity',
+        severity: 'major',
+        finding: `Part '${part.id}' ('${part.name}') compresses, but its geometry is the raw primitive '${builder}' — a spring that cannot compress is a picture of a spring.`,
+        instruction: `Rebuild '${part.id}' with geom.helix — stacked cylinders cannot compress.`,
+        subjectId: part.id,
+      });
+    }
+  }
+  if (lookalikes > 0) {
+    fidelity -= 0.2;
+    fidelityEvidence.push(`${lookalikes} moving parts are raw-primitive lookalikes`);
   }
   dimensions.push(score('representationFidelity', fidelity, fidelityEvidence));
 

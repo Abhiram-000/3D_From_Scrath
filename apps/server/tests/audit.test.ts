@@ -107,6 +107,81 @@ describe('parameter leverage — the differential sweep', () => {
   });
 });
 
+describe('representation fidelity — moving parts that are static-shape lookalikes', () => {
+  it('flags a spinning part with gear vocabulary built from a raw primitive', () => {
+    // `01:45-50`: "a gear must be an involute profile, not trapezoid teeth… Enforce it in your
+    // audit." The name claims the mechanism, the spin motion proves the part performs it, and the
+    // builder recorded in the manifest says the geometry cannot deliver it.
+    const result = audit(`
+      scene.describe({ name: 'Gear train', description: 'A lookalike gear.',
+        concept: 'gears mesh', objectives: ['see gears mesh'] });
+      scene.param({ id: 'speed', kind: 'number', label: 'Speed', min: 0, max: 10, default: 5,
+        affects: [{ channel: 'motionRate' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'driveGear', name: 'Drive gear',
+        geometry: geom.cylinder({ radius: 0.3, height: 0.06, segments: 16 }), material: m });
+      scene.motion({ id: 'spin', partId: 'driveGear', kind: 'spin', axis: [0, 0, 1],
+        rate: { param: 'speed' }, reason: 'The train turns at the speed the learner sets.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const flagged = deficienciesFor(result, 'representationFidelity')?.find(
+      (d) => d.subjectId === 'driveGear',
+    );
+    expect(flagged, 'the lookalike gear must be flagged for refinement').toBeDefined();
+    expect(flagged?.severity).toBe('major');
+    expect(flagged?.instruction).toMatch(/gear/i);
+  });
+
+  it('flags a compressing part with spring vocabulary built from a raw primitive', () => {
+    const result = audit(`
+      scene.describe({ name: 'Spring', description: 'A lookalike spring.',
+        concept: 'springs compress', objectives: ['see the spring compress'] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'suspensionSpring', name: 'Coil spring',
+        geometry: geom.cylinder({ radius: 0.1, height: 0.5, segments: 12 }), material: m });
+      scene.motion({ id: 'compress', partId: 'suspensionSpring', kind: 'oscillate', axis: [0, 1, 0],
+        rate: { const: 0.5 }, amplitude: { const: 0.1 }, reason: 'Compresses under load.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const flagged = deficienciesFor(result, 'representationFidelity')?.find(
+      (d) => d.subjectId === 'suspensionSpring',
+    );
+    expect(flagged, 'the stacked-cylinder spring must be flagged for refinement').toBeDefined();
+    expect(flagged?.severity).toBe('major');
+    expect(flagged?.instruction).toMatch(/helix/i);
+  });
+
+  it('does not flag the same names when the geometry is motion-correct — the check reads provenance, not names', () => {
+    // The pins that keep this honest: identical vocabulary, identical motion, but builder 'gear'
+    // and 'helix'. A name-heuristic with no geometry signal would flag these and burn real API
+    // money on false refinement instructions.
+    const result = audit(`
+      scene.describe({ name: 'Honest train', description: 'Real profiles.',
+        concept: 'gears mesh', objectives: ['see real gears mesh'] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'driveGear', name: 'Drive gear',
+        geometry: geom.gear({ teeth: 20, module: 0.02, thickness: 0.04, bore: 0.03 }), material: m });
+      scene.mesh({ id: 'governorSpring', name: 'Governor spring',
+        geometry: geom.helix({ radius: 0.05, wireRadius: 0.008, turns: 6, pitch: 0.02 }), material: m });
+      scene.motion({ id: 'spin', partId: 'driveGear', kind: 'spin', axis: [0, 0, 1],
+        rate: { const: 1 }, reason: 'Turns.' });
+      scene.motion({ id: 'compress', partId: 'governorSpring', kind: 'oscillate', axis: [0, 1, 0],
+        rate: { const: 0.5 }, amplitude: { const: 0.01 }, reason: 'Compresses.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    expect(
+      deficienciesFor(result, 'representationFidelity'),
+      'gear/helix builders are motion-correct representations',
+    ).toEqual([]);
+  });
+});
+
 describe('the reference turbofan — the regression guard', () => {
   it('audits clean on parameter leverage: every control, including cutaway, provably drives something', () => {
     // The flagship must survive the stricter audit. Before the cutaway toggle was implemented
@@ -117,5 +192,18 @@ describe('the reference turbofan — the regression guard', () => {
     if (!result.ok) return;
 
     expect(deficienciesFor(result, 'parameterLeverage')).toEqual([]);
+  });
+
+  it('accrues zero representation-fidelity deficiencies — its gears, spring and blades are real', () => {
+    // The inverse guard for the lookalike check: the reference uses real involute gears, a true
+    // helix spring, swept airfoils and an SDF-blended combustor. If the new check flags any of
+    // them, the check is wrong, not the model.
+    const result = audit(REFERENCE_MODEL_SOURCE);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    expect(deficienciesFor(result, 'representationFidelity')).toEqual([]);
+    const fidelity = result.report.dimensions.find((d) => d.dimension === 'representationFidelity');
+    expect(fidelity?.score, 'gear + helix + sdf bonuses must survive the stricter check').toBe(100);
   });
 });

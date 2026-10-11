@@ -393,8 +393,73 @@ export function runStaticGate(source: string, options: GateOptions): GateResult 
     'this',
   ]);
 
+  // ── API surface check ──────────────────────────────────────────────────────
+  // Namespaces the engine owns are checked member-by-member; a method the engine does not export
+  // is almost always a hallucinated helper, and naming it precisely is what makes the repair pass
+  // one-shot. This walk runs *before* the free-reference loop so a namespace whose qualified call
+  // is already reported (`phys.body`) does not get a second, less actionable bare-name violation.
+  const qualifiedUnknownNamespaces = new Set<string>();
+  simple(program, {
+    MemberExpression(node) {
+      const member = node as unknown as AnyNode;
+      const object = member.object as AnyNode;
+      const property = member.property as AnyNode;
+      if (member.computed) return;
+      if (object.type !== 'Identifier' || property.type !== 'Identifier') return;
+
+      const namespace = object.name as string;
+      // A free reference is one no program binding declares; only those can be API namespaces.
+      const isFreeNamespace = freeReferences.some((reference) => reference.name === namespace);
+
+      if (!checkedNamespaces.has(namespace)) {
+        // A member call on a free identifier nothing binds — `phys.body` after Phase 1b removed
+        // `phys` — must be rejected with the *qualified* name: that is the line the repair pass
+        // deletes. Program-local objects that shadow nothing are skipped (not API calls), and
+        // language intrinsics, forbidden globals and dynamic-code names carry their own messages.
+        if (
+          options.apiSurface.size > 0 &&
+          isFreeNamespace &&
+          !GUEST_BINDINGS.includes(namespace) &&
+          !allowedIntrinsics.has(namespace) &&
+          !forbidden.has(namespace) &&
+          !dynamicCodeNames.has(namespace)
+        ) {
+          const qualified = `${namespace}.${property.name as string}`;
+          apiCalls.add(qualified);
+          violations.push(
+            violation(
+              'unknown_api',
+              `\`${qualified}\` is not part of the scene API — no \`${namespace}\` namespace is bound in the sandbox. Use only the documented functions.`,
+              member,
+              qualified,
+            ),
+          );
+          qualifiedUnknownNamespaces.add(namespace);
+        }
+        return;
+      }
+      // A program-local variable that shadows a namespace name is not an API call.
+      if (!isFreeNamespace && !GUEST_BINDINGS.includes(namespace)) return;
+
+      const qualified = `${namespace}.${property.name as string}`;
+      apiCalls.add(qualified);
+      if (options.apiSurface.size > 0 && !options.apiSurface.has(qualified)) {
+        violations.push(
+          violation(
+            'unknown_api',
+            `\`${qualified}\` is not part of the scene API. Use only the documented functions.`,
+            member,
+            qualified,
+          ),
+        );
+      }
+    },
+  });
+
   for (const reference of freeReferences) {
     const { name, node } = reference;
+    // Already reported with its qualified call above — one actionable line per mistake.
+    if (qualifiedUnknownNamespaces.has(name)) continue;
     if (dynamicCodeNames.has(name)) {
       violations.push(
         violation(
@@ -432,38 +497,6 @@ export function runStaticGate(source: string, options: GateOptions): GateResult 
       ),
     );
   }
-
-  // ── API surface check ──────────────────────────────────────────────────────
-  // Only namespaces the engine owns are checked. A method the engine does not export is almost always a
-  // hallucinated helper, and naming it precisely is what makes the repair pass one-shot.
-  simple(program, {
-    MemberExpression(node) {
-      const member = node as unknown as AnyNode;
-      const object = member.object as AnyNode;
-      const property = member.property as AnyNode;
-      if (member.computed) return;
-      if (object.type !== 'Identifier' || property.type !== 'Identifier') return;
-
-      const namespace = object.name as string;
-      if (!checkedNamespaces.has(namespace)) return;
-      // A program-local variable that shadows a namespace name is not an API call.
-      const shadowed = freeReferences.every((reference) => reference.name !== namespace);
-      if (shadowed && !GUEST_BINDINGS.includes(namespace)) return;
-
-      const qualified = `${namespace}.${property.name as string}`;
-      apiCalls.add(qualified);
-      if (options.apiSurface.size > 0 && !options.apiSurface.has(qualified)) {
-        violations.push(
-          violation(
-            'unknown_api',
-            `\`${qualified}\` is not part of the scene API. Use only the documented functions.`,
-            member,
-            qualified,
-          ),
-        );
-      }
-    },
-  });
 
   return {
     ok: violations.length === 0,

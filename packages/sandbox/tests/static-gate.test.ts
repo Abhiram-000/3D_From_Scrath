@@ -41,8 +41,6 @@ const API_SURFACE = new Set([
   'mat.metal',
   'mat.glass',
   'mat.emissive',
-  'phys.body',
-  'phys.joint',
   'M.sin',
   'M.cos',
   'M.PI',
@@ -290,6 +288,33 @@ describe('static gate — API surface', () => {
     const result = gate(`buildTurbine(38);`);
     expect(result.ok).toBe(false);
     expect(kinds(result.violations)).toContain('unknown_api');
+  });
+
+  it('rejects phys.body as unknown_api, naming the call — no host binds a phys namespace', () => {
+    // GUEST_BINDINGS used to advertise `phys`, but every host (guest, node-host, worker) binds
+    // only scene, geom, mat, M, console and random — a model that followed the advertisement got
+    // an opaque TypeError inside the sandbox. The gate must refuse it at authoring time, naming
+    // the qualified call the repair pass has to delete. Physics is declarative: scene.physics().
+    const result = gate(`
+      scene.group({ id: 'rig' });
+      phys.body({ shape: 'box', mass: 2 });
+    `);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('unknown_api');
+    expect(result.violations[0]?.message).toContain('phys.body');
+  });
+
+  it('rejects a bare phys reference, so indirect use cannot reach the runtime crash either', () => {
+    // `var p = phys; p.body(...)` hides the member call behind a local, so the surface check
+    // never sees it — the free reference itself is the last line of defence, and it only holds
+    // if `phys` is not on the allowed-bindings list.
+    const result = gate(`
+      var engine = phys;
+      scene.group({ id: 'rig' });
+    `);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('unknown_api');
+    expect(result.violations[0]?.message).toContain('phys');
   });
 });
 

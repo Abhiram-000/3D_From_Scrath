@@ -252,15 +252,18 @@ export const FROZEN_INTRINSICS = Object.freeze([
 /**
  * Names the guest *does* receive, so the gate can tell a legitimate reference from a hallucinated one.
  *
- * Deliberately tiny. Everything the model needs arrives through `scene`, `geom`, `mat`, `phys` and the
- * pure `M` math namespace; `console` is present because a model that cannot log is a model nobody can
- * debug, and the host routes it into the diagnostics panel rather than the real console.
+ * Deliberately tiny, and deliberately *only* names a host actually binds: every host (browser
+ * guest, node host, worker) injects exactly `scene`, `geom`, `mat` and the pure `M` math
+ * namespace. Advertising a name no host binds turns a following model into a runtime crash —
+ * `phys` sat here unbound until Phase 1b removed it; physics is declarative (`scene.physics` →
+ * `manifest.physics` → the runtime solver), and real solver vocabulary gets exposed properly in
+ * Phase 7. `console` is present because a model that cannot log is a model nobody can debug, and
+ * the host routes it into the diagnostics panel rather than the real console.
  */
 export const GUEST_BINDINGS = Object.freeze([
   'scene',
   'geom',
   'mat',
-  'phys',
   'M',
   'console',
   'random',

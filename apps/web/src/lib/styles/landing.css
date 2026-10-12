@@ -189,14 +189,24 @@ body {
 }
 
 /* Headline — premium tri-tone gradient: amber → coral → violet */
+/*
+ * The headline carries two lines, and they are not equal. "Learn anything" is the statement and
+ * earns the gradient and the largest size; "in interactive 3D" is the qualifier and is set a step
+ * down and quieter. Rendering both at 4.5rem/800 was the page's loudest failure — it read as a shout
+ * rather than the confident, expensive thing `07` asks for.
+ */
 .hero-title {
   position: relative;
-  font-size: clamp(2.5rem, 6.5vw, 4.5rem);
+  font-size: clamp(2.25rem, 5.4vw, 3.75rem);
   font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.04em;
+  line-height: 1.04;
+  letter-spacing: -0.035em;
   text-wrap: balance;
   animation: riseIn 0.8s var(--ease-out) 0.1s both;
+}
+
+.hero-line {
+  display: block;
 }
 
 .gradient-text {
@@ -238,9 +248,60 @@ body {
 
 .hero-subtitle {
   display: block;
+  color: var(--text-secondary);
+  font-weight: 600;
+  /* A step below the statement, not a peer of it — the hierarchy is the whole point. */
+  font-size: 0.62em;
+  letter-spacing: -0.015em;
+  margin-top: 0.1em;
+}
+
+/*
+ * The capability strip.
+ *
+ * Three claims the platform can actually honour today. Written as text rather than icons because a
+ * glyph carrying the meaning alone is a riddle, and `01` insists colour and shape are never the only
+ * signal — the sentence is the content, the glyph is only an anchor for the eye.
+ */
+.capability-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 0.75rem 1.5rem;
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  max-width: 62ch;
+  text-align: left;
+}
+
+.capability {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.capability strong {
   color: var(--text-primary);
-  font-weight: 800;
-  margin-top: 0.15em;
+  font-weight: 600;
+}
+
+.capability-glyph {
+  flex: none;
+  color: var(--amber-500, #d9a441);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+
+/* One column on a phone, where three columns of sentences become three stacked walls of text. */
+@media (max-width: 640px) {
+  .capability-strip {
+    grid-template-columns: 1fr;
+    gap: 0.6rem;
+  }
 }
 
 .hero-description {

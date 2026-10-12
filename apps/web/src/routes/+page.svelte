@@ -31,7 +31,6 @@
   let ambient: Ambient | null = null;
   let background: LandingBackground | null = null;
   let bgCanvas: HTMLCanvasElement | null = $state(null);
-  let heroTextElement: HTMLElement | null = $state(null);
 
   const QUICK_STARTS: ReadonlyArray<{ label: string; topic: string }> = [
     { label: 'Water Molecule', topic: 'How does a water molecule form?' },
@@ -335,17 +334,51 @@
       <p class="hero-eyebrow" data-parallax="8">AI-powered interactive learning</p>
 
       <h1 class="hero-title" data-parallax="14">
-        <span class="gradient-text typing-animation" bind:this={heroTextElement}>{typed}</span><span
-          class="cursor-blink"
-          aria-hidden="true">|</span
-        >
-        <span class="hero-subtitle fade-in-delayed">in Interactive 3D</span>
+        <span class="hero-line">
+          <!--
+            The full headline is always in the DOM; the animation only reveals it. Mutating the
+            text node one character at a time made the page's only <h1> announce as "Lear",
+            "Learnin", "Learnin…" to a screen reader for the length of the animation — an unstable
+            accessible name on the single most important element on the page. A visually-hidden
+            copy carries the meaning; the animated span is decoration.
+          -->
+          <span class="sr-only">{HEADLINE_TEXT}</span>
+          <span class="gradient-text typing-animation" aria-hidden="true">{typed}</span><span
+            class="cursor-blink"
+            aria-hidden="true">|</span
+          >
+        </span>
+        <span class="hero-subtitle">in interactive 3D</span>
       </h1>
 
       <p class="hero-description fade-in-delayed-2" data-parallax="10">
-        Transform any concept into an immersive 3D experience. Interactive models, guided tours, and
-        intelligent assessments — generated in minutes.
+        Type anything — a gear train, a cell, an economy. An AI writes the model, and you get an
+        object you can turn, slice, light and ask questions of. Not a picture of a lesson: the
+        lesson itself.
       </p>
+
+      <!--
+        What the page was missing entirely. A visitor who cannot tell what this is from one
+        sentence will not wait three minutes to find out, so the capabilities are stated rather
+        than implied — and each one is something the platform actually does today, not an aspiration.
+      -->
+      <ul class="capability-strip fade-in-delayed-2" data-parallax="6">
+        <li class="capability">
+          <span class="capability-glyph" aria-hidden="true">◎</span>
+          <span class="capability-text"><strong>Real code</strong>, not a template — the AI writes
+            the scene program</span>
+        </li>
+        <li class="capability">
+          <span class="capability-glyph" aria-hidden="true">◇</span>
+          <span class="capability-text"><strong>Turn it, slice it, break it</strong> — parameters
+            that change what the model does</span>
+        </li>
+        <li class="capability">
+          <span class="capability-glyph" aria-hidden="true">◈</span>
+          <span class="capability-text"><strong>Runs on your machine</strong> — sandboxed, and the
+            server never sees your model</span>
+        </li>
+      </ul>
 
       <div class="prompt-card glass-card has-sheen has-glow-border" data-magnetic data-parallax="7">
         <label for="topicInput" class="sr-only">Enter a learning topic</label>

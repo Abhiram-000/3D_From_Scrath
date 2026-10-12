@@ -65,8 +65,20 @@ async function main(): Promise<void> {
     draining: false,
     openStreams: 0,
     startedAt: Date.now(),
+    // Fallback only: `clientKey` reads the real socket per request and uses this when the runtime
+    // provides none. A constant here is why it must never be the primary source.
     remoteAddress: '127.0.0.1',
   };
+
+  // Expired limiter buckets accumulate one entry per distinct client identity forever otherwise —
+  // the sweep existed and was never called. Half the shortest window is frequent enough that a
+  // bucket lives at most half a window past its own expiry.
+  const LIMITER_SWEEP_MS = 30_000;
+  const limiterSweep = setInterval(
+    () => Object.values(state.limiters).forEach((limiter) => limiter.sweep()),
+    LIMITER_SWEEP_MS,
+  );
+  limiterSweep.unref();
 
   const app = buildApp(state);
   const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
@@ -101,6 +113,7 @@ async function main(): Promise<void> {
 
     // 2. Stop accepting new connections; let in-flight requests complete.
     server.close();
+    clearInterval(limiterSweep);
 
     // 3. Notify open streams. The generation streams are inside ReadableStream bodies; the drain flag
     //    makes the next pipeline phase check fail into a terminal error event, and the hard exit below

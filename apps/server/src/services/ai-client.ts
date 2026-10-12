@@ -442,7 +442,18 @@ export class AiClient {
       if (text.length === 0) {
         return { ok: false, ...failure('network', 'The AI stream was interrupted.', true) };
       }
-      // Partial text with an aborted stream still parses in most cases; let the gate judge it.
+      // Text arrived but the stream never reached a terminal event — the socket died mid-program.
+      // `00`: "a half-generated model must be detected, refused and retried, never delivered." The
+      // gate cannot judge this: it checks structure, not completeness, and a cut landing on a
+      // statement boundary parses happily while being half a model.
+      return {
+        ok: false,
+        ...failure(
+          'truncated',
+          'The model stopped writing partway through. Try again.',
+          true,
+        ),
+      };
     }
 
     if (text.length === 0) {

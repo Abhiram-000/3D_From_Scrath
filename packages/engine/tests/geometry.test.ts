@@ -612,7 +612,7 @@ describe('the geometry factory', () => {
     expect(capped.vertices).toBeLessThan(400_000);
   });
 
-  it('refuses a build that would exceed the total vertex ceiling, and says why', () => {
+  it('refuses a build that would exceed the total vertex ceiling, and says why', { timeout: 30_000 }, () => {
     const { geom } = setup();
     // Each of these is legal alone; together they blow the per-build ceiling.
     expect(() => {

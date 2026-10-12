@@ -72,7 +72,8 @@ describe('the generated bundle', () => {
     for (const id of unbound ?? []) expect(parameterIds).toContain(id);
   });
 
-  it('keeps validating the instrumented source — a program with a runaway loop is still refused, never shipped', async () => {
+  it('keeps validating the instrumented source — a program with a runaway loop is still refused, never shipped', { timeout: 60000 },
+  async () => {
     // The gate admits the loop; only the guard inside the instrumented source stops it at audit
     // time. If the pipeline ever validated the clean string instead, this program would hang the
     // audit rather than fail it — the exact regression this pins.

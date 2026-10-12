@@ -28,6 +28,12 @@ services:
       # (config.ts would otherwise refuse in production). Swap in Postgres below to upgrade.
       EDU3D_ALLOW_EPHEMERAL_STORE: 'true'
       EDU3D_DATA_DIR: /data
+      # Publish/delete are open on this path, accepted explicitly for the same reason as the store
+      # above: this file is the "see it working in one command" deploy. Production mode refuses to
+      # start without a write token or this acknowledgement, and the compose set NODE_ENV=production
+      # without providing either — so `docker compose up` used to exit with a config error before
+      # serving anything. For a real deployment set EDU3D_WRITE_TOKEN in deploy.env and drop this.
+      EDU3D_ALLOW_OPEN_WRITES: 'true'
       # One proxy hop in front of most hosting platforms; keeps per-client rate limits honest.
       TRUST_PROXY: 1
     volumes:

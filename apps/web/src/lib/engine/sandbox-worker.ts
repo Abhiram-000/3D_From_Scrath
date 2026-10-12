@@ -392,6 +392,18 @@ function frameObject(target: WorkerState, object: THREE.Object3D, margin = 1.4):
 }
 
 /** Set up the renderer. Called once per worker; the worker is replaced rather than reconfigured. */
+/**
+ * True between `webglcontextlost` and `webglcontextrestored`.
+ *
+ * The render loop checks it so a lost context stops costing frames — the browser is trying to
+ * reclaim memory and we should not be fighting it — and so the watchdog's silence means
+ * "context lost", which the notice explains, rather than a mysteriously blank canvas.
+ */
+let CONTEXT_LOST = false;
+
+/** Textures that must be re-uploaded after a context loss; every GPU-side buffer died with it. */
+const RESOURCE_TEXTURES = new Set<THREE.Texture>();
+
 function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): WorkerState {
   const renderer = new THREE.WebGLRenderer({
     canvas: request.canvas,
@@ -411,6 +423,38 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
   renderer.toneMappingExposure = 1;
   renderer.shadowMap.enabled = request.tier !== 'low';
   renderer.shadowMap.type = THREE.PCFShadowMap;
+
+  // WebGL context loss (`08` edge cases). A memory-pressured phone reclaims the GPU and fires
+  // `webglcontextlost`; with nothing listening, Three stops silently and the canvas stays black
+  // for the rest of the session while the worker keeps heartbeating — so the watchdog never fires
+  // and nothing tells the learner. `preventDefault` is what makes restoration possible at all.
+  request.canvas.addEventListener(
+    'webglcontextlost',
+    (event) => {
+      event.preventDefault();
+      // Drawing into a lost context is pure waste and keeps the reclaim from succeeding.
+      CONTEXT_LOST = true;
+      post({
+        type: 'notice',
+        message: 'The browser reclaimed the graphics memory. Restoring the model…',
+      });
+    },
+    false,
+  );
+  request.canvas.addEventListener(
+    'webglcontextrestored',
+    () => {
+      CONTEXT_LOST = false;
+      // Every GPU-side object died with the context; re-upload from the scene we still hold.
+      renderer.resetState();
+      for (const texture of RESOURCE_TEXTURES) texture.needsUpdate = true;
+      post({
+        type: 'notice',
+        message: 'Graphics memory restored — the model is back.',
+      });
+    },
+    false,
+  );
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(
@@ -695,6 +739,15 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
 }
 
 /** Apply a view mode across the model. */
+/** How translucent x-ray makes a part. Named so the ladder, the tests and the viewer share one value. */
+const XRAY_OPACITY = 0.35;
+
+/**
+ * Each material's authored transparency, captured on x-ray entry so leaving restores the model's
+ * own material rather than forcing it opaque. Weak, so a disposed material stays collectable.
+ */
+const XRAY_ORIGINALS = new WeakMap<THREE.Material, { transparent: boolean; opacity: number }>();
+
 function applyViewMode(target: WorkerState): void {
   const model = target.model;
   if (!model) return;
@@ -720,10 +773,24 @@ function applyViewMode(target: WorkerState): void {
     }
 
     if (target.viewMode === 'xray') {
+      // Captured on entry, not recomputed on exit: a glass or fluid part is legitimately
+      // translucent, and restoring to "opaque" would silently rewrite the model's own material.
+      // Without this capture, leaving x-ray left every material permanently transparent — the
+      // model stayed ghostly AND lost early-Z, which costs every device a permanent multiple of
+      // its fragment work for the rest of the session.
+      if (!XRAY_ORIGINALS.has(material)) {
+        XRAY_ORIGINALS.set(material, { transparent: material.transparent, opacity: material.opacity });
+      }
       material.transparent = true;
-      material.opacity = 0.35;
+      material.opacity = XRAY_OPACITY;
       material.depthWrite = false;
     } else {
+      const original = XRAY_ORIGINALS.get(material);
+      if (original) {
+        material.transparent = original.transparent;
+        material.opacity = original.opacity;
+        XRAY_ORIGINALS.delete(material);
+      }
       material.depthWrite = true;
     }
   });
@@ -863,7 +930,7 @@ function renderFrame(target: WorkerState, timestamp: number): void {
 
   // Guest frame logic, budgeted. A callback that overruns repeatedly gets the model paused with an explanation
   // rather than being killed: `SANDBOX_LIMITS.frameOverrunLimit`.
-  if (target.builder && target.guard && !target.frameDisabled) {
+  if (target.builder && target.guard && !target.frameDisabled && !CONTEXT_LOST) {
     target.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
     const callbackStart = now();
     // Declared motion composes with what the model writes, so the base reset happens first —
@@ -1026,15 +1093,36 @@ function ladderStep(target: WorkerState, direction: 'down' | 'up'): void {
       target.renderer.shadowMap.enabled =
         direction === 'up' && target.verdict!.decisions.shadowLights.size > 0;
       break;
-    case 'flatShading':
-      // A material-level change: flip the flag and force the realizer's materials to rebuild their
-      // programs. Kept cheap by touching only what exists on screen.
-      target.renderer.shadowMap.needsUpdate = true;
+    case 'flatShading': {
+      // A material-level change, so it has to touch materials — not the shadow map, which is what
+      // this used to do, announcing flat shading while shading stayed smooth. Three needs
+      // `needsUpdate` because flatShading changes the shader program, not just a uniform.
+      const flat = direction === 'down';
+      target.model?.root.traverse((object: THREE.Object3D) => {
+        if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.InstancedMesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) {
+          if (!material || !('flatShading' in material)) continue;
+          const typed = material as THREE.MeshStandardMaterial;
+          if (flat) {
+            if (!FLAT_ORIGINALS.has(typed)) FLAT_ORIGINALS.set(typed, typed.flatShading);
+            typed.flatShading = true;
+          } else {
+            typed.flatShading = FLAT_ORIGINALS.get(typed) ?? false;
+            FLAT_ORIGINALS.delete(typed);
+          }
+          typed.needsUpdate = true;
+        }
+      });
       break;
+    }
     default:
-      // Geometry detail and particle rungs are admission-time decisions; the live ladder skips them
-      // rather than rebuild GPU buffers mid-session, and says nothing (the pricer already reported them).
-      break;
+      // Geometry detail, particles and physics substeps are admission-time decisions. The live
+      // ladder skips them rather than rebuild GPU buffers mid-session — and, critically, says
+      // nothing, because a notice for a rung that changed nothing is a lie the learner has to
+      // reconcile against what they can see (`08`: silent degradation reads as breakage; a false
+      // notice is worse, because the user checks).
+      return;
   }
 
   if (direction === 'down') {
@@ -1045,15 +1133,23 @@ function ladderStep(target: WorkerState, direction: 'down' | 'up'): void {
   }
 }
 
-/** One learner-facing sentence per rung, written once so the wording cannot drift between steps. */
+/** Authored flatness per material, so stepping back up restores the model's own choice. */
+const FLAT_ORIGINALS = new WeakMap<THREE.MeshStandardMaterial, boolean>();
+
+/**
+ * One learner-facing sentence per rung, written once so the wording cannot drift between steps.
+ *
+ * Every sentence must describe what actually changed. The post-processing rung used to claim
+ * "Antialiasing turned off" while MSAA — fixed at context creation — was still on.
+ */
 const LADDER_NOTICES: Record<QualityRung, string> = {
   pixelRatio: 'Render resolution reduced to keep motion smooth.',
-  postProcessing: 'Antialiasing turned off to keep motion smooth.',
+  postProcessing: 'Render resolution softened further to keep motion smooth.',
   shadows: 'Shadows turned off to keep motion smooth.',
   geometryDetail: 'Shapes drawn coarser to keep motion smooth; every part is still here.',
   particles: 'Fewer particles drawn; the pattern is unchanged.',
   physicsSubsteps: 'Physics accuracy reduced to keep motion smooth.',
-  flatShading: 'Flat shading on this device; the shapes are unchanged.',
+  flatShading: 'Smooth shading turned off to keep motion smooth; the shapes are unchanged.',
 };
 
 /**

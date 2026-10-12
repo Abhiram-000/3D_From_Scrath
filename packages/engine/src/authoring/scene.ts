@@ -37,6 +37,7 @@ import {
   type StoryBeat,
   MAX_INSTANCES_PER_SET,
   MAX_PARTS,
+  PhysicsDecl as PhysicsDeclSchema,
 } from '@edu3d/contracts';
 import { GeometryFactory, type GeometryHandle, type PathHandle } from '../geometry/factory.ts';
 import { MaterialFactory, type MaterialHandle } from '../materials/factory.ts';
@@ -1395,7 +1396,20 @@ export class SceneBuilder {
 
       /** Declare the physics world. Absent means the model animates rather than simulates (`01`). */
       physics: (spec: PhysicsDecl): void => {
-        this.physics = spec;
+        // Parsed here rather than at the manifest boundary, so a model's physics declaration is
+        // normalised the moment it is made: zod fills the world defaults, and a NaN gravity or a
+        // negative density is refused while the author still gets a usable message. Storing the
+        // spec verbatim meant `bodies` could be absent and every later reader had to defend
+        // against it — one of them (`computeCost`) did not, and the authoring pass crashed outright
+        // for any model that declared a world without listing its bodies by hand.
+        const parsed = PhysicsDeclSchema.safeParse(spec ?? {});
+        if (!parsed.success) {
+          const issue = parsed.error.issues[0];
+          throw new SceneError(
+            `scene.physics: ${issue?.path.join('.') || 'declaration'} — ${issue?.message ?? 'invalid'}.`,
+          );
+        }
+        this.physics = parsed.data;
       },
 
       /** Record a non-fatal note for the diagnostics panel. */

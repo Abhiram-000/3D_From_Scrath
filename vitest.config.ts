@@ -15,6 +15,10 @@ export default defineConfig({
     include: [
       'packages/*/src/**/*.test.ts',
       'packages/*/tests/**/*.test.ts',
+      // Co-located app tests. `physics-world.ts` lives here and is the only consumer of the Rapier
+      // WASM world; without this line it could not be reached by CI at all, which is why a
+      // degrees-for-radians rotation defect survived: nothing ever stepped the solver.
+      'apps/*/src/**/*.test.ts',
       'apps/*/tests/**/*.test.ts',
       // Repo-level gate scripts (check-secrets and friends) are tested where they live, in scripts/.
       'scripts/*.test.ts',

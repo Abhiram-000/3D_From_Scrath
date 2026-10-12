@@ -77,6 +77,8 @@ export class PhysicsWorld {
   private readonly joints = new Map<string, RAPIER.ImpulseJoint>();
   private accumulator = 0;
   private readonly maxBodies: number;
+  /** Guards the WASM free against the double-dispose a load/destroy race produces. */
+  private disposed = false;
 
   /** Part transforms by part id, written each step, read by `syncTransforms`'s physics branch. */
   readonly simulatedParts = new Map<
@@ -403,11 +405,25 @@ export class PhysicsWorld {
     return { probes, millis: performance.now() - started };
   }
 
-  /** Total release. Idempotent and tolerant of partial failures (`02` R7). */
+  /**
+   * Total release. Idempotent and tolerant of partial failures (`02` R7).
+   *
+   * The idempotence is load-bearing rather than decorative: `sandbox-worker.ts` disposes on scene
+   * swap and again on teardown, and a load racing a destroy reaches both paths. Without the guard
+   * the second `world.free()` double-frees the WASM world and throws out of the worker's message
+   * handler — which surfaces to the learner as a viewer notice.
+   */
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.bodies.clear();
     this.joints.clear();
     this.simulatedParts.clear();
-    this.world.free();
+    try {
+      this.world.free();
+    } catch {
+      // A world that is already gone is the state we wanted anyway; failing loudly here would
+      // turn a clean teardown into a learner-facing error.
+    }
   }
 }

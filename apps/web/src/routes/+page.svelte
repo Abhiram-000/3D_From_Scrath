@@ -397,6 +397,28 @@
               <path d="M10 3L18 10L10 17V12H2V8H10V3Z" />
             </svg>
           </button>
+          <!--
+            The highest-returning line on the page. A learner who does not know what to type, or
+            who does not want to wait four minutes to find out what this is, has exactly one
+            question left — "show me". The reference turbofan needs no API key, no database and no
+            login, so the demo is not a compromise; it is the product running for real.
+          -->
+          <a class="demo-link" href="/viewer">
+            <svg
+              class="demo-icon"
+              width="16"
+              height="16"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                d="M6.5 4.5l8 5.5-8 5.5v-11zM4 3.5a1 1 0 00-1 1v11a1 1 0 001.5.87L15 11.87a1 1 0 000-1.74L4.5 3.63A1 1 0 004 3.5z"
+              />
+            </svg>
+            <span>See a live demo</span>
+            <span class="demo-note">a cutaway jet engine — no sign-up, nothing to install</span>
+          </a>
         </div>
       </div>
 

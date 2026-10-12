@@ -42,6 +42,11 @@ export interface PipelineDeps {
   /** Tier the request came from, so the prompt and the audit price against that device. */
   tier: 'low' | 'mid' | 'high';
   maxOutputTokens: number;
+  /**
+   * The learner's connection. Checked before every AI call and forwarded to the provider fetch, so a
+   * closed tab stops the run rather than letting it burn three more calls for nobody.
+   */
+  signal?: AbortSignal;
 }
 
 /** Terminal failures, mapped to the wire's error codes by the route. */
@@ -52,7 +57,9 @@ export interface PipelineFailure {
     | 'upstream_refused'
     | 'upstream_quota'
     | 'generation_unrepairable'
-    | 'generation_rejected';
+    | 'generation_rejected'
+    /** The learner closed the tab. Not a failure anyone will read — the stream is already gone. */
+    | 'cancelled';
   message: string;
   retryAfterSeconds?: number;
 }
@@ -111,7 +118,16 @@ export async function runPipeline(
     // ── Stage 2: the AI call ─────────────────────────────────────────────────
     enter('model', 'The model is designing your 3D scene…');
     charsWritten = 0;
+    // Checked here as well as inside the client: the repair and refinement stages each spend a call,
+    // and the gap between "learner closed the tab" and "next stage begins" is where the money leaks.
+    if (deps.signal?.aborted) {
+      return {
+        ok: false,
+        failure: { code: 'cancelled', message: 'The request was cancelled.' },
+      };
+    }
     const first = await deps.ai.complete({
+      signal: deps.signal,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: wrapTopic(topic) },
@@ -159,6 +175,7 @@ export async function runPipeline(
         at: nowSec(),
       });
       const retry = await deps.ai.complete({
+      signal: deps.signal,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
@@ -208,6 +225,7 @@ export async function runPipeline(
       });
 
       const repaired = await deps.ai.complete({
+      signal: deps.signal,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
@@ -256,6 +274,7 @@ export async function runPipeline(
         at: nowSec(),
       });
       const fixed = await deps.ai.complete({
+      signal: deps.signal,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
@@ -315,6 +334,7 @@ export async function runPipeline(
       });
 
       const refined = await deps.ai.complete({
+      signal: deps.signal,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
@@ -403,6 +423,8 @@ function mapAiFailure(code: string): PipelineFailure['code'] {
       return 'upstream_truncated';
     case 'malformed':
       return 'upstream_failed';
+    case 'cancelled':
+      return 'cancelled';
     default:
       return 'upstream_failed';
   }

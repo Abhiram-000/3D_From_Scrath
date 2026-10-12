@@ -194,6 +194,9 @@ export function buildApp(state: AppState): Hono<AppContext> {
           sink: (event) => events.push(event),
           tier: request.tier ?? 'mid',
           maxOutputTokens: config.ai.maxOutputTokens,
+          // The learner's connection, so a closed tab stops the run instead of letting it spend
+          // up to three more provider calls on work nobody is waiting for (`04`).
+          signal: context.req.raw.signal,
         }),
       );
       if (!result.ok) {
@@ -242,6 +245,8 @@ export function buildApp(state: AppState): Hono<AppContext> {
               sink: write,
               tier: request.tier ?? 'mid',
               maxOutputTokens: config.ai.maxOutputTokens,
+              // Same reason as the non-streaming path: the wait is long enough to be abandoned.
+              signal: context.req.raw.signal,
             }),
           );
           if (result.ok) {

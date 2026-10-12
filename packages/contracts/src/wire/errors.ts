@@ -31,6 +31,12 @@ export const ErrorCode = z.enum([
   'capability_absent',
   /** 503 — the process is draining for a redeploy. In-flight streams are told, not severed (`06`). */
   'draining',
+  /**
+   * 499-adjacent: the client went away mid-generation. The run stops instead of spending more
+   * provider calls on work nobody is waiting for (`04`). It is a named code rather than a silent
+   * stop so a client that reconnected can tell this apart from a generation that genuinely failed.
+   */
+  'cancelled',
   /** 500 — the AI wrote code that never passed the gate, even after bounded repair. */
   'generation_unrepairable',
   /** 500 — the model built but the audit rejected it as unusable (e.g. an empty scene). */
@@ -70,6 +76,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = Object.freeze({
   upstream_quota: 429,
   capability_absent: 503,
   draining: 503,
+  /** The client hung up; nothing is listening for this status, but it must never read as a 5xx fault. */
+  cancelled: 499,
   generation_unrepairable: 500,
   generation_rejected: 500,
   internal: 500,
@@ -83,6 +91,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = Object.freeze({
  * fast, because retrying a semantic rejection just spends money to be refused again.
  */
 export const RETRYABLE: Readonly<Record<ErrorCode, boolean>> = Object.freeze({
+  /** Retrying for someone who left is spending money on an audience of zero. */
+  cancelled: false,
   bad_request: false,
   unauthorized: false,
   not_found: false,
@@ -107,6 +117,7 @@ export const RETRYABLE: Readonly<Record<ErrorCode, boolean>> = Object.freeze({
  * teacher beats a shrug" — is enforced by the default rather than by whoever is typing.
  */
 export const DEFAULT_ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = Object.freeze({
+  cancelled: 'The generation was stopped because you left the page.',
   bad_request: 'That request could not be understood. Check the topic and try again.',
   unauthorized: 'This action needs a write token. Add it to your settings and retry.',
   not_found: 'That model no longer exists. It may have been deleted.',

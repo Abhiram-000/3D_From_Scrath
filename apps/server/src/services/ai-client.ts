@@ -26,6 +26,15 @@ export interface CompletionRequest {
    * of life during a minutes-long model phase (`07`: progress must be honest AND visible).
    */
   onProgress?: (chars: number) => void;
+  /**
+   * The learner's connection, not a timeout.
+   *
+   * A minutes-long generation routinely outlives the tab that asked for it — the client gives up at
+   * six minutes and the recorded average run is longer (`battery-history.jsonl`). Without this the
+   * server keeps paying for up to three more AI calls for work nobody is waiting for, which `04:90`
+   * names explicitly: "Client disconnects mid-stream → stop charging for work nobody is waiting for."
+   */
+  signal?: AbortSignal;
 }
 
 export type CompletionResult =
@@ -46,7 +55,15 @@ export type CompletionResult =
 
 /** The failure vocabulary, kept local so the mapping to `ErrorCode` lives in one place. */
 export type AiFailureCode =
-  'quota' | 'refused' | 'truncated' | 'timeout' | 'network' | 'malformed' | 'status';
+  | 'quota'
+  | 'refused'
+  | 'truncated'
+  | 'timeout'
+  | 'network'
+  | 'malformed'
+  | 'status'
+  /** The learner went away. Not a provider problem and not retryable — there is nobody to retry for. */
+  | 'cancelled';
 
 /** Retry policy. Two retries with backoff — enough to ride out a blip, bounded so cost cannot run away (`04`). */
 const MAX_ATTEMPTS = 3;
@@ -235,6 +252,19 @@ export class AiClient {
     const baseUrl = baseUrlOverride ?? this.config.ai.baseUrl;
     const apiKey = apiKeyOverride ?? this.config.ai.apiKey ?? '';
 
+    // A learner who closed the tab must not leave a provider call burning. Refusing before the
+    // request is even sent is what saves the most: the attempt is the expensive part, not the wait.
+    if (request.signal?.aborted) {
+      clearTimeout(timer);
+      return { ok: false, ...failure('cancelled', 'The request was cancelled.', false) };
+    }
+
+    // Two reasons to stop the same fetch: our own timeout, and the learner's connection going away.
+    // Combining them means neither has to know about the other.
+    const abortSignal = request.signal
+      ? AbortSignal.any([controller.signal, request.signal])
+      : controller.signal;
+
     try {
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -256,7 +286,7 @@ export class AiClient {
           // of a minutes-long opaque wait. The text is reassembled below; behavior is identical.
           ...(request.onProgress ? { stream: true } : {}),
         }),
-        signal: controller.signal,
+        signal: abortSignal,
       });
 
       if (!response.ok) {

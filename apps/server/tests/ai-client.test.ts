@@ -74,6 +74,7 @@ describe('a stream that dies mid-program', () => {
     );
 
     const result = await new AiClient(config).complete({
+      maxOutputTokens: 4096,
       messages: [{ role: 'user', content: 'a cutaway' }],
       onProgress: () => {},
     });
@@ -88,6 +89,7 @@ describe('a stream that dies mid-program', () => {
     respondWith(() => interruptedSse([]));
 
     const result = await new AiClient(config).complete({
+      maxOutputTokens: 4096,
       messages: [{ role: 'user', content: 'anything' }],
       onProgress: () => {},
     });
@@ -101,6 +103,7 @@ describe('a stream that dies mid-program', () => {
     respondWith(() => sse([delta('const a = 1;'), delta('const b = 2;'), finish('stop'), DONE]));
 
     const result = await new AiClient(config).complete({
+      maxOutputTokens: 4096,
       messages: [{ role: 'user', content: 'a complete model' }],
       onProgress: () => {},
     });
@@ -116,6 +119,7 @@ describe('a stream that dies mid-program', () => {
     respondWith(() => sse([delta('const a = 1;'), finish('length'), DONE]));
 
     const result = await new AiClient(config).complete({
+      maxOutputTokens: 4096,
       messages: [{ role: 'user', content: 'a long model' }],
       onProgress: () => {},
     });
@@ -123,5 +127,60 @@ describe('a stream that dies mid-program', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.finishReason).toBe('length');
+  });
+});
+describe('a learner who closed the tab', () => {
+  it('spends no provider call when the request is already cancelled', async () => {
+    const fetchMock = vi.fn(async () => sse([delta('x'), finish('stop'), DONE]));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await new AiClient(config).complete({
+      maxOutputTokens: 4096,
+      messages: [{ role: 'user', content: 'anything' }],
+      onProgress: () => {},
+      signal: controller.signal,
+    });
+
+    // The refusal has to happen BEFORE the request leaves: the call is the expensive part, and
+    // retrying a cancelled generation is spending money on an audience of zero.
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.code).toBe('cancelled');
+    expect(result.retryable).toBe(false);
+  });
+
+  it('does not retry a cancellation', { timeout: 20_000 }, async () => {
+    const fetchMock = vi.fn(async () => sse([delta('x'), finish('stop'), DONE]));
+    vi.stubGlobal('fetch', fetchMock);
+    const controller = new AbortController();
+    controller.abort();
+
+    await new AiClient(config).complete({
+      maxOutputTokens: 4096,
+      messages: [{ role: 'user', content: 'anything' }],
+      onProgress: () => {},
+      signal: controller.signal,
+    });
+
+    // One attempt, not three: a cancelled run must not spend the retry budget either.
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('still completes normally when the signal never fires', async () => {
+    respondWith(() => sse([delta('const a = 1;'), finish('stop'), DONE]));
+
+    const result = await new AiClient(config).complete({
+      maxOutputTokens: 4096,
+      messages: [{ role: 'user', content: 'a complete model' }],
+      onProgress: () => {},
+      signal: new AbortController().signal,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.text).toBe('const a = 1;');
   });
 });

@@ -22,6 +22,7 @@ import {
   Vec3,
   finite,
   AuthoredId,
+  AuditSummary,
   GenerationEvent,
   PHASE_WEIGHT,
   GenerationPhase,
@@ -236,6 +237,16 @@ describe('generation stream', () => {
       at: 2,
     });
     expect(isTerminalEvent(failure)).toBe(true);
+  });
+
+  it('carries the audit’s unbound parameter ids, defaulting to empty for older servers', () => {
+    // Structured measurement data for the topic battery: subjectId equality, never prose
+    // matching. Optional with a default so older servers' events still parse.
+    const withIds = AuditSummary.parse({ score: 80, unboundParameterIds: ['dead'] });
+    expect(withIds.unboundParameterIds).toEqual(['dead']);
+
+    const legacy = AuditSummary.parse({ score: 80 });
+    expect(legacy.unboundParameterIds).toEqual([]);
   });
 
   it('weights every phase, so the progress model can ease without inventing milestones', () => {

@@ -84,17 +84,28 @@ const noticeEvent = z.object({
   at: z.number().int().nonnegative(),
 });
 
+/**
+ * The audit summary carried on terminal generation payloads (the ready event and the
+ * non-streaming response share it).
+ *
+ * `unboundParameterIds` is the structured half of the battery's bindingCount: the parameter ids
+ * the audit's `parameterLeverage` deficiencies accuse, so measurement code does subjectId
+ * equality instead of grepping deficiency prose (where a parameter named `mass` matched the word
+ * "massive"). Optional with a default so events from servers predating the field still parse.
+ */
+export const AuditSummary = z.object({
+  score: z.number().min(0).max(100),
+  deficiencies: z.array(shortText(300)).max(64).default([]),
+  unboundParameterIds: z.array(shortText(64)).max(24).default([]),
+});
+export type AuditSummary = z.infer<typeof AuditSummary>;
+
 /** Terminal success. Carries the whole bundle so the viewer needs no second round trip. */
 const readyEvent = z.object({
   type: z.literal('ready'),
   bundle: ModelBundle,
   /** Audit score and deficiency list ride along so the client and analytics see generation quality (`04`). */
-  audit: z
-    .object({
-      score: z.number().min(0).max(100),
-      deficiencies: z.array(shortText(300)).max(64).default([]),
-    })
-    .optional(),
+  audit: AuditSummary.optional(),
   /** Gallery id when the pipeline persisted the model as part of the run. */
   modelId: z.string().uuid().optional(),
   at: z.number().int().nonnegative(),

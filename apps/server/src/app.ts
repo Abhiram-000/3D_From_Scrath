@@ -25,7 +25,7 @@ import { runPipeline } from './services/pipeline.ts';
 import { buildChatPrompt, buildQuizPrompt } from './services/prompts.ts';
 import type { GalleryStore } from './services/gallery-store.ts';
 import { sniffSnapshot, SNAPSHOT_MAX_BYTES } from './services/gallery-store.ts';
-import { limitWith, type LimiterSet } from './services/rate-limits.ts';
+import { limitWith, connectionAddress, isBatteryExemption, BATTERY_REQUEST_HEADER, type LimiterSet } from './services/rate-limits.ts';
 import { staticSiteMiddleware } from './services/static-pages.ts';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { validateQuizQuestions } from './services/quiz.ts';
@@ -149,9 +149,17 @@ export function buildApp(state: AppState): Hono<AppContext> {
   app.post('/api/generate', async (context) => {
     const requestId = context.get('requestId');
 
-    const guard = limitWith(state.limiters.generate, config.trustProxy, state.remoteAddress);
-    const limited = await guard(context, async () => undefined);
-    if (limited) return limited;
+    // The topic battery is an HTTP client of this route, so without an exemption the generate
+    // limiter counts its own topics against it and the battery records its 429s as build
+    // failures. The exemption is explicit and narrow by construction: the battery's marker
+    // header AND the actual loopback socket (read from the connection, never from a header an
+    // internet client controls). Anything else — remote address, missing header, wrong value —
+    // is limited exactly as before.
+    if (!isBatteryExemption(context.req.header(BATTERY_REQUEST_HEADER), connectionAddress(context))) {
+      const guard = limitWith(state.limiters.generate, config.trustProxy, state.remoteAddress);
+      const limited = await guard(context, async () => undefined);
+      if (limited) return limited;
+    }
 
     if (state.draining) {
       return context.json(apiError('draining', DEFAULT_ERROR_MESSAGE.draining, requestId), 503);

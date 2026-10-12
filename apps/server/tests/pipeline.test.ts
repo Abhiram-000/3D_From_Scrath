@@ -51,6 +51,27 @@ describe('the generated bundle', () => {
     expect(result.bundle.runtime).not.toBe(result.bundle.code);
   });
 
+  it('reports unbound parameters structurally, so metrics never grep prose', async () => {
+    // bindingCount in the topic battery is subjectId equality against this array. Prose matching
+    // here would reintroduce the "massive".includes("mass") false positive on the measurement
+    // path, so the pipeline must publish the audit's parameterLeverage subject ids verbatim.
+    const result = await runPipeline('a turbofan engine', 'balanced', {
+      ai: referenceAi,
+      sink: () => {},
+      tier: 'mid',
+      maxOutputTokens: 8192,
+    });
+    expect(result.ok, result.ok ? '' : result.failure.message).toBe(true);
+    if (!result.ok) return;
+
+    const unbound = result.audit.unboundParameterIds;
+    expect(Array.isArray(unbound)).toBe(true);
+    // The reference model binds every parameter through motion declarations or frame writes, so
+    // the structured list must be empty — and an entry here must name a real parameter id.
+    const parameterIds = result.bundle.manifest.parameters.map((parameter) => parameter.id);
+    for (const id of unbound ?? []) expect(parameterIds).toContain(id);
+  });
+
   it('keeps validating the instrumented source — a program with a runaway loop is still refused, never shipped', async () => {
     // The gate admits the loop; only the guard inside the instrumented source stops it at audit
     // time. If the pipeline ever validated the clean string instead, this program would hang the

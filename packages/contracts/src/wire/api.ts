@@ -10,6 +10,7 @@ import { EpochMillis, Uuid, shortText } from '../primitives.ts';
 import { ModelBundle, Domain } from '../manifest/model.ts';
 import { DeviceTier } from '../budgets.ts';
 import { QuizQuestion } from '../manifest/behavior.ts';
+import { AuditSummary } from './generation.ts';
 
 /**
  * Topic length bounds.
@@ -48,9 +49,7 @@ export type GenerateRequest = z.infer<typeof GenerateRequest>;
 /** The non-streaming generation response: identical content to the terminal `ready` event. */
 export const GenerateResponse = z.object({
   bundle: ModelBundle,
-  audit: z
-    .object({ score: z.number().min(0).max(100), deficiencies: z.array(shortText(300)) })
-    .optional(),
+  audit: AuditSummary.optional(),
   modelId: Uuid.optional(),
   requestId: z.string().max(64),
 });

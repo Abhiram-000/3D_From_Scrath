@@ -69,7 +69,11 @@ export async function runPipeline(
   complexity: 'simple' | 'balanced' | 'detailed' | 'maximum',
   deps: PipelineDeps,
 ): Promise<
-  | { ok: true; bundle: ModelBundle; audit: { score: number; deficiencies: string[] } }
+  | {
+      ok: true;
+      bundle: ModelBundle;
+      audit: { score: number; deficiencies: string[]; unboundParameterIds: string[] };
+    }
   | { ok: false; failure: PipelineFailure }
 > {
   const started = Date.now();
@@ -374,6 +378,13 @@ export async function runPipeline(
       audit: {
         score: finalAudit.report.score,
         deficiencies: finalAudit.report.deficiencies.map((d) => `${d.finding} → ${d.instruction}`),
+        // Structured binding data for measurement consumers (the topic battery's bindingCount):
+        // the parameter ids the audit's parameterLeverage deficiencies accuse, by dimension and
+        // subjectId. The prose above is for humans; equality against these ids is for machines —
+        // substring matching over the prose once counted a `mass` parameter because "massive".
+        unboundParameterIds: finalAudit.report.deficiencies
+          .filter((d) => d.dimension === 'parameterLeverage' && d.subjectId !== undefined)
+          .map((d) => d.subjectId as string),
       },
     };
   } finally {

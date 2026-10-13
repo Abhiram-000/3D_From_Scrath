@@ -8,8 +8,10 @@
  * here.
  */
 import {
+  COMPLEXITY_IDS,
   STALL_HEARTBEATS,
   HEARTBEAT_INTERVAL_MS,
+  type ComplexityPreference,
   type GenerationEvent,
   type ModelBundle,
 } from '@edu3d/contracts';
@@ -24,7 +26,7 @@ export const TOTAL_TIMEOUT_MS = 6 * 60_000;
 
 export interface GenerateOptions {
   topic: string;
-  complexity?: 'simple' | 'balanced' | 'detailed' | 'maximum';
+  complexity?: ComplexityPreference;
   tier?: 'low' | 'mid' | 'high';
   signal?: AbortSignal;
   onEvent?: (event: GenerationEvent) => void;
@@ -58,7 +60,7 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         topic: options.topic,
-        complexity: options.complexity ?? 'detailed',
+        complexity: options.complexity ?? DEFAULT_COMPLEXITY,
         tier: options.tier,
         stream: true,
       }),
@@ -280,5 +282,33 @@ export function takeTopic(): string {
     return (sessionStorage.getItem('edu3d.topic') ?? '').trim();
   } catch {
     return '';
+  }
+}
+
+/**
+ * The learner's chosen depth, carried across the landing → loading navigation.
+ *
+ * Kept beside the topic because it is the same decision: "here is what I want built, and how
+ * thoroughly". `DEFAULT_COMPLEXITY` is deliberately the same value the server defaults to, so a
+ * browser with no stored preference behaves exactly as it did before the control existed.
+ */
+export const DEFAULT_COMPLEXITY: ComplexityPreference = 'detailed';
+
+export function storeComplexity(complexity: ComplexityPreference): void {
+  try {
+    sessionStorage.setItem('edu3d.complexity', complexity);
+  } catch {
+    /* a non-persisted preference is not worth failing a generation over */
+  }
+}
+
+export function takeComplexity(): ComplexityPreference {
+  try {
+    const raw = sessionStorage.getItem('edu3d.complexity');
+    return COMPLEXITY_IDS.includes(raw as ComplexityPreference)
+      ? (raw as ComplexityPreference)
+      : DEFAULT_COMPLEXITY;
+  } catch {
+    return DEFAULT_COMPLEXITY;
   }
 }

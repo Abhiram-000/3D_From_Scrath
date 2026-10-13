@@ -26,9 +26,16 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { COMPLEXITY_LEVELS, type ComplexityPreference } from '@edu3d/contracts';
   import { Ambient, getTheme, setTheme } from '$lib/ambient.ts';
   import { LandingBackground } from '$lib/landing-background.ts';
   import { suspiciousContent } from '$lib/validate-topic.ts';
+  import {
+    DEFAULT_COMPLEXITY,
+    storeComplexity,
+    storeTopic,
+    takeComplexity,
+  } from '$lib/core/api.ts';
   // V1's landing stylesheet, verbatim. The scoped block at the bottom only adds the fade-out class.
   import '$lib/styles/landing.css';
 
@@ -49,8 +56,12 @@
 
   let topic = $state('');
   let typed = $state('');
+  let complexity = $state<ComplexityPreference>(DEFAULT_COMPLEXITY);
   let submitting = $state(false);
   let theme = $state<'dark' | 'light'>('dark');
+
+  /** The chosen level's own numbers, rendered from contracts so the label cannot drift from the ask. */
+  const level = $derived(COMPLEXITY_LEVELS.find((entry) => entry.id === complexity)!);
 
   let lastGenerateTime = 0;
   let ambient: Ambient | null = null;
@@ -65,6 +76,7 @@
 
   onMount(() => {
     theme = getTheme();
+    complexity = takeComplexity();
 
     // The layered cursor system: reactive dot grid, trailing spotlight, parallax depth, magnetic
     // pull and glass sheen — one rAF loop, exactly as V1 configured it.
@@ -264,7 +276,10 @@
     submitting = true;
 
     try {
-      sessionStorage.setItem('edu3d.topic', value);
+      storeTopic(value);
+      // The depth travels with the topic: "what I want built" and "how thoroughly" are one
+      // decision, and the loading page reads both before it calls the pipeline.
+      storeComplexity(complexity);
       // The conversion that matters: the fade-out thanks the learner for committing — a transition,
       // not a jump-cut (`07`).
       document.querySelector('.landing-container')?.classList.add('is-leaving');
@@ -458,11 +473,51 @@
           }}></textarea>
         <div class="input-footer">
           <!--
-            Action first, counter last. This row used to be `space-between` with a right-aligned
-            button and a keyboard hint on the left; removing the hint left the button alone against
-            a 430px void inside the most important component on the page. Two anchored ends now hold
-            the row open deliberately instead of accidentally.
+            How thorough, in the same row as the thing it applies to.
+
+            A native <select>, deliberately. A custom popover would mean re-implementing focus
+            trapping, arrow-key navigation, Escape, aria-activedescendant and the type-ahead a
+            screen reader expects — a listbox is a solved problem the platform already ships in
+            better form, and the browser's version opens the list of four on press and works on
+            touch, keyboard and assistive tech with no code of ours to get wrong.
+
+            The numbers in each option come from COMPLEXITY_LEVELS in contracts — the same table
+            the generation prompt derives its targets from — so this control cannot promise "60–150
+            parts" while the model is asked for something else.
           -->
+          <div class="depth-control">
+            <label class="depth-label" for="depthSelect">Detail</label>
+            <div class="depth-select-wrap">
+              <select
+                id="depthSelect"
+                class="depth-select"
+                bind:value={complexity}
+                aria-describedby="depthBlurb"
+              >
+                {#each COMPLEXITY_LEVELS as option (option.id)}
+                  <option value={option.id}>
+                    {option.label} — {option.parts[0]}–{option.parts[1]} parts
+                  </option>
+                {/each}
+              </select>
+              <svg
+                class="depth-chevron"
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                aria-hidden="true"
+              >
+                <path
+                  d="M2.5 4.5L6 8l3.5-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </div>
+          </div>
           <button
             id="generateBtn"
             class="generate-btn"
@@ -499,6 +554,26 @@
           </div>
         </div>
       </div>
+
+      <!--
+        What the chosen level costs, stated before the learner waits rather than discovered as a
+        stutter afterwards. `08` requires the honest answer: a Maximum model is a ~2M-triangle
+        scene, and on a budget phone it will step quality down visibly. Saying so up front is the
+        difference between a tradeoff and a betrayal.
+
+        aria-live so changing the select announces the new cost, not just the new label.
+      -->
+      <p
+        id="depthBlurb"
+        class="depth-blurb"
+        class:is-heavy={complexity === 'maximum'}
+        aria-live="polite"
+      >
+        {level.blurb}
+        <span class="depth-cost"
+          >{level.parts[0]}–{level.parts[1]} parts · {level.triangles} triangles</span
+        >
+      </p>
 
       <!--
         Three chips, and they stay exactly as they are. Breadth would read better on paper, but the

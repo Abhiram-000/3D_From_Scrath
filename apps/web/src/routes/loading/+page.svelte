@@ -12,7 +12,7 @@
   import { onMount } from 'svelte';
   import { Ambient } from '$lib/ambient.ts';
   import { LoadingBackground, initParticles } from '$lib/loading-background.ts';
-  import { generateStream, storeBundle } from '$lib/core/api.ts';
+  import { generateStream, storeBundle, takeComplexity } from '$lib/core/api.ts';
   import { FactQueue, ProgressModel, STAGES } from '$lib/core/loading-progress.ts';
   import { detectTier } from '$lib/engine/sandbox-host.ts';
   // V1's loading stylesheet, verbatim.
@@ -127,8 +127,12 @@
     controller = new AbortController();
 
     const { tier } = detectTier();
+    // The depth the learner chose on the landing page. Read here rather than defaulted, because
+    // `takeComplexity` already falls back to the same default the server would have used — so a
+    // direct hit on /loading behaves exactly as it did before the control existed.
     const outcome = await generateStream({
       topic,
+      complexity: takeComplexity(),
       tier,
       signal: controller.signal,
       onEvent: (event) => {

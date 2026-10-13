@@ -513,6 +513,105 @@ body {
   transform: translateX(3px);
 }
 
+/* ---------- Detail control ----------
+   Sized and coloured as a peer of the quick-start chips so the two read as the same kind of thing:
+   a small choice about the model, not a second primary action competing with Generate.
+   The chevron is decorative and the native select draws its own on some platforms, so it is
+   hidden from assistive tech either way. */
+.depth-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 44px;
+}
+
+.depth-label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.depth-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.depth-select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-height: 44px;
+  padding: 0.5rem 2rem 0.5rem 0.875rem;
+  background: var(--chip-bg);
+  border: 1px solid var(--chip-border);
+  border-radius: var(--radius-pill);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    color var(--dur-fast) ease;
+}
+
+/* Interactive states must read as MORE prominent than rest, never less — a hover that lowers
+   contrast looks like the control is disabled. */
+.depth-select:hover {
+  background: var(--coral-muted);
+  border-color: var(--coral);
+}
+
+.depth-select:focus-visible {
+  outline: 2px solid var(--coral);
+  outline-offset: 2px;
+}
+
+.depth-chevron {
+  position: absolute;
+  right: 0.75rem;
+  pointer-events: none;
+  color: var(--text-secondary);
+}
+
+/*
+ * The option list is the OS's own popup, so it cannot be styled — but the trigger is sized for a
+ * thumb and the label carries the part count, so what the learner is choosing between is legible
+ * before they commit.
+ */
+.depth-select option {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+/*
+ * What the chosen depth costs, stated before the wait rather than discovered as a stutter.
+ * `08` demands the honest answer, so the numbers come from the same contracts table the prompt
+ * reads — one source, so the promise and the ask cannot drift apart.
+ */
+.depth-blurb {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  text-align: center;
+  text-wrap: pretty;
+}
+
+.depth-cost {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Maximum is the one level that can cost a learner frames: it is a ~2M-triangle scene. Saying so
+   is the point of this line, so it gets the accent rather than being quietened. */
+.depth-blurb.is-heavy .depth-cost {
+  color: var(--coral);
+}
+
 /* ---------- Quick start chips ---------- */
 .suggestion-chips {
   margin-top: clamp(0.5rem, 1.5vh, 1rem);

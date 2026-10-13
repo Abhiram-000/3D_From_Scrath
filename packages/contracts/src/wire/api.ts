@@ -28,6 +28,58 @@ export const MIN_TOPIC_LENGTH = 5;
 export const ComplexityPreference = z.enum(['simple', 'balanced', 'detailed', 'maximum']);
 export type ComplexityPreference = z.infer<typeof ComplexityPreference>;
 
+/**
+ * What each level actually means, in numbers.
+ *
+ * These numbers used to live in the server's `prompts.ts`, which put them out of reach of the
+ * client: the landing page could offer a "detail" control but had no honest way to label it,
+ * because the part counts the model would be asked for were written in prose on the other side of
+ * the wire. So the numbers live here now, and both sides render from this one table —
+ * `COMPLEXITY_GUIDANCE` in the generation prompt is derived from it rather than restated, which
+ * removes the drift where the control promises "60–150 parts" and the prompt asks for something
+ * else.
+ *
+ * The levels are ordered by render cost as much as by part count, because that is the tradeoff a
+ * learner is actually choosing: `maximum` is a ~2M-triangle scene and wants a real GPU. The
+ * triangle ceiling is the device's own HIGH-tier budget from `08` scaled down, so "heavy" here
+ * means what the platform's admission table will allow rather than a marketing adjective.
+ */
+export const COMPLEXITY_LEVELS = [
+  {
+    id: 'simple' as const,
+    label: 'Light',
+    parts: [8, 15] as const,
+    parameters: [2, 2] as const,
+    triangles: 'under ~150k',
+    blurb: 'A handful of parts. Builds fastest and runs on any phone.',
+  },
+  {
+    id: 'balanced' as const,
+    label: 'Balanced',
+    parts: [20, 50] as const,
+    parameters: [3, 4] as const,
+    triangles: 'under ~600k',
+    blurb: 'A real subassembly or two. The everyday choice.',
+  },
+  {
+    id: 'detailed' as const,
+    label: 'Detailed',
+    parts: [60, 150] as const,
+    parameters: [4, 6] as const,
+    triangles: 'under ~2M',
+    blurb: 'A full machine, built from reusable subassemblies.',
+  },
+  {
+    id: 'maximum' as const,
+    label: 'Maximum',
+    parts: [150, 300] as const,
+    parameters: [5, 8] as const,
+    triangles: 'up to the device budget, about 2M',
+    blurb: 'Everything the concept has. Heaviest render — wants a good GPU.',
+  },
+];
+export const COMPLEXITY_IDS = COMPLEXITY_LEVELS.map((level) => level.id);
+
 export const GenerateRequest = z.object({
   /**
    * The learner's words. Wrapped and labelled untrusted data before it reaches the model (`04`) — it is

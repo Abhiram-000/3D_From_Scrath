@@ -114,9 +114,16 @@ export class LandingBackground {
           y = (Math.random() - 0.5) * 20;
         }
 
-        const z = (Math.random() - 0.5) * 30 - 5;
+        /*
+         * Always in front of the camera. This used to be `(Math.random() - 0.5) * 30 - 5`, whose
+         * range is [-20, +10] — and a default camera sits at the origin looking down -Z, so roughly
+         * a third of the shapes were being placed *behind* it. Those are culled or project to
+         * garbage, which is why `pushClearOfCopy` below could not reason about them and why shapes
+         * still landed on the headline: their clearance test was reading a mirrored coordinate off
+         * a point behind the near plane. Negative-only depth fixes both the artifact and the test.
+         */
+        const z = -6 - Math.random() * 24;
         mesh.position.set(x, y, z);
-        this.pushClearOfCopy(mesh);
         mesh.rotation.set(
           Math.random() * Math.PI * 2,
           Math.random() * Math.PI * 2,
@@ -125,6 +132,12 @@ export class LandingBackground {
 
         const scale = 0.7 + Math.random() * 1.4;
         mesh.scale.set(scale, scale, scale);
+
+        // Clearance runs AFTER the scale is applied, not before. `pushClearOfCopy` measures the
+        // shape's screen width from its bounding sphere, so measuring before `mesh.scale` is set
+        // underestimates a scale-2.1 dodecahedron by more than half — which is why shapes kept
+        // landing on the headline while the test reported them clear.
+        this.pushClearOfCopy(mesh, geometry);
 
         mesh.userData = {
           rotationSpeed: {
@@ -146,8 +159,13 @@ export class LandingBackground {
            * frame added a signed delta to a running total, so any bias in the mean walked the shape
            * out of its corner and, over a page's lifetime, into the headline. This is task 9.2 of
            * the production-gap plan ("the composition stops drifting apart"), fixed at the source.
+           *
+           * Read from `mesh.position` and NOT from the local `x`/`y`: `pushClearOfCopy` has already
+           * moved the shape sideways to clear the copy column by this point, and capturing the
+           * pre-push value would make the float snap every shape straight back on top of the text on
+           * the very first frame.
            */
-          basePosition: { x, y },
+          basePosition: { x: mesh.position.x, y: mesh.position.y },
         };
 
         this.shapes.push(mesh);
@@ -204,16 +222,30 @@ export class LandingBackground {
    * Runs once at init, so it costs one projection per shape — and the float is computed from the
    * corrected base, so the clearance holds for the life of the page rather than decaying.
    */
-  private pushClearOfCopy(mesh: THREE.Mesh): void {
+  private pushClearOfCopy(mesh: THREE.Mesh, geometry: THREE.BufferGeometry): void {
     if (!this.camera) return;
     const projected = new THREE.Vector3();
+    const edge = new THREE.Vector3();
     const copyFraction = Math.min(640, window.innerWidth) / window.innerWidth;
-    for (let attempt = 0; attempt < 8; attempt++) {
+
+    // The shape's own width matters as much as its centre. A scale-2.1 dodecahedron is wide
+    // enough to cross the headline while its *centre* sits clear of the column, which is what the
+    // centre-only test missed: it measured the middle of a shape that was still on top of the text.
+    geometry.computeBoundingSphere();
+    const radius = (geometry.boundingSphere?.radius ?? 1) * mesh.scale.x;
+
+    for (let attempt = 0; attempt < 12; attempt++) {
+      mesh.updateMatrixWorld();
       projected.copy(mesh.position).project(this.camera);
-      if (Math.abs(projected.x) >= copyFraction) return;
+      edge
+        .copy(mesh.position)
+        .add(new THREE.Vector3(radius, 0, 0))
+        .project(this.camera);
+      const halfWidth = Math.abs(edge.x - projected.x);
+      if (Math.abs(projected.x) - halfWidth >= copyFraction) return;
       // Push toward whichever edge it is already nearer; dead centre picks one at random.
       const direction = projected.x === 0 ? (Math.random() < 0.5 ? -1 : 1) : Math.sign(projected.x);
-      mesh.position.x += direction * 7;
+      mesh.position.x += direction * (5 + radius * 2);
     }
   }
 

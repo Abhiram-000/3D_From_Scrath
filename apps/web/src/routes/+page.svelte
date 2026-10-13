@@ -39,13 +39,12 @@
   // V1's landing stylesheet, verbatim. The scoped block at the bottom only adds the fade-out class.
   import '$lib/styles/landing.css';
 
-  const HEADLINE_TEXT = 'Turn any topic into a 3D model';
+  const HEADLINE_TEXT = 'Learn Anything';
   /**
-   * The typewriter's budget, not its speed. A fixed per-character delay is tuned to one headline
-   * length: 80ms/char was right for V1's 13 characters and would put this 32-character headline's
-   * final character at 2.9 seconds — the value proposition fully revealed after the five-second
-   * test has already judged it. So the delay is derived from the text and clamped: long text types
-   * faster, short text still gets the original unhurried 80ms, and neither can run away.
+   * The typewriter's budget, not its speed. V1 typed at a fixed 80ms/char, which is right for this
+   * 13-character headline and wrong for a longer one — so the delay is derived from the text and
+   * clamped. At 13 characters it lands on exactly 80ms, which reproduces V1's timing precisely; the
+   * arithmetic only takes over if the headline is ever lengthened.
    */
   const HEADLINE_TYPING_MS = 1300;
   const HEADLINE_MIN_STEP_MS = 35;
@@ -382,72 +381,33 @@
 
   <main class="hero-section">
     <div class="hero-center">
+      <p class="hero-eyebrow" data-parallax="8">AI-powered interactive learning</p>
+
       <h1 class="hero-title" data-parallax="14">
         <!--
-          11 words, outcome first, concrete verb. "Take apart" earns its place over "explore"
-          because it promises the model has real internal structure — which is the thing a learner
-          can actually tell apart from a video. The two halves are not peers: the statement carries
-          the gradient and the size, the qualifier sits a step down (see `.hero-subtitle`).
+          The full headline is always in the DOM; the animation only reveals it. Mutating the text
+          node one character at a time made the page's only <h1> announce as "Lear", "Learnin",
+          "Learnin…" to a screen reader for the length of the animation — an unstable accessible
+          name on the single most important element on the page. A visually-hidden copy carries the
+          meaning; the animated span is decoration.
 
-          The statement types itself in (see HEADLINE_TYPING_MS) while the qualifier, the description
-          and the proof strip are present from the first frame — so the page is never blank while the
-          headline writes, and the meaning does not depend on the animation finishing.
+          The caret is a drawn bar, not a "|" character — see `.cursor-blink` for why. It stays in
+          the flow deliberately: that is the only way it follows the text as it types.
         -->
         <span class="hero-line">
-          <!--
-            The full headline is always in the DOM; the animation only reveals it. Mutating the text
-            node one character at a time made the page's only <h1> announce as "Tur", "Turn a",
-            "Turn any t" to a screen reader for the length of the animation — an unstable accessible
-            name on the single most important element on the page. A visually-hidden copy carries the
-            meaning; the animated span is decoration.
-          -->
           <span class="sr-only">{HEADLINE_TEXT}</span>
-          <!--
-            The caret is a drawn bar, not a "|" character — see `.cursor-blink` for why each of the
-            three earlier versions of it was wrong. It stays in the flow deliberately: that is the
-            only way it follows the text onto whichever line the typing is currently on.
-          -->
           <span aria-hidden="true">
             <span class="gradient-text typing-animation">{typed}</span><span class="cursor-blink"
             ></span>
           </span>
         </span>
-        <span class="hero-subtitle">you can take apart</span>
+        <span class="hero-subtitle fade-in-delayed">in Interactive 3D</span>
       </h1>
 
       <p class="hero-description fade-in-delayed-2" data-parallax="10">
-        Type anything — a gear train, a cell, an economy. Get an object you can spin, take apart and
-        ask questions about.
+        Transform any concept into an immersive 3D experience. Interactive models, guided tours, and
+        intelligent assessments — generated in seconds.
       </p>
-
-      <!--
-        The proof strip, rewritten once more. The centred-column version that replaced the old
-        left-aligned rows was the worst thing on the page: three 10px glyphs isolated above their
-        labels at 1.99:1 contrast — indistinguishable from the wireframe background's own 1px tan
-        specks, so they read as lens dirt rather than marks. Glyphs are gone. What replaces them is
-        a hairline rule between the three items, which is what makes a row read as one unit rather
-        than three islands, and a width matched to the prompt card so the strip stops floating in a
-        gutter of its own.
-
-        Every claim is one the platform honours today, which is why there is no physics line: the
-        solver still reports rotation in degrees (physics-world.ts:393) and auto colliders are still
-        a hardcoded 0.5m sphere keyed to scale[0]. "Real physics" becomes true when the
-        universal-physics plan lands, and it should be the first line added then.
-      -->
-      <ul class="proof-strip fade-in-delayed-2" data-parallax="6">
-        <li class="proof-item">
-          <strong>Any topic</strong>
-          <span>gears, cells, orbits, markets</span>
-        </li>
-        <li class="proof-item">
-          <strong>It moves</strong>
-          <span>spin it, orbit it, pause it</span>
-        </li>
-        <li class="proof-item">
-          <strong>Ask it</strong>
-          <span>a tutor that knows the model</span>
-        </li>
-      </ul>
 
       <div class="prompt-card glass-card has-sheen has-glow-border" data-magnetic data-parallax="7">
         <!--
@@ -472,6 +432,19 @@
             handleGenerate();
           }}></textarea>
         <div class="input-footer">
+          <div class="input-meta">
+            <div
+              class="input-counter"
+              class:warning={updateCounter().warning}
+              class:error={updateCounter().error}
+              aria-live="polite"
+            >
+              {topic.length} / 500
+            </div>
+            <span class="input-hint"
+              >Press <kbd>Enter</kbd> to generate · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</span
+            >
+          </div>
           <!--
             How thorough, in the same row as the thing it applies to.
 
@@ -538,20 +511,6 @@
               <path d="M10 3L18 10L10 17V12H2V8H10V3Z" />
             </svg>
           </button>
-          <!--
-            The counter earns its space only once it has something to report. At 0 it was the first
-            thing in the prompt card and read as a form field demanding five hundred characters
-            before a word was typed.
-          -->
-          <div
-            class="input-counter"
-            class:warning={updateCounter().warning}
-            class:error={updateCounter().error}
-            class:is-empty={topic.length === 0}
-            aria-live="polite"
-          >
-            {topic.length} / 500
-          </div>
         </div>
       </div>
 
@@ -581,6 +540,7 @@
         unproven ones — a chip that generates a failure is worse copy than a narrow chip.
       -->
       <div class="suggestion-chips">
+        <span class="suggestions-label">Quick Start</span>
         <div class="suggestion-list">
           {#each QUICK_STARTS as chip (chip.label)}
             <button
@@ -632,6 +592,10 @@
       </a>
     </div>
   </main>
+
+  <footer class="landing-footer">
+    <p>EDU-3D &mdash; Learn anything, in 3D</p>
+  </footer>
 </div>
 
 <canvas bind:this={bgCanvas} id="bgCanvas3d" class="bg-canvas-3d" aria-hidden="true"></canvas>

@@ -161,6 +161,47 @@ body {
   gap: clamp(0.875rem, 2vh, 1.375rem);
 }
 
+/* Eyebrow pill — warm coral accent */
+.hero-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.4375rem 0.9375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--coral-300);
+  background: var(--coral-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--coral-border);
+  border-radius: var(--radius-pill);
+  animation: riseIn 0.7s var(--ease-out) 0.05s both;
+}
+
+.hero-eyebrow::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--coral);
+  box-shadow: 0 0 10px var(--coral);
+  animation: pulseDot 2.4s ease-in-out infinite;
+}
+
+@keyframes pulseDot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.8);
+  }
+}
+
 /* Headline — premium tri-tone gradient: amber → coral → violet */
 /*
  * The headline carries two lines, and they are not equal. "Turn any topic into a 3D model" is the
@@ -263,59 +304,6 @@ body {
   margin-top: 0.1em;
 }
 
-/*
- * The proof strip.
- *
- * Three claims the platform can actually honour today, and the only structural thing between the
- * pitch and the input. Two rules learned the hard way:
- *
- *   1. No glyphs. As isolated 10px marks above centred labels they sat at 1.99:1 against the cream
- *      backdrop — the same value as the wireframe background's own hairlines, so they read as dust
- *      on the lens rather than as marks. Meaning was never in them; the sentence carries it.
- *   2. Width matched to the prompt card. At its own narrower measure the strip became an island
- *      floating between two blocks that both ran edge to edge, which is the clearest possible signal
- *      that a component was dropped in rather than laid out.
- *
- * The hairline between items is doing the real work: three centred columns with nothing between
- * them read as three unrelated captions, and three separated by a rule read as one row.
- */
-.proof-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  width: 100%;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.proof-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.2rem;
-  padding: 0 clamp(0.75rem, 2.5vw, 1.5rem);
-  text-align: center;
-  min-width: 0;
-}
-
-.proof-item + .proof-item {
-  border-left: 1px solid var(--border-subtle);
-}
-
-.proof-item strong {
-  color: var(--text-primary);
-  font-weight: 650;
-  font-size: 0.875rem;
-  letter-spacing: -0.005em;
-}
-
-.proof-item span {
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-  line-height: 1.4;
-  text-wrap: pretty;
-}
-
 .hero-description {
   font-size: clamp(0.9375rem, 1.4vw, 1.0625rem);
   color: var(--text-secondary);
@@ -411,9 +399,18 @@ body {
  * emptiest region on the page sat inside the most important component. Two anchored ends and a
  * single deliberate gap is the same width of emptiness as *intentional* whitespace.
  */
+/*
+ * V1's footer row: counter and Enter hint on the left, Generate on the right. `flex-wrap` plus the
+ * depth control's `flex-basis: 100%` lets the selector claim its own line above without disturbing
+ * that arrangement — without the wrap the three controls total ~785px of natural width inside a
+ * 640px card, and the button gets squeezed until "Generate 3D Model" wraps onto two lines and
+ * spills past the card's right edge.
+ */
 .input-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-3);
   padding-top: var(--space-2);
   border-top: 1px solid var(--border-subtle);
@@ -421,21 +418,10 @@ body {
 }
 
 .input-counter {
-  margin-left: auto;
   font-size: 0.6875rem;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
-  transition: opacity var(--dur-fast) ease;
-}
-
-/*
- * "0 / 500" sat in the prompt card from first paint and read as a quota the visitor had already
- * spent nothing of — a form field demanding five hundred characters before a word was typed. It
- * still announces itself the moment there is a count worth announcing.
- */
-.input-counter.is-empty {
-  opacity: 0;
 }
 
 .input-counter.warning {
@@ -451,6 +437,9 @@ body {
   gap: var(--space-2);
   /* The primary action on the page was 40px tall on desktop and 37px on a phone. */
   min-height: 44px;
+  /* Never let a crowded row squeeze the label onto two lines. */
+  flex: none;
+  white-space: nowrap;
   padding: 0.625rem 1.25rem;
   background: var(--gradient-accent);
   border: none;
@@ -523,6 +512,9 @@ body {
   align-items: center;
   gap: 0.5rem;
   min-height: 44px;
+  /* Its own line inside the footer, above V1's counter/hint/Generate row. */
+  order: -1;
+  flex: 0 0 100%;
 }
 
 .depth-label {
@@ -590,6 +582,10 @@ body {
  * What the chosen depth costs, stated before the wait rather than discovered as a stutter.
  * `08` demands the honest answer, so the numbers come from the same contracts table the prompt
  * reads — one source, so the promise and the ask cannot drift apart.
+ *
+ * One line, not two. V1's vertical budget has no room for a stacked block here: the hero is
+ * taller than its grid row on a 1440x800 laptop without it, and the overflow pushed the demo link
+ * on top of the footer.
  */
 .depth-blurb {
   margin: 0;
@@ -600,9 +596,8 @@ body {
 }
 
 .depth-cost {
-  display: block;
   color: var(--text-dim);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -610,6 +605,16 @@ body {
    is the point of this line, so it gets the accent rather than being quietened. */
 .depth-blurb.is-heavy .depth-cost {
   color: var(--coral);
+}
+
+.suggestions-label {
+  display: block;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-dim);
+  font-weight: 700;
+  margin-bottom: var(--space-3);
 }
 
 /* ---------- Quick start chips ---------- */
@@ -669,10 +674,26 @@ body {
   transform: translateY(0);
 }
 
+/* ---------- Footer ---------- */
+.landing-footer {
+  padding: clamp(0.875rem, 2vw, 1.25rem);
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  font-weight: 500;
+  animation: riseIn 0.8s var(--ease-out) 0.5s both;
+}
+
 /* ---------- Short viewports ---------- */
 @media (max-height: 860px) {
+  /*
+   * 1.4vh left the hero 13px taller than its grid row on a 1440x800 laptop, which pushed the demo
+   * link on top of the footer. V1's own content set was tuned for this rhythm; the detail control's
+   * row is what made it need a touch more room, so the gap gives that back rather than the footer
+   * being hidden on a laptop for the sake of one control.
+   */
   .hero-center {
-    gap: clamp(0.625rem, 1.4vh, 1rem);
+    gap: clamp(0.5rem, 1.05vh, 1rem);
   }
 
   .hero-title {
@@ -695,6 +716,10 @@ body {
 
   .prompt-input {
     min-height: 38px;
+  }
+
+  .landing-footer {
+    display: none;
   }
 }
 
@@ -727,6 +752,10 @@ body {
     padding: 0.5625rem 1rem;
     font-size: 0.75rem;
   }
+
+  .landing-footer {
+    display: none;
+  }
 }
 
 @media (max-width: 400px) {
@@ -739,10 +768,36 @@ body {
 /* ============================================
    INPUT FOOTER
    ============================================
-   Enter generates and Shift+Enter inserts a newline. That used to be spelled out beside the field
-   in two <kbd> chips; it is now left to behave the way every search box on the internet behaves,
-   because a hint that repeats a default is just the hint, drawn again.
+   The prompt is a textarea so a long topic can wrap, which leaves the submit gesture ambiguous.
+   Enter generates and Shift+Enter inserts a newline, and the hint states that rather than leaving
+   the user to guess.
    ============================================ */
+
+.input-hint {
+  font-size: 11.5px;
+  color: var(--text-muted, #6b5f50);
+  white-space: nowrap;
+}
+
+.input-hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
+@media (max-width: 640px) {
+  /* The hint is the first thing to go on a narrow screen: the button is adjacent and
+       self-explanatory. */
+  .input-hint {
+    display: none;
+  }
+}
 
 /*
  * The live-demo entry.

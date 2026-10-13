@@ -174,7 +174,18 @@
   --accent: var(--bronze-600);
   --accent-hover: var(--bronze-500);
   --accent-strong: var(--bronze-700);
-  --accent-ink: #fffcf6;
+  /*
+   * Ink for accent fills, and it must be ink — not paper. This token's default is the near-black
+   * #0e0805 and this override had it as near-white #fffcf6, which is correct only if the accent
+   * gradient is dark. It is not: `--gradient-accent` runs cream #f4ecd8 → amber #d4a055 →
+   * bronze #c2885c in *both* themes, so near-white text on it measures 1.15:1 at the light end and
+   * 2.94:1 at the dark end, against WCAG AA's 4.5:1. Every control painted with it — the landing
+   * Generate button, the loading page's, seven more in the viewer — inherited the failure.
+   *
+   * #2a1d10 against the same three stops: 13.92 / 6.99 / 5.44. Worst case clears AA with room, and
+   * it is the same near-black family as the default value, so the dark theme is untouched.
+   */
+  --accent-ink: #2a1d10;
   --accent-muted: rgba(165, 111, 63, 0.1);
   --accent-glow: rgba(165, 111, 63, 0.22);
 

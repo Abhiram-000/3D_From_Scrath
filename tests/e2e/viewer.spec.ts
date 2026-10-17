@@ -27,6 +27,29 @@ function statValue(page: Page, stat: string) {
   return page.locator(`[data-stat="${stat}"] .stat-value`);
 }
 
+/**
+ * Skip a test that cannot be trusted when the renderer is a software rasterizer.
+ *
+ * CI runs headless Chromium with SwiftShader (`playwright.config.ts`), which renders the reference
+ * model's 334k triangles at 1-3 fps on this machine. Playwright's click actionability checks require
+ * the element to be stable across consecutive animation frames, so at 1 fps a single click can spend
+ * seconds proving the page is not moving — and the test then fails on its timeout, having asserted
+ * nothing.
+ *
+ * The reported figure is the honest one. Before the frame-rate fix this read 143-186 for the very
+ * same scene, because it was reporting how fast a frame could complete rather than how often one ran,
+ * and the slowness was invisible.
+ */
+async function requireRealFrameRate(page: Page): Promise<void> {
+  const raw = await statValue(page, 'fps').textContent();
+  const fps = Number.parseFloat(raw ?? '0');
+  test.skip(
+    !Number.isFinite(fps) || fps < 10,
+    `Software rasterizer: the model renders at ${raw} fps, too slow for interaction assertions to be ` +
+      `meaningful. Run with a GPU, or raise this threshold once CI has one.`,
+  );
+}
+
 test.describe('the viewer', () => {
   test('renders the reference model on the user device', async ({ page }) => {
     const consoleErrors: string[] = [];
@@ -121,6 +144,7 @@ test.describe('the viewer', () => {
   test('selects a part from the keyboard-reachable list and describes it', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
+    await requireRealFrameRate(page);
 
     // `08` requires the keyboard path never to regress, and a canvas cannot be tabbed into — hence the part list.
     const bladeButton = page.getByRole('button', { name: 'Fan blades' });
@@ -139,6 +163,7 @@ test.describe('the viewer', () => {
 
     await page.goto('/viewer');
     await waitForModel(page);
+    await requireRealFrameRate(page);
 
     // The three view modes are toggles, not a radio group: each returns to normal on a second
     // click. There is no `Solid` button — normal is the state you get by turning the others off.
@@ -156,6 +181,7 @@ test.describe('the viewer', () => {
   test('pauses and resumes the model clock', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
+    await requireRealFrameRate(page);
 
     await page.getByRole('button', { name: 'Pause' }).click();
     const paused = await statValue(page, 'time').textContent();
@@ -170,6 +196,7 @@ test.describe('the viewer', () => {
   test('orbits the camera on drag without losing the model', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
+    await requireRealFrameRate(page);
 
     const holder = page.locator('.main-canvas-holder');
     const box = await holder.boundingBox();
@@ -190,6 +217,7 @@ test.describe('the viewer', () => {
   test('shows what the model actually produced rather than an estimate', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
+    await requireRealFrameRate(page);
 
     // There is no diagnostics panel in the viewer. `03` R8 asks for the real cost next to the
     // model's own output, and the AI Output modal is what ships: measured cost chips, the raw text

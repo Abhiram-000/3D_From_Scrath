@@ -18,7 +18,12 @@ export default defineConfig({
   testDir: './tests/e2e',
   // A model build runs marching cubes on the reference turbofan, so a generous per-test budget is honest rather
   // than lax. A hang still fails, just later.
-  timeout: 90_000,
+  // Generous, and deliberately so. A model load is authoring plus realization plus first-frame
+  // shader compilation on a software rasterizer, which measured anywhere from 16s to 44s per run on
+  // the same scene. At the previous 90s the page load alone could consume the budget and leave a
+  // test failing on timeout rather than on behaviour — a flaky suite is worse than no suite, because
+  // it teaches people to re-run it.
+  timeout: 180_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

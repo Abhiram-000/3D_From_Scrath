@@ -43,11 +43,24 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   let modelLoading = $state(false);
   let loadError = $state<string | null>(null);
 
-  let manifest = $state<ModelManifest | null>(null);
-  let verdict = $state<SerializableVerdict | null>(null);
-  let stats = $state<RuntimeStats | null>(null);
-  let metrics = $state<Record<string, number>>({});
-  let parameterValues = $state<Record<string, number | boolean | string>>({});
+  // All five below are `$state.raw` deliberately. Every one is assigned a fresh value on write and
+  // never mutated in place — `parameterValues` spreads on each of its three write sites — so the deep
+  // proxy `$state` builds bought nothing and charged a `get` trap for every property read. That
+  // matters most on `manifest`: the parts array can be hundreds of entries, the tooltip and panel read
+  // it on every hover change, and `code-view-modal` stringifies it, which through a proxy walks every
+  // scalar leaf through a trap.
+  //
+  // `$state.raw` tracks reassignment only. If any of these ever needs an in-place write it must go back
+  // to `$state`, or the change will be silently invisible.
+  //
+  // Deliberately NOT `progress` in loading/+page.svelte or generate-dialog.svelte: ProgressModel is a
+  // class whose `index` is mutated in place and read back through getters, and `.raw` would freeze the
+  // stage chips without any error.
+  let manifest = $state.raw<ModelManifest | null>(null);
+  let verdict = $state.raw<SerializableVerdict | null>(null);
+  let stats = $state.raw<RuntimeStats | null>(null);
+  let metrics = $state.raw<Record<string, number>>({});
+  let parameterValues = $state.raw<Record<string, number | boolean | string>>({});
 
   let hoveredPart = $state<string | null>(null);
   let selectedPart = $state<string | null>(null);

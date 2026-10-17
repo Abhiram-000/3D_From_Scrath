@@ -84,9 +84,7 @@ function blurRadius(declarations) {
 /** Largest `backdrop-filter: blur(Npx)` radius in a declaration block, ignoring an explicit `none`. */
 function backdropRadius(declarations) {
   let largest = null;
-  for (const match of declarations.matchAll(
-    /(?<![\w-])backdrop-filter:\s*blur\(\s*(\d+)px/g,
-  )) {
+  for (const match of declarations.matchAll(/(?<![\w-])backdrop-filter:\s*blur\(\s*(\d+)px/g)) {
     const radius = Number(match[1]);
     if (largest === null || radius > largest) largest = radius;
   }

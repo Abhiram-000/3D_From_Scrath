@@ -452,11 +452,19 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Slider Input */
+/* Slider Input.
+ *
+ * `height` is the hit target, not the track: `08`'s floor is 44 CSS pixels ("a slider thumb that is
+ * hard to grab is a broken slider"), so the input is a tall transparent strip whose visible 6px
+ * track is the content-box slice in the middle. The whole strip is the grab area — a thumb you can
+ * only hit by its 18px circle, over a canvas that redraws under the cursor, was the failure this
+ * used to be (the box measured 12px on the phone profile). */
 .parameter-slider {
   width: 100%;
-  height: 6px;
+  height: 44px;
+  padding: 19px 0;
   background: var(--bg-subtle);
+  background-clip: content-box;
   border-radius: var(--radius-pill);
   outline: none;
   -webkit-appearance: none;
@@ -465,6 +473,9 @@ body {
 }
 
 .parameter-slider::-webkit-slider-thumb {
+  /* Half the thumb minus half the 6px content-box track: without this, Chrome pins the thumb to
+   * the top of the shortened track and the slider reads as broken while the strip is grabbable. */
+  margin-top: -6px;
   -webkit-appearance: none;
   appearance: none;
   width: 18px;

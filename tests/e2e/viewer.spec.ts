@@ -87,6 +87,11 @@ test.describe('the viewer', () => {
   test('draws frames rather than a single static image', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
+    // The time read-out is formatted MM:SS, and a software rasterizer can run this 334k-triangle
+    // model at 1-3 fps — a 1.5s window then advances under one second of model time and the bucket
+    // may not move. Same doctrine as the suite's other interaction assertions: below a real 10 fps
+    // the assertion measures the renderer, not the platform, so it is skipped rather than flaky.
+    await requireRealFrameRate(page);
 
     // `00`: "the default state of a model is motion"; a viewer that renders one frame and stops is a picture.
     const firstTime = await statValue(page, 'time').textContent();
@@ -222,7 +227,10 @@ test.describe('the viewer', () => {
     // There is no diagnostics panel in the viewer. `03` R8 asks for the real cost next to the
     // model's own output, and the AI Output modal is what ships: measured cost chips, the raw text
     // the model wrote, and the manifest the engine validated and built from.
-    await page.getByRole('button', { name: 'AI Output' }).click();
+    // The toolbar's stable identity is its `title` — in the collapsed icon-only states (and in the
+    // failed-load state this test drives) the visible label is hidden, so the accessible-name match
+    // that worked on an expanded toolbar breaks exactly here.
+    await page.getByTitle("View the AI's output for this model").click();
     const modal = page.locator('.code-view-modal');
     await expect(modal).toBeVisible();
 
@@ -258,7 +266,7 @@ test.describe('the viewer', () => {
       timeout: 30_000,
     });
     await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'AI Output' })).toBeEnabled();
+    await expect(page.getByTitle("View the AI's output for this model")).toBeEnabled();
   });
 
   test('survives a runaway model by killing the worker, not the page', async ({ page }) => {

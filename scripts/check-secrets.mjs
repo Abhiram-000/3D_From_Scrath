@@ -9,6 +9,7 @@
  * disabled, which is the actual failure mode this file exists to avoid.
  */
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { join, relative, extname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -94,15 +95,42 @@ const isExampleEnv = (path) => basename(path).startsWith('.env') && path.include
 /**
  * Environment files that are themselves the finding, whatever they are called.
  *
- * `deploy.env` belongs here because it is the one env file `.gitignore` names outright, and a name
- * there buys nothing unless this scan still reads it: the ignore rule exists to keep `git add .` from
- * staging the key, and a scan that honoured ignore rules would therefore skip the very file the ignore
- * rule was added for. The rule below matches on *name* and this scan walks the working tree, never
- * `git ls-files`, so ignored-but-present stays visible — a present secret is the dangerous state, an
- * absent one needs no scanning. Deriving candidates from git would reinstate the blind spot this
- * constant exists to close.
+ * `deploy.env` belongs here because it is the one env file `.gitignore` names outright. Being
+ * *present* is not, on its own, the finding: the README and `docker-compose.yml` both instruct the
+ * operator to create exactly this file (`cp deploy.env.example deploy.env`), so a presence-only
+ * scan fails the gate on every properly configured machine and teaches the one person reading the
+ * output to distrust the gate itself. The dangerous state is narrower and git can prove it
+ * mechanically — `istGitProtected` below distinguishes ignored-and-untracked (the documented local
+ * workflow, allowed) from tracked (gitignore cannot untrack a file; `commit -am` still stages it —
+ * the real leak path) and not-ignored. The scan still walks the filesystem, never `git ls-files`,
+ * because a file only git knows about is the one thing this walk exists to catch.
  */
 const SECRET_ENV_FILES = new Set(['.env', 'deploy.env']);
+
+/**
+ * Whether git itself proves `rel` under `root` is ignored AND untracked.
+ *
+ * Two mechanical queries, both read-only. `check-ignore` confirms the name is actually governed by
+ * an ignore rule (the guarantee `git add` refuses to stage it rests on); `ls-files
+ * --error-unmatch` confirms no committed history carries it. Outside a repository — a fixture dir,
+ * a bare checkout — git exits nonzero on the first query and the answer is "no": unconfirmable
+ * stays a finding, which is what keeps the no-repo fixtures in the test suite passing unchanged.
+ */
+function isGitProtected(root, rel) {
+  try {
+    execFileSync('git', ['-C', root, 'check-ignore', '-q', '--', rel], { stdio: 'pipe' });
+  } catch {
+    return false;
+  }
+  try {
+    execFileSync('git', ['-C', root, 'ls-files', '--error-unmatch', '--', rel], {
+      stdio: 'pipe',
+    });
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 async function* walk(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -132,9 +160,13 @@ async function scan(root) {
 
     const name = basename(path);
 
-    // A real environment file is itself the finding — no pattern needed.
+    // A real environment file is itself the finding — no pattern needed — unless git proves the
+    // path is ignored and untracked, i.e. the documented local-config workflow rather than a
+    // credential the repository would take.
     if (SECRET_ENV_FILES.has(name) || (name.startsWith('.env.') && !isExampleEnv(path))) {
-      findings.push({ file: rel, line: 0, name: 'environment file committed', text: '' });
+      if (!isGitProtected(root, rel)) {
+        findings.push({ file: rel, line: 0, name: 'environment file committed', text: '' });
+      }
       continue;
     }
 

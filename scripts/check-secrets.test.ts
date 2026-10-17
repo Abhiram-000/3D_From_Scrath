@@ -40,6 +40,37 @@ async function scanFiles(files: Record<string, string>) {
   return scan(dir);
 }
 
+/**
+ * Same, but the fixture is a real git repository — the only place where "ignored" means something
+ * git itself has verified. `forceAdd` stages past the ignore rule and commits, to build the
+ * ignored-but-tracked leak state that a name-based or ignore-blind check cannot distinguish.
+ */
+async function scanInGitRepo(options: {
+  gitignore: string;
+  files: Record<string, string>;
+  forceAdd?: boolean;
+}) {
+  const { execFileSync } = await import('node:child_process');
+  const dir = join(fixtureRoot, randomUUID());
+  await mkdir(dir);
+  await writeFile(join(dir, '.gitignore'), options.gitignore);
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' }).toString();
+  git('init', '-q');
+  git('config', 'user.email', 'fixture@example.invalid');
+  git('config', 'user.name', 'fixture');
+  const names = Object.keys(options.files);
+  for (const [name, body] of Object.entries(options.files)) {
+    await writeFile(join(dir, name), body);
+  }
+  // Ignored paths are staged only under forceAdd — plain `git add` refuses them, which is exactly
+  // the guarantee "ignored and untracked" rests on. The non-force fixture stages the gitignore
+  // alone and leaves the env files untracked in the tree.
+  git('add', ...(options.forceAdd ? names.map((n) => ['-f', n]).flat() : ['.gitignore']));
+  git('commit', '-qm', 'fixture');
+  return scan(dir);
+}
+
 describe('the secret scanner', () => {
   it('flags a file named deploy.env even when it is empty', async () => {
     // The load-bearing case: the finding is the filename, not the contents. An empty file holds no
@@ -71,16 +102,41 @@ describe('the secret scanner', () => {
   });
 
   it('still flags deploy.env when a .gitignore in the same tree ignores it', async () => {
-    // The property the whole design leans on: the walk reads the filesystem, never git's view,
-    // so the ignore rule that keeps `git add .` from staging the file cannot also keep the
-    // scanner from reading it. Until now nothing tested this at unit level — a regression that
-    // switched the walk to git-tracked files (or made it honour ignore rules) would have passed
-    // the whole suite while un-scanning the one file the rule exists for.
+    // No git repo in this throwaway fixture, so git cannot confirm the ignore rule actually
+    // governs the path — and unconfirmable stays a finding. See the repo-fixture tests below for
+    // the state git CAN confirm.
     const findings = await scanFiles({
       '.gitignore': 'deploy.env\n',
       'deploy.env': '',
     });
     expect(findings).toEqual([
+      { file: 'deploy.env', line: 0, name: 'environment file committed', text: '' },
+    ]);
+  });
+
+  it('allows a deploy.env that git confirms is ignored and untracked — the documented workflow', async () => {
+    // README: `cp deploy.env.example deploy.env`; docker-compose reads that exact file. The
+    // platform's own setup instructions therefore put this file in every configured working tree,
+    // so "present" cannot itself be the finding — the dangerous state is narrower: a file git
+    // would actually commit. A real repo fixture proves the two-part condition: the name is
+    // ignored AND the path carries no committed history. Flakes here mean git is missing.
+    const repo = await scanInGitRepo({
+      gitignore: 'deploy.env\n',
+      files: { 'deploy.env': 'AI_API_KEY=fixture-not-real\n' },
+    });
+    expect(repo).toEqual([]);
+  });
+
+  it('flags deploy.env when git tracks it, even though gitignore names it', async () => {
+    // The state the original design feared, stated precisely: gitignore cannot untrack a file.
+    // `git add .` skips tracked changes, but `git commit -am` commits them — so ignored-but-
+    // tracked is the exact leak-path this test keeps covered.
+    const repo = await scanInGitRepo({
+      gitignore: 'deploy.env\n',
+      files: { 'deploy.env': 'AI_API_KEY=fixture-not-real\n' },
+      forceAdd: true,
+    });
+    expect(repo).toEqual([
       { file: 'deploy.env', line: 0, name: 'environment file committed', text: '' },
     ]);
   });

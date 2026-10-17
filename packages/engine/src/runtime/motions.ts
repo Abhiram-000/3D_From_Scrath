@@ -140,112 +140,200 @@ export interface MotionHost {
 type Vec3Tuple = [number, number, number];
 type Quat = { w: number; x: number; y: number; z: number };
 
+/**
+ * Module scratch, hoisted so a frame allocates nothing per motion.
+ *
+ * Every helper below reads into these slots and every case writes component-wise into the live
+ * transform it already owns, so the per-motion temporaries of the original implementation (five
+ * `readVec3` triples, the frame delta, two quaternion objects and an Euler triple per motion, per
+ * frame, forever) are gone. Aliasing is safe because the slots are consumed synchronously inside
+ * one case: nothing here escapes the loop iteration that filled it, `resolveScalar` is pure
+ * arithmetic, and this module never re-enters itself.
+ *
+ * The live arrays themselves are written in place (`live.position[0] = …`), never replaced. That is
+ * safe by the worker's contract: the host's pre-frame reset repopulates every motion-driven part
+ * from its authored base before model code runs, so the buffer the applicator mutates is the host's
+ * copy, not a shared manifest constant. A transform channel that starts undefined is allocated once
+ * per part lifetime — the first write — and never again.
+ */
+const AXIS: Vec3Tuple = [0, 0, 0];
+const BASE_POSITION: Vec3Tuple = [0, 0, 0];
+const LIVE_POSITION: Vec3Tuple = [0, 0, 0];
+const LIVE_ROTATION: Vec3Tuple = [0, 0, 0];
+const BASE_SCALE: Vec3Tuple = [1, 1, 1];
+const LIVE_SCALE: Vec3Tuple = [1, 1, 1];
+const FRAME_DELTA: Vec3Tuple = [0, 0, 0];
+const CENTER: Vec3Tuple = [0, 0, 0];
+const RADIUS: Vec3Tuple = [0, 0, 0];
+const ROTATED: Vec3Tuple = [0, 0, 0];
+const EULER_OUT: Vec3Tuple = [0, 0, 0];
+
+/**
+ * One reusable scalar context for the scoped-clock path. Rebuilt per motion into the same object —
+ * fields assigned, nothing spread — because `{ ...ctx }` per motion per frame was a context-shaped
+ * allocation the audit could count from source.
+ */
+const SCOPED: { params: ScalarContext['params']; elapsed: number; unpausedElapsed?: number } = {
+  params: undefined as unknown as ScalarContext['params'],
+  elapsed: 0,
+};
+
 /** Read a transform triple with the quarantine applied — a NaN component reads as 0. */
-function readVec3(value: readonly number[] | undefined, fallback: Vec3Tuple): Vec3Tuple {
-  if (!value) return [...fallback];
-  return [finiteOrZero(value[0] ?? 0), finiteOrZero(value[1] ?? 0), finiteOrZero(value[2] ?? 0)];
+function readVec3Into(
+  out: Vec3Tuple,
+  value: readonly number[] | undefined,
+  fallback: Vec3Tuple,
+): void {
+  if (!value) {
+    out[0] = fallback[0];
+    out[1] = fallback[1];
+    out[2] = fallback[2];
+    return;
+  }
+  out[0] = finiteOrZero(value[0] ?? 0);
+  out[1] = finiteOrZero(value[1] ?? 0);
+  out[2] = finiteOrZero(value[2] ?? 0);
 }
 
 /**
- * Normalise an axis, or return null when it has no usable direction.
+ * Normalise an axis into `out`, or return false when it has no usable direction.
  *
  * A zero (or non-finite) axis is authorable — the schema only demands finite components — but it
  * has no angle to rotate through and no direction to travel, so the motion is a documented no-op
  * rather than a NaN factory (`NaN / 0` is exactly the poison this file refuses to produce).
  */
-function normaliseAxis(axis: readonly number[] | undefined): Vec3Tuple | null {
-  const v = readVec3(axis, [0, 0, 0]);
-  const length = Math.hypot(v[0], v[1], v[2]);
-  if (!Number.isFinite(length) || length < 1e-12) return null;
-  return [v[0] / length, v[1] / length, v[2] / length];
+function normaliseAxisInto(out: Vec3Tuple, axis: readonly number[] | undefined): boolean {
+  readVec3Into(out, axis, AXIS_ZERO);
+  const length = Math.hypot(out[0], out[1], out[2]);
+  if (!Number.isFinite(length) || length < 1e-12) return false;
+  out[0] /= length;
+  out[1] /= length;
+  out[2] /= length;
+  return true;
 }
 
-function quatFromAxisAngle(axis: Vec3Tuple, angle: number): Quat {
-  const half = angle / 2;
-  const s = Math.sin(half);
-  return { w: Math.cos(half), x: axis[0] * s, y: axis[1] * s, z: axis[2] * s };
-}
+const AXIS_ZERO: Vec3Tuple = [0, 0, 0];
+/** The identity fallback a transform channel reads as when a part was authored without one. */
+const UNIT_SCALE: Vec3Tuple = [1, 1, 1];
 
-function quatMultiply(a: Quat, b: Quat): Quat {
-  return {
-    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
-    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
-    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
-    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
-  };
-}
+// Quaternion arithmetic runs in four number locals rather than objects: the two conversions below
+// are the only places w/x/y/z travel together, and a boxed {w,x,y,z} per motion per frame was the
+// second-largest allocation in the loop.
 
-/**
- * Euler (XYZ order) → quaternion, matching Three.js's default Euler order so a pose computed here
- * renders with exactly the orientation the numbers imply (`object.rotation.set` is XYZ too).
- */
-function quatFromEulerXyz(euler: Vec3Tuple): Quat {
-  const cx = Math.cos(euler[0] / 2);
-  const sx = Math.sin(euler[0] / 2);
-  const cy = Math.cos(euler[1] / 2);
-  const sy = Math.sin(euler[1] / 2);
-  const cz = Math.cos(euler[2] / 2);
-  const sz = Math.sin(euler[2] / 2);
-  return {
-    w: cx * cy * cz - sx * sy * sz,
-    x: sx * cy * cz + cx * sy * sz,
-    y: cx * sy * cz - sx * cy * sz,
-    z: cx * cy * sz + sx * sy * cz,
-  };
-}
-
-/**
- * Quaternion → Euler (XYZ order), the inverse of `quatFromEulerXyz`.
- *
- * Rotation composition is quaternion work (Euler addition lies as soon as two axes are involved);
- * the pair of conversions is what lets a spin compose with an authored tilt and still be stored in
- * the Euler triple the manifest and the renderer speak.
- */
-function eulerFromQuatXyz(q: Quat): Vec3Tuple {
+/** Write the Euler (XYZ order) form of the quaternion `qw..qz` into `out`. */
+function eulerFromQuatInto(out: Vec3Tuple, qw: number, qx: number, qy: number, qz: number): void {
   // m13 of the rotation matrix — the asin slot for XYZ order.
-  const sinY = 2 * (q.x * q.z + q.w * q.y);
+  const sinY = 2 * (qx * qz + qw * qy);
   if (Math.abs(sinY) < GIMBAL_EPSILON) {
-    return [
-      Math.atan2(2 * (q.w * q.x - q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y)),
-      Math.asin(Math.max(-1, Math.min(1, sinY))),
-      Math.atan2(2 * (q.w * q.z - q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)),
-    ];
+    out[0] = Math.atan2(2 * (qw * qx - qy * qz), 1 - 2 * (qx * qx + qy * qy));
+    out[1] = Math.asin(Math.max(-1, Math.min(1, sinY)));
+    out[2] = Math.atan2(2 * (qw * qz - qx * qy), 1 - 2 * (qy * qy + qz * qz));
+    return;
   }
   // Gimbal lock: Y is ±90°, so X and Z are one degree of freedom. Convention (Three.js's): keep Z
   // at 0 and fold the freedom into X, which keeps the result continuous for a spinning part.
-  return [
-    Math.atan2(2 * (q.x * q.y + q.w * q.z), 2 * (q.w * q.y - q.x * q.z)),
-    Math.asin(Math.max(-1, Math.min(1, sinY))),
-    0,
-  ];
+  out[0] = Math.atan2(2 * (qx * qy + qw * qz), 2 * (qw * qy - qx * qz));
+  out[1] = Math.asin(Math.max(-1, Math.min(1, sinY)));
+  out[2] = 0;
+}
+
+/** Write the quaternion of the XYZ Euler triple in `e` into the four fields of `out`. */
+function quatFromEulerInto(out: NumberQuartet, e: Vec3Tuple): void {
+  const cx = Math.cos(e[0] / 2);
+  const sx = Math.sin(e[0] / 2);
+  const cy = Math.cos(e[1] / 2);
+  const sy = Math.sin(e[1] / 2);
+  const cz = Math.cos(e[2] / 2);
+  const sz = Math.sin(e[2] / 2);
+  out.w = cx * cy * cz - sx * sy * sz;
+  out.x = sx * cy * cz + cx * sy * sz;
+  out.y = cx * sy * cz - sx * cy * sz;
+  out.z = cx * cy * sz + sx * sy * cz;
+}
+
+/** Write the quaternion of axis (unit) and angle into the four fields of `out`. */
+function quatFromAxisInto(out: NumberQuartet, axis: Vec3Tuple, angle: number): void {
+  const half = angle / 2;
+  const s = Math.sin(half);
+  out.w = Math.cos(half);
+  out.x = axis[0] * s;
+  out.y = axis[1] * s;
+  out.z = axis[2] * s;
 }
 
 /**
- * Rotate a vector about a unit axis (Rodrigues's formula).
+ * Multiply `a × b` (`b` = local axis rotation for spin, right-composed; reversed order for orbit's
+ * left composition) into `out`; then convert to the Euler triple in `euler`.
+ */
+function composeQuatInto(
+  out: NumberQuartet,
+  a: NumberQuartet,
+  b: NumberQuartet,
+  euler: Vec3Tuple,
+): void {
+  const w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
+  const x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
+  const y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
+  const z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
+  out.w = w;
+  out.x = x;
+  out.y = y;
+  out.z = z;
+  eulerFromQuatInto(euler, w, x, y, z);
+}
+
+type NumberQuartet = { w: number; x: number; y: number; z: number };
+const QUAT_LIVE: NumberQuartet = { w: 1, x: 0, y: 0, z: 0 };
+const QUAT_AXIS: NumberQuartet = { w: 1, x: 0, y: 0, z: 0 };
+
+/**
+ * Rodrigues rotation of the vector in `v` about the unit `axis`, written into `out`.
  *
  * Used for orbit, where the *position vector* revolves; cheaper and clearer than building a
  * quaternion for a point that never needs interpolation.
  */
-function rotateAboutAxis(v: Vec3Tuple, axis: Vec3Tuple, angle: number): Vec3Tuple {
+function rotateAboutAxisInto(out: Vec3Tuple, v: Vec3Tuple, axis: Vec3Tuple, angle: number): void {
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
   const dot = axis[0] * v[0] + axis[1] * v[1] + axis[2] * v[2];
-  const cross: Vec3Tuple = [
-    axis[1] * v[2] - axis[2] * v[1],
-    axis[2] * v[0] - axis[0] * v[2],
-    axis[0] * v[1] - axis[1] * v[0],
-  ];
   const oneMinusCos = 1 - cos;
-  return [
-    v[0] * cos + cross[0] * sin + axis[0] * dot * oneMinusCos,
-    v[1] * cos + cross[1] * sin + axis[1] * dot * oneMinusCos,
-    v[2] * cos + cross[2] * sin + axis[2] * dot * oneMinusCos,
-  ];
+  const cx = axis[1] * v[2] - axis[2] * v[1];
+  const cy = axis[2] * v[0] - axis[0] * v[2];
+  const cz = axis[0] * v[1] - axis[1] * v[0];
+  out[0] = v[0] * cos + cx * sin + axis[0] * dot * oneMinusCos;
+  out[1] = v[1] * cos + cy * sin + axis[1] * dot * oneMinusCos;
+  out[2] = v[2] * cos + cz * sin + axis[2] * dot * oneMinusCos;
 }
 
 /** The wrap fraction for flowAlongPath: any real t → [0, 1). Floor-wrap stays exact for negative t. */
 function pathFraction(t: number): number {
   return t - Math.floor(t);
+}
+
+/**
+ * Write a transform channel by components — in place when the array exists (the every-frame case,
+ * and the reason this helper exists), allocated once when a part was authored without the channel
+ * (the original code replaced the array unconditionally, which is what the per-frame garbage was).
+ * Mutating the host's arrays is the contract: the pre-frame reset repopulates every motion-driven
+ * part from its authored base, so the applicator owns the buffer's contents for the tick.
+ */
+function setVec3(
+  live: PartTransformLike,
+  channel: 'position' | 'rotation' | 'scale',
+  x: number,
+  y: number,
+  z: number,
+): void {
+  const target = live[channel];
+  if (target) {
+    target[0] = x;
+    target[1] = y;
+    target[2] = z;
+    return;
+  }
+  if (channel === 'rotation') live.rotation = [x, y, z];
+  else if (channel === 'scale') live.scale = [x, y, z];
+  else live.position = [x, y, z];
 }
 
 // ── Application ──────────────────────────────────────────────────────────────
@@ -272,25 +360,22 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
     // here means a hand-built manifest — the applicator still owes the frame loop its life.
     if (!base || !live) continue;
 
-    const axis = normaliseAxis(motion.axis);
-    if (!axis) continue;
+    if (!normaliseAxisInto(AXIS, motion.axis)) continue;
 
     // `base` is the anchor of the absolute pose; `live` carries this tick's onFrame writes.
-    const basePosition = readVec3(base.position, [0, 0, 0]);
-    const livePosition = readVec3(live.position, basePosition);
-    const liveRotation = readVec3(live.rotation, [0, 0, 0]);
-    const baseScale = readVec3(base.scale, [1, 1, 1]);
-    const liveScale = readVec3(live.scale, baseScale);
+    readVec3Into(BASE_POSITION, base.position, AXIS_ZERO);
+    readVec3Into(LIVE_POSITION, live.position ?? BASE_POSITION, BASE_POSITION);
+    readVec3Into(LIVE_ROTATION, live.rotation, AXIS_ZERO);
+    readVec3Into(BASE_SCALE, base.scale, UNIT_SCALE);
+    readVec3Into(LIVE_SCALE, live.scale, BASE_SCALE);
 
     // What onFrame displaced this tick, measured against the authored base. Position-channel
     // motions re-apply this delta after computing their own absolute pose, so model code that
     // tracks a target and declared motion that animates the same part coexist: neither clobbers
     // the other. (Rotation channels compose quaternion-side instead — see the per-kind comments.)
-    const frameDelta: Vec3Tuple = [
-      livePosition[0] - basePosition[0],
-      livePosition[1] - basePosition[1],
-      livePosition[2] - basePosition[2],
-    ];
+    FRAME_DELTA[0] = LIVE_POSITION[0] - BASE_POSITION[0];
+    FRAME_DELTA[1] = LIVE_POSITION[1] - BASE_POSITION[1];
+    FRAME_DELTA[2] = LIVE_POSITION[2] - BASE_POSITION[2];
 
     // The clock this motion runs on. While paused, a runsWhilePaused motion consumes the host's
     // always-advancing wall clock when one is provided — the whole point of the flag — while every
@@ -301,7 +386,13 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
       paused && motion.runsWhilePaused && ctx.unpausedElapsed !== undefined
         ? ctx.unpausedElapsed
         : ctx.elapsed;
-    const scoped: ScalarContext = clock === ctx.elapsed ? ctx : { ...ctx, elapsed: clock };
+    let scoped: ScalarContext = ctx;
+    if (clock !== ctx.elapsed) {
+      SCOPED.params = ctx.params;
+      SCOPED.elapsed = clock;
+      SCOPED.unpausedElapsed = undefined;
+      scoped = SCOPED;
+    }
 
     // `clock` is the whole timeline for this motion; phase distributes a set of same-rate motions
     // around a turn. A manifest missing its rate entirely (hand-built) resolves to 0 — still,
@@ -316,8 +407,10 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
         // words), so a part authored at a tilt keeps its tilt while spinning about its own shaft.
         // Composing onto live (not base) is what preserves an onFrame rotation write; the host's
         // pre-frame reset is what keeps that composition from accumulating.
-        const q = quatMultiply(quatFromEulerXyz(liveRotation), quatFromAxisAngle(axis, angle));
-        live.rotation = eulerFromQuatXyz(q);
+        quatFromEulerInto(QUAT_LIVE, LIVE_ROTATION);
+        quatFromAxisInto(QUAT_AXIS, AXIS, angle);
+        composeQuatInto(QUAT_AXIS, QUAT_LIVE, QUAT_AXIS, EULER_OUT);
+        setVec3(live, 'rotation', EULER_OUT[0], EULER_OUT[1], EULER_OUT[2]);
         break;
       }
 
@@ -326,11 +419,13 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
         // drive stroke as directly as it drives speed).
         const amplitude = resolveScalar(motion.amplitude ?? { const: 1 }, scoped);
         const offset = finiteOrZero(amplitude * Math.sin(TAU * rate * clock + phase));
-        live.position = [
-          livePosition[0] + axis[0] * offset,
-          livePosition[1] + axis[1] * offset,
-          livePosition[2] + axis[2] * offset,
-        ];
+        setVec3(
+          live,
+          'position',
+          LIVE_POSITION[0] + AXIS[0] * offset,
+          LIVE_POSITION[1] + AXIS[1] * offset,
+          LIVE_POSITION[2] + AXIS[2] * offset,
+        );
         break;
       }
 
@@ -338,20 +433,22 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
         // Revolve the position vector about `center` (world/parent space; default origin),
         // preserving the authored radius, and compose the same angle on the LEFT of the part's
         // own orientation so it stays tidally locked like an orbiting body.
-        const center = readVec3(motion.center, [0, 0, 0]);
-        const radius: Vec3Tuple = [
-          basePosition[0] - center[0],
-          basePosition[1] - center[1],
-          basePosition[2] - center[2],
-        ];
-        const revolved = rotateAboutAxis(radius, axis, angle);
-        live.position = [
-          center[0] + revolved[0] + frameDelta[0],
-          center[1] + revolved[1] + frameDelta[1],
-          center[2] + revolved[2] + frameDelta[2],
-        ];
-        const q = quatMultiply(quatFromAxisAngle(axis, angle), quatFromEulerXyz(liveRotation));
-        live.rotation = eulerFromQuatXyz(q);
+        readVec3Into(CENTER, motion.center, AXIS_ZERO);
+        RADIUS[0] = BASE_POSITION[0] - CENTER[0];
+        RADIUS[1] = BASE_POSITION[1] - CENTER[1];
+        RADIUS[2] = BASE_POSITION[2] - CENTER[2];
+        rotateAboutAxisInto(ROTATED, RADIUS, AXIS, angle);
+        setVec3(
+          live,
+          'position',
+          CENTER[0] + ROTATED[0] + FRAME_DELTA[0],
+          CENTER[1] + ROTATED[1] + FRAME_DELTA[1],
+          CENTER[2] + ROTATED[2] + FRAME_DELTA[2],
+        );
+        quatFromAxisInto(QUAT_AXIS, AXIS, angle);
+        quatFromEulerInto(QUAT_LIVE, LIVE_ROTATION);
+        composeQuatInto(QUAT_LIVE, QUAT_AXIS, QUAT_LIVE, EULER_OUT);
+        setVec3(live, 'rotation', EULER_OUT[0], EULER_OUT[1], EULER_OUT[2]);
         break;
       }
 
@@ -359,11 +456,13 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
         // rate is m/s: displacement is velocity × time, amplitude scaling it (default 1).
         const amplitude = resolveScalar(motion.amplitude ?? { const: 1 }, scoped);
         const distance = finiteOrZero(amplitude * rate * clock);
-        live.position = [
-          livePosition[0] + axis[0] * distance,
-          livePosition[1] + axis[1] * distance,
-          livePosition[2] + axis[2] * distance,
-        ];
+        setVec3(
+          live,
+          'position',
+          LIVE_POSITION[0] + AXIS[0] * distance,
+          LIVE_POSITION[1] + AXIS[1] * distance,
+          LIVE_POSITION[2] + AXIS[2] * distance,
+        );
         break;
       }
 
@@ -379,11 +478,13 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
         const factor = Number.isFinite(wave)
           ? Math.max(PULSE_MIN_FACTOR, finiteOrZero(1 + amplitude * wave))
           : 1;
-        live.scale = [
-          finiteOrZero(liveScale[0] * factor),
-          finiteOrZero(liveScale[1] * factor),
-          finiteOrZero(liveScale[2] * factor),
-        ];
+        setVec3(
+          live,
+          'scale',
+          finiteOrZero(LIVE_SCALE[0] * factor),
+          finiteOrZero(LIVE_SCALE[1] * factor),
+          finiteOrZero(LIVE_SCALE[2] * factor),
+        );
         break;
       }
 
@@ -394,11 +495,13 @@ export function applyMotions(host: MotionHost, ctx: ScalarContext, paused: boole
         if (!host.pointOnPath) continue;
         const point = host.pointOnPath(motion.pathId ?? '', pathFraction(angle));
         if (!point) continue;
-        live.position = [
-          finiteOrZero(point[0]) + frameDelta[0],
-          finiteOrZero(point[1]) + frameDelta[1],
-          finiteOrZero(point[2]) + frameDelta[2],
-        ];
+        setVec3(
+          live,
+          'position',
+          finiteOrZero(point[0]) + FRAME_DELTA[0],
+          finiteOrZero(point[1]) + FRAME_DELTA[1],
+          finiteOrZero(point[2]) + FRAME_DELTA[2],
+        );
         break;
       }
 

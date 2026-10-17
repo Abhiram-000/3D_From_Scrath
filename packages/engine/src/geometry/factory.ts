@@ -289,17 +289,7 @@ export class GeometryFactory {
     }
 
     this.misses += 1;
-    // Timed around the builder only: validation, ceiling checks and normal computation are charged
-    // to registration overhead, not to the shape's construction cost — and a throw still bills its
-    // elapsed time, because a builder that fails after 14 s of marching cubes is exactly the cost
-    // the stat exists to make nameable.
-    const startedAt = performance.now();
-    let mesh: MeshData;
-    try {
-      mesh = build();
-    } finally {
-      this.timings.set(builder, (this.timings.get(builder) ?? 0) + (performance.now() - startedAt));
-    }
+    const mesh = build();
 
     const vertices = vertexCount(mesh);
     const triangles = triangleCount(mesh);

@@ -532,3 +532,74 @@ describe('applyMotions — robustness', () => {
     expect(r.live('fan').rotation).toBeUndefined();
   });
 });
+
+describe('applyMotions — composition pins (allocation work must not move semantics)', () => {
+  // Characterization, not new behaviour: this suite is the guard the allocation refactor runs
+  // under. Two motions driving one part's position channel compose in declaration order —
+  // `orbit` writes the absolute pose plus the frame delta, then `translate` adds its own
+  // displacement to whatever pose the first wrote. The numbers are computed from the formulas the
+  // (pre-refactor) implementation was written against, at 1e-9 — loose enough that no reordering
+  // of floating-point operations shows up as a false failure, tight enough that a changed
+  // composition rule (order, delta reapplication) moves several digits at once.
+  it('orbit then translate on one part composes the frame delta in declaration order', () => {
+    const r = rig({ bead: { position: [1, 0, 0], scale: [1, 1, 1] } }, [
+      motion({ id: 'revolve', partId: 'bead', kind: 'orbit', rate: { const: 1 } }),
+      motion({
+        id: 'drift',
+        partId: 'bead',
+        kind: 'translate',
+        rate: { const: 2 },
+        amplitude: { const: 1 },
+      }),
+    ]);
+    r.resetToBase();
+    applyMotions(r.host, ctx({ elapsed: 1 }), false);
+
+    // orbit (rate 1 rad/s, 1s): the base radius vector [1,0,0] revolved 1 rad about +Y, then the
+    // translate (rate 2 m/s, 1s): +2 m along +Y on top of the revolved pose.
+    const p = r.live('bead').position as [number, number, number];
+    expect(p[0]).toBeCloseTo(Math.cos(1), 9);
+    expect(p[1]).toBeCloseTo(2, 9);
+    expect(p[2]).toBeCloseTo(-Math.sin(1), 9);
+
+    // The orbit also composes its quaternion on the left of the live orientation — for a level
+    // base that is exactly a 1 rad yaw, expressed as principal-value XYZ Euler.
+    const rot = r.live('bead').rotation as [number, number, number];
+    expect(rot[0]).toBeCloseTo(0, 9);
+    expect(rot[1]).toBeCloseTo(1, 9);
+    expect(rot[2]).toBeCloseTo(0, 9);
+  });
+
+  it('a runsWhilePaused motion reads the unpaused clock while the pausable clock is frozen', () => {
+    // The scoped-context path. Both motions share paused=true's skip rule, so the freeze shows up
+    // through the *flagged* motion's phase: it must sample the wall clock (t=5), and the phase
+    // arithmetic around it must resolve through the same clock — while the pausable clock, had
+    // any unflagged motion run, would still be at t=1. A second unflagged part pins the skip: at
+    // paused=true it does not move at all.
+    const r = rig(
+      {
+        glow: { position: [0, 0, 0], scale: [1, 1, 1] },
+        still: { position: [0, 0, 0], scale: [1, 1, 1] },
+      },
+      [
+        motion({
+          id: 'flagged',
+          partId: 'glow',
+          kind: 'oscillate',
+          runsWhilePaused: true,
+          phase: Math.PI / 2,
+        }),
+        motion({ id: 'frozen', partId: 'still', kind: 'oscillate' }),
+      ],
+    );
+    r.resetToBase();
+    applyMotions(r.host, ctx({ elapsed: 1, unpausedElapsed: 5 }), true);
+
+    // offset = amplitude × sin(2π·rate·t + phase) at the wall clock t=5, phase π/2: sin(10π + π/2).
+    // sin wraps the 5 full turns exactly, so the midpoint phase lands on exactly 1.
+    const p = r.live('glow').position as [number, number, number];
+    expect(p[1]).toBeCloseTo(1, 9);
+    // The unflagged part is untouched while paused — a skipped motion never writes.
+    expect(r.live('still').position).toEqual([0, 0, 0]);
+  });
+});

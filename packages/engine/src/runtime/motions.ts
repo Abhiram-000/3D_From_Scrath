@@ -138,7 +138,6 @@ export interface MotionHost {
 // ── Vector and quaternion helpers (self-contained; the module may import nothing else) ──
 
 type Vec3Tuple = [number, number, number];
-type Quat = { w: number; x: number; y: number; z: number };
 
 /**
  * Module scratch, hoisted so a frame allocates nothing per motion.

@@ -33,12 +33,6 @@ const stub = (x = 0, y = 0, z = 0): StubTransform => ({
   visible: true,
 });
 
-const triple = (t: StubTransform): [number, number, number] => [
-  t.position.x,
-  t.position.y,
-  t.position.z,
-];
-
 describe('resetMotionDriven — the pre-frame pose reset', () => {
   it('copies the authored base into the live arrays in place — identity preserved', () => {
     const base = {

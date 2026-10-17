@@ -20,6 +20,15 @@
 import type { DeviceTier, ModelManifest, RuntimeStats } from '@edu3d/contracts';
 import type { SerializableVerdict, WorkerRequest, WorkerResponse } from './sandbox-worker.ts';
 import SandboxWorker from './sandbox-worker.ts?worker';
+import {
+  devEnabled,
+  devError,
+  devLog,
+  devWarn,
+  formatFailure,
+  formatModelSummary,
+  formatStats,
+} from '../dev-console.ts';
 
 /** What the viewer subscribes to. Each callback is optional so a caller takes only what it needs. */
 export interface HostCallbacks {
@@ -180,6 +189,10 @@ export class SandboxHost {
   /** Retained so a kill can be recovered from by reloading the same program into a fresh worker. */
   private lastProgram: { code: string; seed: number; runtime?: string } | null = null;
   private theme = { top: '#17130f', bottom: '#08070a' };
+  /** Dev-only instrumentation state: load-start clock, stats cadence, one-shot watchdog warning. */
+  private loadStartedAt = 0;
+  private statsPublished = 0;
+  private watchdogWarned = false;
 
   constructor(container: HTMLElement, callbacks: HostCallbacks = {}) {
     this.container = container;
@@ -261,6 +274,10 @@ export class SandboxHost {
       [offscreen],
     );
 
+    if (devEnabled)
+      devLog(
+        `canvas ${width}×${height} @${this.pixelRatio} DPR · tier ${this.tier} · theme ${this.theme.top}`,
+      );
     this.lastHeartbeatAt = performance.now();
     this.startWatchdog();
   }
@@ -277,6 +294,17 @@ export class SandboxHost {
     // executed once its *frames* outgrew the fixed timeout — which is exactly what the CI failure showed.
     this.lastHeartbeatAt = performance.now();
 
+    // Dev-only console instrumentation (compiled out of production). `08`'s honesty rule applies to
+    // developers too: a stalled build must be attributable to a stage, not reconstructed afterwards.
+    if (devEnabled) {
+      if (message.type === 'log') {
+        // Guest console output and engine stage telemetry share this channel; both print live.
+        devLog(message.message);
+      } else if (message.type === 'notice') {
+        devWarn(message.message);
+      }
+    }
+
     switch (message.type) {
       case 'ready':
         this.callbacks.onReady?.();
@@ -285,16 +313,54 @@ export class SandboxHost {
         // The build phase is over, so heartbeat monitoring resumes at normal sensitivity.
         this.buildingUntil = 0;
         this.lastHeartbeatAt = performance.now();
+        if (devEnabled) {
+          const { manifest, verdict } = message;
+          devLog(
+            formatModelSummary({
+              name: manifest.name,
+              ms: performance.now() - this.loadStartedAt,
+              parts: manifest.parts.length,
+              parameters: manifest.parameters.length,
+              motions: manifest.motions.length,
+              triangles: manifest.cost.triangles,
+              drawCalls: manifest.cost.drawCalls,
+            }),
+            `${verdict.adjustments.length} admission adjustment(s) — see notices`,
+          );
+        }
         this.callbacks.onLoaded?.(message.manifest, message.verdict);
         break;
       case 'loadFailed':
         this.buildingUntil = 0;
+        if (devEnabled) {
+          devError(
+            formatFailure({
+              message: message.message,
+              timedOut: message.timedOut,
+              logCount: message.logs.length,
+            }),
+          );
+          for (const line of message.logs.slice(-25)) devLog(`guest log: ${line}`);
+        }
         this.callbacks.onLoadFailed?.(message.message, message.timedOut, message.logs);
         break;
       case 'stats':
         // The timeout follows measured frame cost: a device whose frames take a second needs more slack than
         // the fixed floor, per `08`'s "the live frame-time monitor is the truth; trust behavior over strings".
         this.lastFrameMillis = message.stats.frameMillis;
+        if (devEnabled) {
+          this.statsPublished += 1;
+          if (this.statsPublished % 5 === 1) {
+            devLog(
+              formatStats({
+                fps: message.stats.fps,
+                draws: message.stats.drawCalls,
+                triangles: message.stats.triangles,
+                seconds: Math.round(message.stats.simSeconds),
+              }),
+            );
+          }
+        }
         this.callbacks.onStats?.(message.stats);
         break;
       case 'metrics':
@@ -345,6 +411,16 @@ export class SandboxHost {
         return;
       }
 
+      if (
+        now - this.lastHeartbeatAt > this.currentHeartbeatTimeoutMs() * 0.7 &&
+        !this.watchdogWarned
+      ) {
+        this.watchdogWarned = true;
+        devWarn(
+          `worker silent ${(now - this.lastHeartbeatAt) / 1000}s — ` +
+            `${this.buildingUntil > 0 ? 'build grace holds, watchdog paused' : `watchdog fires in ~${Math.round(this.currentHeartbeatTimeoutMs() - (now - this.lastHeartbeatAt)) / 1000}s`}`,
+        );
+      }
       if (now - this.lastHeartbeatAt > this.currentHeartbeatTimeoutMs()) {
         this.kill(
           'This model stopped responding and was stopped to keep the page usable. You can try generating it again.',
@@ -383,6 +459,8 @@ export class SandboxHost {
    * page alive, offer a retry." The canvas is replaced because its control is spent.
    */
   kill(reason: string): void {
+    if (devEnabled) devError(`worker terminated — ${reason}`);
+    this.watchdogWarned = false;
     this.stopWatchdog();
     this.worker?.terminate();
     this.worker = null;
@@ -403,6 +481,13 @@ export class SandboxHost {
    */
   load(code: string, seed = Math.floor(Math.random() * 0xffffffff), runtime?: string): void {
     this.lastProgram = { code, seed, ...(runtime ? { runtime } : {}) };
+    if (devEnabled) {
+      this.loadStartedAt = performance.now();
+      this.watchdogWarned = false;
+      devLog(
+        `load — ${code.length} bytes · seed ${seed} · ${runtime ? 'instrumented runtime' : 'clean source'}`,
+      );
+    }
     // Restart so each model gets a clean realm.
     this.stopWatchdog();
     this.worker?.terminate();
@@ -422,10 +507,13 @@ export class SandboxHost {
 
   resize(): void {
     const rect = this.container.getBoundingClientRect();
+    const width = Math.max(1, Math.floor(rect.width));
+    const height = Math.max(1, Math.floor(rect.height));
+    if (devEnabled) devLog(`resize → ${width}×${height}`);
     this.send({
       type: 'resize',
-      width: Math.max(1, Math.floor(rect.width)),
-      height: Math.max(1, Math.floor(rect.height)),
+      width,
+      height,
       pixelRatio: this.pixelRatio,
     });
   }

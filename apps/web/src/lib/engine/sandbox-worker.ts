@@ -155,6 +155,15 @@ const post = ((): ((message: WorkerResponse, transfer?: Transferable[]) => void)
   };
 })();
 
+/**
+ * Dev-only build-stage telemetry over the existing `log` channel — protocol unchanged, messages
+ * prefixed `stage ·` so the host can distinguish engine milestones from guest `console.log`, and
+ * compiled out of production (the string never exists in a prod bundle, verified by grep).
+ */
+function stageLog(message: string): void {
+  if (devEnabled) post({ type: 'log', level: 'log', message: `stage · ${message}` });
+}
+
 /** Frame timing constants, each with a reason rather than a guessed number. */
 const TIMING = {
   /**
@@ -253,6 +262,8 @@ interface WorkerState {
   frameTimes: number[];
   /** Consecutive frames where the guest's callback overran its budget. */
   overruns: number;
+  /** `performance.now()` of the current load's start, so the first frame reports end-to-end latency. */
+  loadStartedAt: number;
   /** Milliseconds the last physics step cost, for the status bar's budget line (`02`). */
   physicsMillis: number;
   /** True once the model has been paused for repeated overruns, so the notice is sent once. */
@@ -503,6 +514,7 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     lastStatsMs: 0,
     frameTimes: [],
     overruns: 0,
+    loadStartedAt: 0,
     frameDisabled: false,
     physicsMillis: 0,
 
@@ -544,6 +556,8 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
  */
 function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type: 'load' }>): void {
   logs.length = 0;
+  const buildStart = performance.now();
+  target.loadStartedAt = buildStart;
 
   const builder = new SceneBuilder();
   builder.beginTiming();
@@ -553,8 +567,12 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
 
   try {
     // Step 2 and 3: facades and compilation, while `new Function` still exists.
+    const compileStart = performance.now();
     guard = createGuard();
     compiled = compileGuest(request.runtime ?? request.code);
+    stageLog(
+      `compile ok — ${request.code.length} bytes · ${Math.round(performance.now() - compileStart)}ms`,
+    );
   } catch (error) {
     const described = describeFailure(error);
     builder.dispose();
@@ -589,6 +607,10 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
     // Step 5: run the guest.
     compiled.run(bindings);
     manifest = builder.toManifest();
+    stageLog(
+      `authored — ${manifest.parts.length} parts · ${manifest.parameters.length} params · ` +
+        `${manifest.motions.length} motions · ${Math.round(performance.now() - buildStart)}ms`,
+    );
   } catch (error) {
     const described = describeFailure(error);
     builder.dispose();
@@ -602,6 +624,11 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
   }
 
   const verdict = priceModel(manifest, target.tier);
+  stageLog(
+    verdict.admitted
+      ? `admission — admitted · ${verdict.adjustments.length} adjustment(s), detailed in notices`
+      : 'admission — REFUSED this device',
+  );
   if (!verdict.admitted) {
     builder.dispose();
     post({
@@ -621,7 +648,12 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
 
   let realized: RealizedModel;
   try {
+    const realizeStart = performance.now();
     realized = realize({ manifest, geometries, decisions: verdict.decisions });
+    stageLog(
+      `realized — ${realized.stats.triangles} tris · ${realized.stats.drawCalls} draws · ` +
+        `${realized.stats.geometries} geometries · ${Math.round(performance.now() - realizeStart)}ms`,
+    );
   } catch (error) {
     const described = describeFailure(error);
     builder.dispose();
@@ -785,7 +817,10 @@ function applyViewMode(target: WorkerState): void {
       // model stayed ghostly AND lost early-Z, which costs every device a permanent multiple of
       // its fragment work for the rest of the session.
       if (!XRAY_ORIGINALS.has(material)) {
-        XRAY_ORIGINALS.set(material, { transparent: material.transparent, opacity: material.opacity });
+        XRAY_ORIGINALS.set(material, {
+          transparent: material.transparent,
+          opacity: material.opacity,
+        });
       }
       material.transparent = true;
       material.opacity = XRAY_OPACITY;
@@ -993,6 +1028,11 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   monitorLadder(target, frameTime);
 
   target.frame += 1;
+  if (target.frame === 1 && target.loadStartedAt > 0) {
+    stageLog(
+      `first frame — ${((performance.now() - target.loadStartedAt) / 1000).toFixed(1)}s end-to-end`,
+    );
+  }
 
   // No heartbeat message. It shared a 1,000ms interval and a start instant with the stats publish
   // below, so it posted in the same frame, every second, forever - and the host treats *any* message

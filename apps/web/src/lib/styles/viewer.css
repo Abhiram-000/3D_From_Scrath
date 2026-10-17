@@ -1339,6 +1339,14 @@ body {
 }
 
 /* Subtitle Overlay */
+/* The story subtitle is `.subtitle.glass` in story-mode.svelte, and `.glass` carries an 18px
+   backdrop blur over the canvas. Solid, for the same reason the modal and tooltip are. */
+.subtitle {
+  background: var(--bg-surface-solid, var(--bg-panel));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .subtitle-overlay {
   position: absolute;
   bottom: 80px;
@@ -1454,7 +1462,10 @@ body {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(5px);
+  /* Explicitly none, not merely omitted. This covers the whole viewport including the WebGL canvas,
+     which is opaque, so the browser would re-blur the backdrop on every presented frame while a modal
+     was open. The dialog itself is solid for the same reason (see .code-view-modal). */
+  backdrop-filter: none;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2155,7 +2166,10 @@ body {
     transform: translateX(-100%);
     transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     background: rgba(10, 14, 26, 0.95);
-    /* More solid background for readability */
+    /* More solid background for readability. At 0.95 alpha the inherited .glass-panel blur was
+       already invisible, and below 768px this panel covers the canvas, so it re-blurred the backdrop
+       of every presented frame for nothing. */
+    backdrop-filter: none;
   }
 
   .right-panel {

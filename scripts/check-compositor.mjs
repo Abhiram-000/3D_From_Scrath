@@ -55,9 +55,6 @@ export const KNOWN_OFFENDERS = Object.freeze({
     'Landing and loading pages only. The viewer passes blobs:false, so it instantiates nothing; ' +
     'asserted at runtime by the viewer e2e test, because the blob CSS is shared and no stylesheet ' +
     'rule can prove the viewer is exempt. Removing the shared CSS would remove this entry.',
-  '.modal-overlay':
-    'Full-viewport backdrop blur while the engine is still rendering (performance plan Phase 1, Task 8). ' +
-    'Viewer.css already documents the diagnosis and implements the solid-background half.',
 });
 
 /** Read every stylesheet the viewer ships. */

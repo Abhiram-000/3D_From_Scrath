@@ -1324,7 +1324,7 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
 
       <!-- Tooltip -->
       {#if hoveredPart && !selectedPart}
-        <div class="tooltip-3d glass-panel">
+        <div class="tooltip-3d">
           <div class="tooltip-header">
             {partsById.get(hoveredPart)?.name}
           </div>
@@ -1390,7 +1390,7 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
       <!-- Toasts -->
       <div class="toasts" aria-live="polite">
         {#each toasts as entry (entry.id)}
-          <div class="toast glass-panel">{entry.message}</div>
+          <div class="toast">{entry.message}</div>
         {/each}
       </div>
     </section>
@@ -1637,7 +1637,44 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
     font-size: 0.875rem;
     font-weight: 600;
     color: var(--text-primary);
+    /* Solid, and not `.glass-panel`: this sits over the canvas at z-index 3000, so a backdrop blur
+       here re-blurred it on every presented frame for the 4.5s the toast lived. */
+    background: var(--bg-surface-solid, var(--bg-panel));
+    backdrop-filter: none;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 10px);
+    box-shadow: var(--shadow-md);
     animation: toastIn 0.4s var(--ease-out);
+  }
+
+  /* The hover tooltip had no CSS at all. `.tooltip-3d` matched nothing in any stylesheet, so it was a
+     static, full-viewport-width in-flow block laid out over the canvas while carrying .glass-panel's
+     16px backdrop blur - a full-width blurred band over the model, on every orbit frame. It now has
+     real geometry and a solid background. */
+  .tooltip-3d {
+    position: absolute;
+    left: var(--space-4, 1rem);
+    bottom: var(--space-4, 1rem);
+    z-index: 2000;
+    max-width: 20rem;
+    padding: 0.625rem 0.875rem;
+    pointer-events: none;
+    font-size: 0.8125rem;
+    background: var(--bg-surface-solid, var(--bg-panel));
+    backdrop-filter: none;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 10px);
+    box-shadow: var(--shadow-md);
+  }
+
+  .tooltip-header {
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+
+  .tooltip-bullets {
+    margin: 0;
+    padding-left: 1rem;
   }
 
   @keyframes toastIn {

@@ -20,6 +20,7 @@
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
   import { apiFetch, takeBundle, storedRuntime } from '$lib/core/api.ts';
 import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
+  import { shouldSendPointerNow, toCanvasPoint, type RectLike } from '$lib/core/pointer.ts';
   import { toContext } from '$lib/core/model-context.ts';
   import { Ambient, getTheme, setTheme } from '$lib/ambient.ts';
   // V1's viewer stylesheets, verbatim (app shell + extended modals).
@@ -79,6 +80,11 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   // Pointer/orbit state
   let dragging: 'orbit' | 'pan' | null = null;
   let lastPointer = { x: 0, y: 0 };
+  // Plain, non-reactive: the canvas rect and the coalesced hover sample are consumed by pointer
+  // handlers and nothing in the template ever reads them, so a proxy here would only cost.
+  let canvasRect: RectLike | null = null;
+  let pendingHover: { x: number; y: number } | null = null;
+  let hoverFrame: number | null = null;
 
   // Dropdown / modals (V1 modal set)
   let viewPresetsOpen = $state(false);
@@ -191,7 +197,14 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
       kill: (reason: string) => host?.kill(reason),
     });
 
-    const observer = new ResizeObserver(() => host?.resize());
+    // The canvas is `position: absolute; inset: 0`, so its rect changes only on a resize — which is
+    // exactly what this observer already watches. Caching it here removes a layout query from every
+    // pointermove.
+    canvasRect = canvasHolder.getBoundingClientRect();
+    const observer = new ResizeObserver(() => {
+      canvasRect = canvasHolder?.getBoundingClientRect() ?? null;
+      host?.resize();
+    });
     observer.observe(canvasHolder);
 
     // `03` R2's priority order: shared link → session spec → on-disk fallback.
@@ -311,6 +324,7 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   });
 
   onDestroy(() => {
+    cancelPendingHover();
     host?.dispose();
     host = null;
   });
@@ -578,20 +592,55 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   ];
 
   // ── Pointer handlers (V1: primary orbits, middle/shift pans) ──────────────
+  /**
+   * One place that decides whether a pointer sample goes out now or waits for the next frame.
+   *
+   * `down` and `up` always go immediately: the learner acted on the pose they saw, and deferring a
+   * click by a frame is perceptible. `move` waits, because the worker already collapses hover
+   * raycasts to one per frame — every extra message is a structured clone plus a task competing with
+   * the render loop for the worker's event loop.
+   */
+  function dispatchPointer(kind: 'move' | 'down' | 'up', clientX: number, clientY: number): void {
+    if (!canvasRect) return;
+    const point = toCanvasPoint(clientX, clientY, canvasRect);
+    if (shouldSendPointerNow(kind)) {
+      cancelPendingHover();
+      host?.pointer(point.x, point.y, kind);
+      return;
+    }
+    pendingHover = point;
+    if (hoverFrame === null) hoverFrame = requestAnimationFrame(flushHover);
+  }
+
+  function flushHover(): void {
+    hoverFrame = null;
+    if (!pendingHover) return;
+    const { x, y } = pendingHover;
+    pendingHover = null;
+    host?.pointer(x, y, 'move');
+  }
+
+  function cancelPendingHover(): void {
+    pendingHover = null;
+    if (hoverFrame !== null) {
+      cancelAnimationFrame(hoverFrame);
+      hoverFrame = null;
+    }
+  }
+
   function onPointerDown(event: PointerEvent) {
     if (!canvasHolder) return;
-    const rect = canvasHolder.getBoundingClientRect();
+    cancelPendingHover();
     lastPointer = { x: event.clientX, y: event.clientY };
     dragging = event.button === 1 || event.shiftKey ? 'pan' : 'orbit';
-    host?.pointer(event.clientX - rect.left, event.clientY - rect.top, 'down');
+    dispatchPointer('down', event.clientX, event.clientY);
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
   }
 
   function onPointerMove(event: PointerEvent) {
     if (!canvasHolder) return;
-    const rect = canvasHolder.getBoundingClientRect();
     if (!dragging) {
-      host?.pointer(event.clientX - rect.left, event.clientY - rect.top, 'move');
+      dispatchPointer('move', event.clientX, event.clientY);
       return;
     }
     const deltaX = event.clientX - lastPointer.x;
@@ -601,11 +650,16 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
     else host?.pan(deltaX, deltaY);
   }
 
+  /**
+   * Release. Bound to `pointercancel` as well as `pointerup`: a cancelled pointer capture never
+   * delivers an `up`, so without this the drag flag would stay set and the camera would keep
+   * orbiting for the rest of the session.
+   */
   function onPointerUp(event: PointerEvent) {
     dragging = null;
+    cancelPendingHover();
     if (!canvasHolder) return;
-    const rect = canvasHolder.getBoundingClientRect();
-    host?.pointer(event.clientX - rect.left, event.clientY - rect.top, 'up');
+    dispatchPointer('up', event.clientX, event.clientY);
   }
 
   function onWheel(event: WheelEvent) {

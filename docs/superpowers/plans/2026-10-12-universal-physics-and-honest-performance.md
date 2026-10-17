@@ -7,7 +7,7 @@ against the implementation. Spec is binding; this is the argument from it.
 
 **Physics must work for any geometry an AI generates, without the AI having to know physics.**
 A model that has never seen a collider declaration must still fall, stack, roll and collide
-correctly. That makes collider *inference* from measured geometry a first-class concern rather
+correctly. That makes collider _inference_ from measured geometry a first-class concern rather
 than an optimisation — and it is the only way `02-PHYSICS.md`'s promise is keepable at scale.
 
 ## The decisive finding
@@ -29,7 +29,7 @@ So the mapping is a table over data already shipped.
 
 ## Phase P1 — Make physics real for any model
 
-### P1.1 Faithful colliders by construction, not declaration  ← the load-bearing fix
+### P1.1 Faithful colliders by construction, not declaration ← the load-bearing fix
 
 - Build `builderColliders`: `cylinder → cylinder(r,h)`, `sphere/ball → ball`,
   `box/cube → cuboid`, `cone → cone`, `capsule → capsule`, `pipe/tube → cylinder` (its annulus is a
@@ -45,12 +45,12 @@ So the mapping is a table over data already shipped.
 
 ### P1.2 Correctness fixes that make any simulation a lie today
 
-| Fix | Location |
-|---|---|
-| Rotation in **radians**, all three axes, correct euler order | `physics-world.ts:391` — reuse `motions.ts:204-221` |
-| Quarantine checks **all** quaternion components and restores rotation, not just translation | `physics-world.ts:369-385` |
-| Authored rotation/quaternion applied to the body | `physics-world.ts:134-139` |
-| Dangling `bodyB` must **fail loudly**, not re-anchor to the world | `physics-world.ts:252,291` |
+| Fix                                                                                         | Location                                            |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Rotation in **radians**, all three axes, correct euler order                                | `physics-world.ts:391` — reuse `motions.ts:204-221` |
+| Quarantine checks **all** quaternion components and restores rotation, not just translation | `physics-world.ts:369-385`                          |
+| Authored rotation/quaternion applied to the body                                            | `physics-world.ts:134-139`                          |
+| Dangling `bodyB` must **fail loudly**, not re-anchor to the world                           | `physics-world.ts:252,291`                          |
 
 ### P1.3 Validate the declaration at the boundary
 
@@ -95,7 +95,7 @@ currently wakes every body about a change that cannot arrive, because no paramet
 
 Order matters: **fix what lies to the user before adding capability.**
 
-### P2.1 Stop lying  ← first, because `08-PERFORMANCE.md:61`
+### P2.1 Stop lying ← first, because `08-PERFORMANCE.md:61`
 
 - **X-ray leak**: restore `transparent`/`opacity` on exit (`sandbox-worker.ts:716-728`). One click
   currently costs every device a permanent 2–4× fragment cost and a permanently translucent model.

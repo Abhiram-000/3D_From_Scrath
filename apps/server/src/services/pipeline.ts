@@ -175,7 +175,7 @@ export async function runPipeline(
         at: nowSec(),
       });
       const retry = await deps.ai.complete({
-      signal: deps.signal,
+        signal: deps.signal,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
@@ -225,7 +225,7 @@ export async function runPipeline(
       });
 
       const repaired = await deps.ai.complete({
-      signal: deps.signal,
+        signal: deps.signal,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
@@ -274,7 +274,7 @@ export async function runPipeline(
         at: nowSec(),
       });
       const fixed = await deps.ai.complete({
-      signal: deps.signal,
+        signal: deps.signal,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },
@@ -334,7 +334,7 @@ export async function runPipeline(
       });
 
       const refined = await deps.ai.complete({
-      signal: deps.signal,
+        signal: deps.signal,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: wrapTopic(topic) },

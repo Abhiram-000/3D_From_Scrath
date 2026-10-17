@@ -478,11 +478,7 @@ export class AiClient {
       // statement boundary parses happily while being half a model.
       return {
         ok: false,
-        ...failure(
-          'truncated',
-          'The model stopped writing partway through. Try again.',
-          true,
-        ),
+        ...failure('truncated', 'The model stopped writing partway through. Try again.', true),
       };
     }
 

@@ -4,7 +4,7 @@
 
 **Goal:** Land the in-flight work on a green `pnpm verify`, put a per-builder cost stat and a transient-churn gate in place, then drive the frame path's allocation churn to near zero.
 
-**Architecture:** The spec's Phase 1 (baseline + in-flight) and Phase 2 (zero-allocation frame path). `createFrameContext` was already hoisted by commit c296983, and `frame-cost.test.ts` measures *retained* bytes only — so this plan adds the missing instrument (a GCPerformanceObserver churn gate) before touching code. Everything is host-side; no sandbox capability changes (spec A2).
+**Architecture:** The spec's Phase 1 (baseline + in-flight) and Phase 2 (zero-allocation frame path). `createFrameContext` was already hoisted by commit c296983, and `frame-cost.test.ts` measures _retained_ bytes only — so this plan adds the missing instrument (a GCPerformanceObserver churn gate) before touching code. Everything is host-side; no sandbox capability changes (spec A2).
 
 **Tech Stack:** TypeScript, Vitest 5 (node env), GCPerformanceObserver from `perf_hooks`, pnpm 10.
 
@@ -20,11 +20,11 @@
 
 ## Review Focus
 
-1. **Motion-driven parts under `runsWhilePaused` while paused** — the pose must stay correct when the unpaused clock advances but the pausable clock is frozen; the per-part persistent pose arrays must not alias across parts. *(Task 5)*
-2. **Two motions driving one part's position channel** — `resetMotionDrivenParts` in-place writes must not reorder visible outcomes versus the copying behaviour. *(Task 5 — pinned by characterization before the change)*
-3. **Slider drag on a paused model** — the parameter must still visibly re-pose the model within one frame without the synchronous extra frame. *(Task 7 — pinned by existing e2e)*
-4. **A guest `onFrame` that throws** — the dirty-flag frame must not swallow the throwable the old in-handler code reported. *(Task 7)*
-5. **Churn gate stability** — V8 may scavenge for reasons unrelated to the frame path; the gate compares a frame run against an idle run over equal iteration counts, not an absolute zero. *(Task 3)*
+1. **Motion-driven parts under `runsWhilePaused` while paused** — the pose must stay correct when the unpaused clock advances but the pausable clock is frozen; the per-part persistent pose arrays must not alias across parts. _(Task 5)_
+2. **Two motions driving one part's position channel** — `resetMotionDrivenParts` in-place writes must not reorder visible outcomes versus the copying behaviour. _(Task 5 — pinned by characterization before the change)_
+3. **Slider drag on a paused model** — the parameter must still visibly re-pose the model within one frame without the synchronous extra frame. _(Task 7 — pinned by existing e2e)_
+4. **A guest `onFrame` that throws** — the dirty-flag frame must not swallow the throwable the old in-handler code reported. _(Task 7)_
+5. **Churn gate stability** — V8 may scavenge for reasons unrelated to the frame path; the gate compares a frame run against an idle run over equal iteration counts, not an absolute zero. _(Task 3)_
 
 ---
 
@@ -33,6 +33,7 @@
 The tree holds prompts v7, a new dev console with its test, telemetry in host/worker, and landing polish. Four commits, each green in isolation. Do not bundle with anything later in this plan.
 
 **Files:**
+
 - Commit A: `apps/server/src/services/prompts.ts`, `apps/server/tests/prompts.test.ts`
 - Commit B: `apps/web/src/lib/dev-console.ts`, `apps/web/src/lib/dev-console.test.ts`, `apps/web/src/lib/engine/sandbox-host.ts`, `apps/web/src/lib/engine/sandbox-worker.ts`
 - Commit C: `apps/web/src/lib/styles/landing.css`, `apps/web/src/routes/+page.svelte`, `apps/web/src/lib/components/generate-dialog.svelte`
@@ -68,6 +69,7 @@ git commit -m "style(landing): polish pass on the topic card"
 ```bash
 rm ab.tmp.mjs cc.tmp.mjs ho.tmp.mjs place.tmp.mjs
 ```
+
 (All four are untracked; nothing to commit.)
 
 ---
@@ -77,10 +79,12 @@ rm ab.tmp.mjs cc.tmp.mjs ho.tmp.mjs place.tmp.mjs
 The number every later phase cites. No UI yet — surfacing is Phase 6 of the spec.
 
 **Files:**
+
 - Modify: `packages/engine/src/geometry/factory.ts` (`register()`, new `buildTimings()`)
 - Test: `packages/engine/tests/geometry.test.ts` (append)
 
 **Interfaces:**
+
 - Produces: `GeometryFactory.buildTimings(): ReadonlyMap<string, number>` — cumulative ms per builder name, accumulated across `register()` calls; cache hits add nothing.
 
 - [ ] **Step 1: Write the failing test**
@@ -124,26 +128,33 @@ git commit -m "perf(engine): time every builder, so cost claims are citable"
 `frame-cost.test.ts` is blind to short-lived objects by its own header. This adds the missing instrument: a `GCPerformanceObserver` counting scavenges during a frame run versus an idle run over the same iteration count. The difference is attributable churn.
 
 **Files:**
+
 - Modify: `packages/engine/tests/frame-cost.test.ts`
 
 **Interfaces:**
+
 - Produces: exported helper `countScavenges(run: () => void): number` — observer-wrapped invocation returning minor-GC event count; used by the gate and reusable by later phases.
 
 - [ ] **Step 1: Add the helper and the comparative gate**
 
 ```ts
 it('the frame path does not churn: frame-run scavenges ≈ idle-run scavenges', () => {
-  const idle = countScavenges(() => { for (let i = 0; i < FRAMES_PER_SAMPLE; i++) { Math.sin(i); } });
+  const idle = countScavenges(() => {
+    for (let i = 0; i < FRAMES_PER_SAMPLE; i++) {
+      Math.sin(i);
+    }
+  });
   const frame = countScavenges(() => runFrames(FRAMES_PER_SAMPLE));
   expect(frame, `idle=${idle} frame=${frame}`).toBeLessThanOrEqual(idle + MAX_CHURN_SCAVENGES);
 });
 ```
-`runFrames` is the existing harness loop. `MAX_CHURN_SCAVENGES` starts pinned to the *measured* value with 50 % headroom (Step 2 tells you the number); the plan tightens it at Task 8.
+
+`runFrames` is the existing harness loop. `MAX_CHURN_SCAVENGES` starts pinned to the _measured_ value with 50 % headroom (Step 2 tells you the number); the plan tightens it at Task 8.
 
 - [ ] **Step 2: Run it, read the numbers, pin the constant**
 
 Run: `pnpm test frame-cost`
-Expected: PASS on the first run *only because* the constant was pinned from measurement. Record `idle` and `frame` in the commit message — those two numbers are the before picture for Q10.
+Expected: PASS on the first run _only because_ the constant was pinned from measurement. Record `idle` and `frame` in the commit message — those two numbers are the before picture for Q10.
 
 - [ ] **Step 3: Commit**
 
@@ -159,10 +170,12 @@ git commit -m "test: a churn gate that can see what the retained-bytes gate cann
 `motions.ts` allocates per motion per frame: `normaliseAxis`, five `readVec3` literals, `frameDelta`, the `scoped` context spread, quaternion intermediates, and `eulerFromQuatXyz` output.
 
 **Files:**
+
 - Modify: `packages/engine/src/runtime/motions.ts`
 - Test: `packages/engine/tests/motions.test.ts` (append a characterization pin BEFORE changing: run each existing case's expected poses — the suite is the characterization; add one that pins `frameDelta` composition correctness)
 
 **Interfaces:**
+
 - Consumes: existing `resolveScalar`, `MotionHost`, `ScalarContext` — signatures unchanged.
 - Produces (new, module-private): `readVec3Into(out: Vec3Tuple, src, fallback)`, `quatFromAxisAngleTo(out: QuaternionTuple, axis, angle)`, `quatMultiplyTo(out, a, b)`, `eulerFromQuatXyzTo(out, q)`, and one module-level scratch `MOTION_CTX` reused per call.
 
@@ -198,11 +211,13 @@ git commit -m "perf(engine): applyMotions writes into scratch, not fresh tuples"
 ### Task 5: reset/sync — persistent pose arrays and spread-free sync
 
 **Files:**
+
 - Create: `apps/web/src/lib/engine/frame-compose.ts` (pure, Node-testable, imports `three`)
 - Create: `apps/web/src/lib/engine/frame-compose.test.ts`
 - Modify: `apps/web/src/lib/engine/sandbox-worker.ts:901-1105` (delegate to the new module)
 
 **Interfaces:**
+
 - Consumes: `manifest.parts`, `model.parts` (the realized `Map<string, THREE.Object3D>`), `motionBases`, `runsWhilePausedParts`.
 - Produces: `resetMotionDriven(parts, bases, pausedOnly, scratch)` and `syncTransforms(model, manifest)` — the sync writes position/rotation/scale as scalar assignments (`.x =`), never `set(...spread)`, and caches per-part material channels; the reset keeps one persistent `[number,number,number]` per part keyed by part id in a `Map`, copying base→live in place so nothing is allocated per part per frame.
 
@@ -232,9 +247,11 @@ git commit -m "perf(worker): the pose reset and transform sync allocate nothing 
 ### Task 6: One frame at a time — params record and setParameter dirty flag
 
 **Files:**
+
 - Modify: `apps/web/src/lib/engine/sandbox-worker.ts:919-980, 1345-1365`
 
 **Interfaces:**
+
 - Consumes: `currentParameters()` (exists on `SceneBuilder`).
 - Produces: `target.paramsRecord: Record<string, number|boolean|string> | null` — rebuilt lazily on the next frame after `setParameter` invalidates it; `applyDeclaredMotions` reads it and never calls `Object.entries`.
 
@@ -261,6 +278,7 @@ git commit -m "perf(worker): one frame per tick — setParameter invalidates, re
 ### Task 7: Camera — coalesce gestures to once per frame
 
 **Files:**
+
 - Modify: `apps/web/src/lib/engine/sandbox-worker.ts:1406-1448`
 
 - [ ] **Step 1: Handlers stop calling `updateCamera`**
@@ -284,6 +302,7 @@ git commit -m "perf(worker): camera gestures coalesce to one update per frame"
 ### Task 8: Ratchet the gate, record the numbers
 
 **Files:**
+
 - Modify: `packages/engine/tests/frame-cost.test.ts`
 
 - [ ] **Step 1: Re-pin `MAX_CHURN_SCAVENGES` from the post-fix measurement with 25 % headroom; record idle/frame before-and-after in the commit message**

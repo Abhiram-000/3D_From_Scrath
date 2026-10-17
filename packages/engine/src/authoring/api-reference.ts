@@ -71,7 +71,8 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
   // ── random: host-provided, seeded (deterministic per build) ────────────────
   'random.float': {
     signature: 'random.float(): number',
-    summary: 'Uniform pseudo-random number in [0, 1). Seeded per build, so a model is reproducible.',
+    summary:
+      'Uniform pseudo-random number in [0, 1). Seeded per build, so a model is reproducible.',
     example: 'var jitter = (random.float() - 0.5) * 0.01',
   },
   'random.range': {
@@ -104,7 +105,8 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
   },
   'M.TAU': {
     signature: 'M.TAU: number = 6.283185307179586',
-    summary: '2π — radians in one full revolution (a complete turn); the natural modulus for any rotation.',
+    summary:
+      '2π — radians in one full revolution (a complete turn); the natural modulus for any rotation.',
     example: 'M.wrap(angle, M.TAU)',
   },
   'M.HALF_PI': {
@@ -193,8 +195,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     example: 'M.clamp(t, 0, 1)',
   },
   'M.compose': {
-    signature:
-      'M.compose(translation: [x,y,z], rotation: [rx,ry,rz], scale: [x,y,z]): Mat4',
+    signature: 'M.compose(translation: [x,y,z], rotation: [rx,ry,rz], scale: [x,y,z]): Mat4',
     summary:
       'Column-major 4×4 from translation, XYZ Euler rotation (radians) and scale — matches the renderer exactly.',
     example: 'M.compose([0, 1, 0], [0, M.HALF_PI, 0], [1, 1, 1])',
@@ -262,7 +263,8 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     example: 'M.exp(-k * t)',
   },
   'M.fbm': {
-    signature: 'M.fbm(x: number, y: number, z: number, octaves?: number, persistence?: number): number',
+    signature:
+      'M.fbm(x: number, y: number, z: number, octaves?: number, persistence?: number): number',
     summary:
       'Fractal value noise in [0, 1] — terrain, bark, corrosion; richer than a single noise3 call.',
     example: 'var roughness = M.fbm(x * 3, y * 3, z * 3, 4)',
@@ -400,7 +402,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
       'M.remap(value: number, inMin: number, inMax: number, outMin: number, outMax: number): number',
     summary:
       'Map a value from one range to another, clamped — the workhorse of parameter-to-behaviour binding.',
-    example: "M.remap(ctx.params.heat, 0, 1, 0.2, 8)",
+    example: 'M.remap(ctx.params.heat, 0, 1, 0.2, 8)',
   },
   'M.rotateAxis': {
     signature: 'M.rotateAxis(v: [x,y,z], axis: [x,y,z], angle: number): [x,y,z]',
@@ -531,7 +533,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
   },
   'geom.bend': {
     signature:
-      'geom.bend(handle: GeometryHandle, radians: number, axis?: \'x\'|\'y\'|\'z\', around?: \'x\'|\'y\'|\'z\'): GeometryHandle',
+      "geom.bend(handle: GeometryHandle, radians: number, axis?: 'x'|'y'|'z', around?: 'x'|'y'|'z'): GeometryHandle",
     summary: 'Bend the mesh `radians` about `axis` (default y) around `around` (default z).',
     example: 'geom.bend(handle, 0.6)',
   },
@@ -545,12 +547,14 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
   },
   'geom.box': {
     signature:
-      "geom.box(spec: { size: [w, h, d] } | [w, h, d] | { width, height, length }): GeometryHandle",
-    summary: 'A box in metres. All three spellings accepted; { size: [w, h, d] } is the canonical one.',
-    example: "geom.box({ size: [0.2, 0.1, 0.4] })",
+      'geom.box(spec: { size: [w, h, d] } | [w, h, d] | { width, height, length }): GeometryHandle',
+    summary:
+      'A box in metres. All three spellings accepted; { size: [w, h, d] } is the canonical one.',
+    example: 'geom.box({ size: [0.2, 0.1, 0.4] })',
   },
   'geom.capsule': {
-    signature: 'geom.capsule({ radius: number, height: number, segments?: number }): GeometryHandle',
+    signature:
+      'geom.capsule({ radius: number, height: number, segments?: number }): GeometryHandle',
     summary: 'Rounded cylinder: radius ≥ 1e-6, height is the straight mid-section.',
     example: 'geom.capsule({ radius: 0.03, height: 0.12 })',
   },
@@ -572,7 +576,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     summary:
       'Per-vertex colour from a scalar field — heat maps, stress plots. Pair with mat.gradient.',
     example:
-      "geom.colorByField(plate, function (x, y, z) { return x / 0.4; }, function (t) { return [t, 1 - t, 0]; })",
+      'geom.colorByField(plate, function (x, y, z) { return x / 0.4; }, function (t) { return [t, 1 - t, 0]; })',
   },
   'geom.cone': {
     signature: 'geom.cone({ radius: number, height: number, segments?: number }): GeometryHandle',
@@ -587,7 +591,8 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     example: 'geom.cylinder({ radius: 0.02, height: 0.3 })',
   },
   'geom.disc': {
-    signature: 'geom.disc({ radius: number, innerRadius?: number, segments?: number }): GeometryHandle',
+    signature:
+      'geom.disc({ radius: number, innerRadius?: number, segments?: number }): GeometryHandle',
     summary: 'Flat disc in the XZ plane; `innerRadius` makes it a washer/ring.',
     example: 'geom.disc({ radius: 0.3, innerRadius: 0.05 })',
   },
@@ -620,8 +625,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     signature: 'geom.field.<shape>(…) and geom.field.<combine>(…): Sdf',
     summary:
       'Signed-distance-field constructors (see the geom.field members below); fields compose by arithmetic for implicit shapes.',
-    example:
-      'geom.field.smoothUnion(geom.field.sphere(0.2), geom.field.box(0.1, 0.1, 0.3), 0.05)',
+    example: 'geom.field.smoothUnion(geom.field.sphere(0.2), geom.field.box(0.1, 0.1, 0.3), 0.05)',
   },
   'geom.field.sphere': {
     signature: 'geom.field.sphere(radius: number): Sdf',
@@ -699,11 +703,9 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     example: 'var lattice = geom.field.repeat(cell, 0.1, 0.1, 0.1)',
   },
   'geom.field.metaballs': {
-    signature:
-      'geom.field.metaballs(centres: [x, y, z, radius][], blend?: number): Sdf',
+    signature: 'geom.field.metaballs(centres: [x, y, z, radius][], blend?: number): Sdf',
     summary: 'Metaball cloud — organic blobs that merge as they approach.',
-    example:
-      'geom.field.metaballs([[0, 0, 0, 0.1], [0.15, 0, 0, 0.08]], 0.5)',
+    example: 'geom.field.metaballs([[0, 0, 0, 0.1], [0.15, 0, 0, 0.08]], 0.5)',
   },
   'geom.field.gyroid': {
     signature: 'geom.field.gyroid(scale?: number, thickness?: number): Sdf',
@@ -745,30 +747,28 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
   'geom.loft': {
     signature:
       'geom.loft({ sections: [{ profile: ProfileHandle, position: [x,y,z], rotation?: number, scale?: number }], smoothSteps?: number, caps?: boolean }): GeometryHandle',
-    summary:
-      'Skin through ≥2 cross-sections — hulls, fuselages, anatomical transitions.',
+    summary: 'Skin through ≥2 cross-sections — hulls, fuselages, anatomical transitions.',
     example:
       'geom.loft({ sections: [{ profile: geom.circleProfile({ radius: 0.1 }), position: [0, 0, 0] }, { profile: geom.circleProfile({ radius: 0.02 }), position: [0, 0.3, 0] }] })',
   },
   'geom.merge': {
-    signature:
-      'geom.merge(parts: [{ name: string, geometry: GeometryHandle }]): GeometryHandle',
-    summary: 'Several geometries into one buffer, each a named region — one draw call, one selection.',
-    example:
-      "geom.merge([{ name: 'head', geometry: head }, { name: 'shank', geometry: shank }])",
+    signature: 'geom.merge(parts: [{ name: string, geometry: GeometryHandle }]): GeometryHandle',
+    summary:
+      'Several geometries into one buffer, each a named region — one draw call, one selection.',
+    example: "geom.merge([{ name: 'head', geometry: head }, { name: 'shank', geometry: shank }])",
   },
   'geom.mesh': {
     signature:
       'geom.mesh({ positions: number[], indices?: number[], normals?: number[], uvs?: number[], colors?: number[] }): GeometryHandle',
     summary:
       'Raw triangles — the mathematical ceiling. positions is a flat xyz array (≥3 vertices), indices triplets.',
-    example:
-      'geom.mesh({ positions: [0, 0, 0, 0.1, 0, 0, 0, 0.1, 0], indices: [0, 1, 2] })',
+    example: 'geom.mesh({ positions: [0, 0, 0, 0.1, 0, 0, 0, 0.1, 0], indices: [0, 1, 2] })',
   },
   'geom.mirror': {
     signature:
       "geom.mirror(handle: GeometryHandle, axis: 'x'|'y'|'z', keepOriginal?: boolean): GeometryHandle",
-    summary: 'Mirror across a plane through the origin; keepOriginal (default true) keeps both sides.',
+    summary:
+      'Mirror across a plane through the origin; keepOriginal (default true) keeps both sides.',
     example: "geom.mirror(halfBridge, 'x')",
   },
   'geom.morph': {
@@ -787,8 +787,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     signature:
       "geom.patch({ profile: ProfileHandle, heightAt?: (x, y) => number, plane?: 'xy'|'xz'|'yz' }): GeometryHandle",
     summary: 'Fill a profile outline as a surface, optionally displaced — maps, terrain sections.',
-    example:
-      'geom.patch({ profile: geom.circleProfile({ radius: 0.5 }), plane: \'xz\' })',
+    example: "geom.patch({ profile: geom.circleProfile({ radius: 0.5 }), plane: 'xz' })",
   },
   'geom.path': {
     signature: 'geom.path(points: [x, y, z][], closed?: boolean): PathHandle',
@@ -799,13 +798,13 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     signature: 'geom.pattern.<helper>(count, geometryArgs, options?): Placement[]',
     summary:
       'Placement-list constructors (see members below) — feed the result to scene.instances: N × geometry cost, 1 × draw call.',
-    example: 'geom.pattern.radial(24, 0.3, { axis: \'y\' })',
+    example: "geom.pattern.radial(24, 0.3, { axis: 'y' })",
   },
   'geom.pattern.linear': {
     signature:
       'geom.pattern.linear(count: number, step: [x,y,z], { start?: [x,y,z], rotationStep?: [x,y,z], scaleStep?: number }): Placement[]',
     summary: 'A straight run — bolts along an edge, rungs on a ladder, sleepers on track.',
-    example: "geom.pattern.linear(10, [0.05, 0, 0], { start: [-0.25, 0, 0] })",
+    example: 'geom.pattern.linear(10, [0.05, 0, 0], { start: [-0.25, 0, 0] })',
   },
   'geom.pattern.radial': {
     signature:
@@ -818,12 +817,13 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     signature:
       'geom.pattern.grid(counts: [nx, ny, nz], spacing: [dx, dy, dz], { centered?: boolean }): Placement[]',
     summary: 'A 2D/3D lattice — rivet fields, crystal cells, solar arrays, seating.',
-    example: "geom.pattern.grid([6, 1, 6], [0.08, 0, 0.08])",
+    example: 'geom.pattern.grid([6, 1, 6], [0.08, 0, 0.08])',
   },
   'geom.pattern.alongPath': {
     signature:
       'geom.pattern.alongPath(path: PathHandle, count: number, { offset?: number }): Placement[]',
-    summary: 'Placements along a path, oriented to its tangent — carriages, vertebrae, chain teeth.',
+    summary:
+      'Placements along a path, oriented to its tangent — carriages, vertebrae, chain teeth.',
     example: 'geom.pattern.alongPath(trackPath, 12)',
   },
   'geom.pattern.spiral': {
@@ -834,12 +834,13 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
   },
   'geom.pattern.onSphere': {
     signature: 'geom.pattern.onSphere(count: number, radius: number): Placement[]',
-    summary: 'Fibonacci-sphere placement, oriented outward — electron shells, dimples, constellations.',
+    summary:
+      'Fibonacci-sphere placement, oriented outward — electron shells, dimples, constellations.',
     example: 'geom.pattern.onSphere(32, 0.4)',
   },
   'geom.pattern.helical': {
     signature:
-      "geom.pattern.helical(count: number, radius: number, pitch: number, turns: number, { faceOutward?: boolean }): Placement[]",
+      'geom.pattern.helical(count: number, radius: number, pitch: number, turns: number, { faceOutward?: boolean }): Placement[]',
     summary: 'A helical array — stair treads, screw flights, DNA base pairs.',
     example: 'geom.pattern.helical(30, 0.3, 0.12, 2)',
   },
@@ -848,7 +849,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
       'geom.pattern.scatter(count: number, extents: [x,y,z], random: () => number, { minSeparation?: number, randomRotation?: boolean, scaleRange?: [min, max] }): Placement[]',
     summary:
       'Random scatter inside a box with a minimum separation — trees, debris, cells (pass `random.float`).',
-    example: "geom.pattern.scatter(40, [1, 0.2, 1], random.float, { minSeparation: 0.08 })",
+    example: 'geom.pattern.scatter(40, [1, 0.2, 1], random.float, { minSeparation: 0.08 })',
   },
   'geom.pattern.mirror': {
     signature: "geom.pattern.mirror(placements: Placement[], axis: 'x'|'y'|'z'): Placement[]",
@@ -867,7 +868,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     summary:
       'A tube along a path, hollow when `innerRadius` is set so a cutaway shows a real wall. innerRadius must be smaller than radius.',
     example:
-      "geom.pipe({ path: geom.path([[0, 0, 0], [0.1, 0, 0], [0.1, 0.1, 0.1]]), radius: 0.015, innerRadius: 0.012 })",
+      'geom.pipe({ path: geom.path([[0, 0, 0], [0.1, 0, 0], [0.1, 0.1, 0.1]]), radius: 0.015, innerRadius: 0.012 })',
   },
   'geom.plane': {
     signature:
@@ -912,7 +913,8 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
       "geom.revolve({ profile: ProfileHandle, angle?: number, segments?: number, axis?: 'x'|'y'|'z', caps?: boolean }): GeometryHandle",
     summary:
       'Lathe a profile about an axis (default y) — vases, shafts, nozzles. angle in radians, default full turn.',
-    example: "geom.revolve({ profile: geom.arcProfile({ radius: 0.2, start: -M.HALF_PI, end: M.HALF_PI }) })",
+    example:
+      'geom.revolve({ profile: geom.arcProfile({ radius: 0.2, start: -M.HALF_PI, end: M.HALF_PI }) })',
   },
   'geom.ripple': {
     signature:
@@ -953,13 +955,13 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     signature:
       'geom.splinePath(points: [x, y, z][], segmentsPerSpan?: number, closed?: boolean): PathHandle',
     summary: 'Smooth Catmull–Rom path through ≥3 points — routed pipes, flow lines.',
-    example:
-      'geom.splinePath([[0, 0, 0], [0.2, 0.05, 0], [0.3, 0.15, 0.1]])',
+    example: 'geom.splinePath([[0, 0, 0], [0.2, 0.05, 0], [0.3, 0.15, 0.1]])',
   },
   'geom.splineProfile': {
     signature:
       'geom.splineProfile(points: [x, y][], segmentsPerSpan?: number, closed?: boolean): ProfileHandle',
-    summary: 'Catmull–Rom profile through ≥3 points — interpolating, so it passes through each one.',
+    summary:
+      'Catmull–Rom profile through ≥3 points — interpolating, so it passes through each one.',
     example: 'geom.splineProfile([[0, 0], [0.1, 0.1], [0.2, 0.02]])',
   },
   'geom.subdivide': {
@@ -991,7 +993,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     signature:
       'geom.transform(handle: GeometryHandle, { translate?: [x,y,z], scale?: [x,y,z] | number, rotate?: [rx,ry,rz] }): GeometryHandle',
     summary: 'Bake a transform into the vertices (radians for rotate).',
-    example: "geom.transform(handle, { translate: [0, 0.1, 0], rotate: [0, M.HALF_PI, 0] })",
+    example: 'geom.transform(handle, { translate: [0, 0.1, 0], rotate: [0, M.HALF_PI, 0] })',
   },
   'geom.twist': {
     signature:
@@ -1015,7 +1017,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     signature: 'geom.withHoles(profile: ProfileHandle, holes: ProfileHandle[]): ProfileHandle',
     summary: 'Punch inner loops into a profile so they triangulate once — flange bolt holes.',
     example:
-      "geom.withHoles(flange, [geom.circleProfile({ radius: 0.008 }), geom.circleProfile({ radius: 0.008 })])",
+      'geom.withHoles(flange, [geom.circleProfile({ radius: 0.008 }), geom.circleProfile({ radius: 0.008 })])',
   },
   'geom.offsetProfile': {
     signature: 'geom.offsetProfile(profile: ProfileHandle, distance: number): ProfileHandle',
@@ -1023,12 +1025,14 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     example: 'geom.offsetProfile(base, 0.004)',
   },
   'geom.filletProfile': {
-    signature: 'geom.filletProfile(profile: ProfileHandle, radius: number, segments?: number): ProfileHandle',
+    signature:
+      'geom.filletProfile(profile: ProfileHandle, radius: number, segments?: number): ProfileHandle',
     summary: 'Round a profile’s corners — real part outlines are rarely sharp.',
     example: 'geom.filletProfile(geom.rect({ width: 0.2, height: 0.1 }), 0.01)',
   },
   'geom.translateProfile': {
-    signature: 'geom.translateProfile(profile: ProfileHandle, dx: number, dy: number): ProfileHandle',
+    signature:
+      'geom.translateProfile(profile: ProfileHandle, dx: number, dy: number): ProfileHandle',
     summary: 'Move a profile in its plane.',
     example: 'geom.translateProfile(base, 0.05, 0)',
   },
@@ -1070,11 +1074,10 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
   'mat.translucent': {
     signature: 'mat.translucent({ …same options as mat.metal }?): MaterialHandle',
     summary: 'Explanatory shells over the lesson — cell membranes, containment, skin.',
-    example: 'mat.translucent({ color: \'#dfe8ee\', opacity: 0.4 })',
+    example: "mat.translucent({ color: '#dfe8ee', opacity: 0.4 })",
   },
   'mat.emissive': {
-    signature:
-      'mat.emissive({ …same options as mat.metal, boundTo?: string }?): MaterialHandle',
+    signature: 'mat.emissive({ …same options as mat.metal, boundTo?: string }?): MaterialHandle',
     summary:
       'Energy, charge, heat, signal. Bind `boundTo` to the quantity it represents so brightness IS the measurement.',
     example: "mat.emissive({ color: '#ffb457', boundTo: 'current' })",
@@ -1100,15 +1103,15 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     example: "mat.organic({ color: '#c98a72' })",
   },
   'mat.gradient': {
-    signature:
-      'mat.gradient({ …same options as mat.metal }?): MaterialHandle',
+    signature: 'mat.gradient({ …same options as mat.metal }?): MaterialHandle',
     summary:
       'Vertex-colour surface — pairs with geom.colorByField for stress and heat read-outs worn by the part itself.',
     example: 'mat.gradient({})',
   },
   'mat.roleColor': {
     signature: 'mat.roleColor(id: string): string',
-    summary: 'The hex a declared colour role resolves to — keep lines and labels on the same system.',
+    summary:
+      'The hex a declared colour role resolves to — keep lines and labels on the same system.',
     example: "var line = mat.roleColor('energy')",
   },
 
@@ -1130,7 +1133,8 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
 });`,
   },
   'scene.colorRole': {
-    signature: 'scene.colorRole({ id: string, label: string, color: string, meaning: string }): void',
+    signature:
+      'scene.colorRole({ id: string, label: string, color: string, meaning: string }): void',
     summary:
       'Declare a colour ONCE as a category the learner learns to read; reference it from materials with { role: id }.',
     example:
@@ -1149,12 +1153,14 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
       "scene.metric({ id: string, label: string, unit?: string, formula?: string, precision?: number, source?: 'model'|'physics' }): string",
     summary:
       'A live read-out; publish its value every frame with ctx.metric(id, value) so number and motion never disagree.',
-    example: "scene.metric({ id: 'rpm', label: 'Rotor speed', unit: 'rpm', formula: '60·rate/TAU' })",
+    example:
+      "scene.metric({ id: 'rpm', label: 'Rotor speed', unit: 'rpm', formula: '60·rate/TAU' })",
   },
   'scene.group': {
     signature:
       'scene.group({ id: string, name?: string, parentId?: string | null, position?: [x,y,z], rotation?: [x,y,z], scale?: number | [x,y,z], group?: string }): string',
-    summary: 'A non-renderable container; groups follow function so selecting a group selects a concept.',
+    summary:
+      'A non-renderable container; groups follow function so selecting a group selects a concept.',
     example: "scene.group({ id: 'rig', name: 'Pendulum rig' })",
   },
   'scene.mesh': {
@@ -1189,8 +1195,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
       "scene.points({ id: 'stars', geometry: cloud, material: mat.emissive({ color: '#ffffff' }) })",
   },
   'scene.defineComponent': {
-    signature:
-      'scene.defineComponent(name: string, body: (ctx: ComponentContext) => void): void',
+    signature: 'scene.defineComponent(name: string, body: (ctx: ComponentContext) => void): void',
     summary:
       'Define a subassembly once; ctx.mesh/ctx.group auto-parent and id-prefix so it can be placed any number of times.',
     example: `scene.defineComponent('bolt', function (ctx) {
@@ -1200,7 +1205,7 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
   },
   'scene.place': {
     signature:
-      "scene.place(component: string, { id: string, parentId?: string | null, position?: [x,y,z], rotation?: [x,y,z], scale?: number | [x,y,z], params?: Record<string, any> }): string",
+      'scene.place(component: string, { id: string, parentId?: string | null, position?: [x,y,z], rotation?: [x,y,z], scale?: number | [x,y,z], params?: Record<string, any> }): string',
     summary:
       'Place a defined component; `params` reaches the body as ctx.params, so each instance differs without new code.',
     example: `scene.defineComponent('cap', function (ctx) {
@@ -1220,7 +1225,8 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
     signature: 'scene.path({ id: string, path: PathHandle, visible?: boolean }): string',
     summary:
       'Register a named 3D path (from geom.path/geom.splinePath) — orbits, flow routes, camera rails, flowAlongPath targets.',
-    example: "scene.path({ id: 'flow', path: geom.splinePath([[0, 0, 0], [0.3, 0.1, 0]]), visible: true })",
+    example:
+      "scene.path({ id: 'flow', path: geom.splinePath([[0, 0, 0], [0.3, 0.1, 0]]), visible: true })",
   },
   'scene.light': {
     signature:
@@ -1245,7 +1251,7 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
   },
   'scene.environment': {
     signature:
-      "scene.environment({ preset?: string, backgroundDark?: string, backgroundLight?: string, grid?: boolean, exposure?: number, fog?: any }): void",
+      'scene.environment({ preset?: string, backgroundDark?: string, backgroundLight?: string, grid?: boolean, exposure?: number, fog?: any }): void',
     summary: 'Backdrop and tone; the engine keeps model contrast in both light and dark themes.',
     example: "scene.environment({ preset: 'studio', grid: true })",
   },
@@ -1286,7 +1292,8 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
   'scene.onParameterChange': {
     signature:
       'scene.onParameterChange(callback: (id: string, value: number | boolean | string) => void): void',
-    summary: 'React to a slider outside the frame loop — for work too expensive to redo every frame.',
+    summary:
+      'React to a slider outside the frame loop — for work too expensive to redo every frame.',
     example:
       "scene.onParameterChange(function (id, value) { console.log(id, 'changed to', value); })",
   },
@@ -1297,9 +1304,8 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
   },
   'scene.onInteraction': {
     signature: 'scene.onInteraction(id: string, callback: (partId: string) => void): void',
-    summary: 'Register a named handler a scene.interaction { kind: \'handler\' } invokes.',
-    example:
-      "scene.onInteraction('pulse', function (partId) { console.log('pulse', partId); })",
+    summary: "Register a named handler a scene.interaction { kind: 'handler' } invokes.",
+    example: "scene.onInteraction('pulse', function (partId) { console.log('pulse', partId); })",
   },
   'scene.physics': {
     signature:

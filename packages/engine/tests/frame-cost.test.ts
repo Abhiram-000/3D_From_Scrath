@@ -103,7 +103,12 @@ describe('the cost of a frame', () => {
 
     // `harden: false`: hardening deletes capabilities from this process's realm and would break every
     // later test in the file. The sandbox package has its own dedicated hardening suite.
-    const result = authorModel({ code: prepared.instrumented, tier: 'mid', seed: 7, harden: false });
+    const result = authorModel({
+      code: prepared.instrumented,
+      tier: 'mid',
+      seed: 7,
+      harden: false,
+    });
     expect(result.ok, result.ok ? '' : result.message).toBe(true);
     if (!result.ok) return;
 

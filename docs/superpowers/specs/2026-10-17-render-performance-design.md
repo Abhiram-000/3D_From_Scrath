@@ -11,7 +11,7 @@
 
 The viewer's camera interaction feels janky, models allocate ~4,800 objects/second at idle,
 some models freeze the build for minutes with no diagnosable cause, and four code paths emit
-output that is *factually wrong* about the model on screen.
+output that is _factually wrong_ about the model on screen.
 
 This spec covers six phases, each landing as its own commit, ordered by cost-to-risk ratio.
 
@@ -35,15 +35,15 @@ expressed as prose drifts.
 
 ### 2.1 Model quality may improve, never degrade
 
-| ID | Invariant | Enforced by |
-|----|-----------|-------------|
-| Q1 | Every declared parameter that renders a value still renders the same value | Parameter-leverage sweep in `audit.ts`; existing |
-| Q2 | Geometry a learner sees is never *less* correct than before | Phase 6 decimation + hero-floor tests |
-| Q3 | No decimation path may reduce a part below `RECOGNIZABILITY_FLOOR` / `HERO_FLOOR` | Phase 6 admission tests |
-| Q4 | Decimated output contains no degenerate triangles and no newly-disconnected surface | Phase 6 mesh tests |
-| Q5 | `stats.triangles` reports what is actually drawn, not what was authored | Phase 6 realize test |
-| Q6 | No user-visible notice may describe an effect that does not occur | Phase 6 rung tests |
-| Q7 | A part's own info text may never disagree with what is drawn | Phase 6 hero-cap test |
+| ID  | Invariant                                                                           | Enforced by                                      |
+| --- | ----------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Q1  | Every declared parameter that renders a value still renders the same value          | Parameter-leverage sweep in `audit.ts`; existing |
+| Q2  | Geometry a learner sees is never _less_ correct than before                         | Phase 6 decimation + hero-floor tests            |
+| Q3  | No decimation path may reduce a part below `RECOGNIZABILITY_FLOOR` / `HERO_FLOOR`   | Phase 6 admission tests                          |
+| Q4  | Decimated output contains no degenerate triangles and no newly-disconnected surface | Phase 6 mesh tests                               |
+| Q5  | `stats.triangles` reports what is actually drawn, not what was authored             | Phase 6 realize test                             |
+| Q6  | No user-visible notice may describe an effect that does not occur                   | Phase 6 rung tests                               |
+| Q7  | A part's own info text may never disagree with what is drawn                        | Phase 6 hero-cap test                            |
 
 **Q7 currently fails.** A `hero: true` radial array can be capped to 3 of 22 placements
 (`admission.ts:203`, `Math.max(3, ...)`) while its info panel still reads `Blades: '22'`.
@@ -51,15 +51,15 @@ This is a live correctness bug on low-tier devices, and the user has approved fi
 
 ### 2.2 "No lag" is a number, not a feeling
 
-| ID | Metric | Current | Target |
-|----|--------|---------|--------|
-| L1 | Camera-gesture → visible-pixel latency | 1–2 frames + N redundant `updateCamera` calls between frames | ≤1 frame, no redundant camera recomputation |
-| L2 | Dropped frames during a continuous 5s orbit, mid tier | unmeasured, suspected significant | 0 — **manual/real-device criterion, see §2.2.1** |
-| L3 | Steady-state allocations, model running, no input | ~7,450 objects/s | <200/s |
-| L4 | `renderer.render` calls/sec while paused + static + not orbiting | 60 | 0 |
-| L5 | Worker bundle, first load, physics not declared | ~4 MB uncompressed IIFE | Rapier absent from the initial chunk; total <2.5 MB compressed |
-| L6 | `geom.sdf` @ res 160, and `geom.boolean` on 100k-vertex inputs | unbounded; ~14 min; only `worker.terminate()` can stop it | terminates inside the 20 s build deadline with an actionable message |
-| L7 | Main-thread `getBoundingClientRect()` per `pointermove` | 1 (up to 120/s) | 0 |
+| ID  | Metric                                                           | Current                                                      | Target                                                               |
+| --- | ---------------------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------- |
+| L1  | Camera-gesture → visible-pixel latency                           | 1–2 frames + N redundant `updateCamera` calls between frames | ≤1 frame, no redundant camera recomputation                          |
+| L2  | Dropped frames during a continuous 5s orbit, mid tier            | unmeasured, suspected significant                            | 0 — **manual/real-device criterion, see §2.2.1**                     |
+| L3  | Steady-state allocations, model running, no input                | ~7,450 objects/s                                             | <200/s                                                               |
+| L4  | `renderer.render` calls/sec while paused + static + not orbiting | 60                                                           | 0                                                                    |
+| L5  | Worker bundle, first load, physics not declared                  | ~4 MB uncompressed IIFE                                      | Rapier absent from the initial chunk; total <2.5 MB compressed       |
+| L6  | `geom.sdf` @ res 160, and `geom.boolean` on 100k-vertex inputs   | unbounded; ~14 min; only `worker.terminate()` can stop it    | terminates inside the 20 s build deadline with an actionable message |
+| L7  | Main-thread `getBoundingClientRect()` per `pointermove`          | 1 (up to 120/s)                                              | 0                                                                    |
 
 #### 2.2.1 Which targets CI can actually verify
 
@@ -69,11 +69,11 @@ counts measured there are meaningless, and would be actively misleading if asser
 
 So the targets split:
 
-| Verifiable in CI | Not verifiable in CI |
-|---|---|
+| Verifiable in CI                                                                   | Not verifiable in CI                                 |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------- |
 | **L3, L4, L6** — via the §4.2 Node benchmark (real V8, real `Date.now()`, real GC) | **L1, L2, L5** — require a real GPU and real network |
-| **L7** and the *causes* behind L1/L2 — via the §4.3 static compositor lint | |
-| **Q1–Q7** — via the §4.4 quality-invariant tests | |
+| **L7** and the _causes_ behind L1/L2 — via the §4.3 static compositor lint         |                                                      |
+| **Q1–Q7** — via the §4.4 quality-invariant tests                                   |                                                      |
 
 **L1, L2 and L5 are therefore verified by (a) eliminating their static causes and (b) a
 one-time manual measurement on real hardware recorded in the phase's commit message.**
@@ -83,16 +83,16 @@ regression when it is in fact the harness doing its job.
 
 ### 2.3 Non-negotiable architecture
 
-| ID | Invariant | Source |
-|----|-----------|--------|
-| A1 | The server never renders a pixel | `PLAN.md:32-47` |
-| A2 | Untrusted code's capability set is unchanged by this work | `PLAN.md:18-24` |
-| A3 | `engine` and `sandbox` stay DOM-free | `eslint.config.js:16-20` |
-| A4 | The scene API surface stays a single reflected source of truth | `api-surface.ts:79-122` |
+| ID  | Invariant                                                      | Source                   |
+| --- | -------------------------------------------------------------- | ------------------------ |
+| A1  | The server never renders a pixel                               | `PLAN.md:32-47`          |
+| A2  | Untrusted code's capability set is unchanged by this work      | `PLAN.md:18-24`          |
+| A3  | `engine` and `sandbox` stay DOM-free                           | `eslint.config.js:16-20` |
+| A4  | The scene API surface stays a single reflected source of truth | `api-surface.ts:79-122`  |
 
 **A2 constrains Phases 2–6 heavily.** Performance work that adds a capability to the sandbox
-is out of scope. Scratch-object hoisting, dirty flags and cached snapshots are all *host-side*
-or *builder-side* and therefore safe. Adding a `guard` tick into `GeometryFactory` (Phase 5) is
+is out of scope. Scratch-object hoisting, dirty flags and cached snapshots are all _host-side_
+or _builder-side_ and therefore safe. Adding a `guard` tick into `GeometryFactory` (Phase 5) is
 safe because it threads an existing handle into existing engine code, not a new capability.
 
 ---
@@ -102,6 +102,7 @@ safe because it threads an existing handle into existing engine code, not a new 
 ### 3.1 `.ambient-layer` re-blurs two large surfaces over the canvas, every frame — VERIFIED
 
 `viewer/+page.svelte:163-164`:
+
 ```js
 ambient = new Ambient({ grid: false, spotlight: false }); // The viewer is chrome-heavy; V1 ran no cursor system here.
 ambient.mount();
@@ -111,6 +112,7 @@ ambient.mount();
 `useSpot` and `useGrid` checks. Those flags only gate the spotlight and the grid.
 
 `base.css:199-254`:
+
 ```css
 .ambient-layer { position: fixed; inset: 0; z-index: 2; ... }
 .ambient-blob   { position: absolute; border-radius: 50%; filter: blur(60px); will-change: transform; }
@@ -140,6 +142,7 @@ External corroboration: Chromium bug 495538197 reproduces 60fps → 10-20fps (co
 ### 3.2 `Ambient`'s per-frame rAF keeps the main thread's frame queue non-empty — VERIFIED
 
 `ambient.ts:196-203`:
+
 ```js
 requestAnimationFrame(() => layer.classList.add('is-visible'));
 if (this.tracking) {
@@ -158,7 +161,7 @@ empty in the viewer), four `lerp`s, and three `for…of` loops over empty arrays
 
 Note on cost: the three `setProperty` calls are guarded by optional chaining
 (`this.spot?.style.setProperty(...)`), which short-circuits **argument evaluation**, so the
-template literals and their `toFixed(1)` calls are *not* evaluated. The per-frame JS is
+template literals and their `toFixed(1)` calls are _not_ evaluated. The per-frame JS is
 ~200-400ns. **The cost is not the JS — it is that a second rAF callback keeps the main
 thread's frame queue permanently occupied, competing with `postMessage` dispatch and input
 coalescing.**
@@ -178,8 +181,8 @@ flips the right panel's top-level branch:
 ```
 
 Consequence per pointer enter/exit cycle: the `{:else if}` branch is destroyed and rebuilt —
-200 `template_effect`s, 200 `onclick` closures, 200 DOM nodes. This lands *while the pointer
-is moving across the canvas*. It is also an accessibility regression: the keyboard-reachable
+200 `template_effect`s, 200 `onclick` closures, 200 DOM nodes. This lands _while the pointer
+is moving across the canvas_. It is also an accessibility regression: the keyboard-reachable
 part list (the documented `aria` path) vanishes the instant the pointer touches the model.
 
 Additionally, four independent `.find()` scans over `manifest.parts` run per hover change
@@ -197,11 +200,11 @@ are all plain `$state`, i.e. deep proxies. All are replaced wholesale on write
 Every property access becomes a proxy `get` trap that reads a source version and registers a
 dependency. Hover alone produces ~2,400 traps per change, up to 60×/sec.
 
-Svelte's own docs: *"Deep proxies are not free. Every property access goes through a trap"*,
-with `$state.raw` recommended for data that is *"large, effectively immutable, and replaced
-wholesale — parsed JSON responses, configuration blobs, lookup tables."* Svelte issue #14721
-quantifies ~20% proxy overhead and reports the symptom directly: *"animations start stuttering
-and losing frames."*
+Svelte's own docs: _"Deep proxies are not free. Every property access goes through a trap"_,
+with `$state.raw` recommended for data that is _"large, effectively immutable, and replaced
+wholesale — parsed JSON responses, configuration blobs, lookup tables."_ Svelte issue #14721
+quantifies ~20% proxy overhead and reports the symptom directly: _"animations start stuttering
+and losing frames."_
 
 **Must NOT be applied to `progress` in `loading/+page.svelte:22` or
 `generate-dialog.svelte:26`** — `ProgressModel` is a class whose `index` is mutated in place
@@ -210,11 +213,11 @@ and read through getters; `.raw` would silently freeze the stage chips.
 ### 3.5 Pointer path: a layout read per event, and no coalescing
 
 `viewer/+page.svelte:568-579` calls `canvasHolder.getBoundingClientRect()` on every
-`pointermove`, *before* the `!dragging` check — so it fires on hover moves too, at up to
+`pointermove`, _before_ the `!dragging` check — so it fires on hover moves too, at up to
 120 Hz. The document is frequently dirty (stats at 1 Hz, metrics at 1 Hz, hover per change),
 so each read can force a synchronous style+layout flush.
 
-Every `pointermove` also becomes its own `postMessage`. The worker coalesces the *raycast*
+Every `pointermove` also becomes its own `postMessage`. The worker coalesces the _raycast_
 (`sandbox-worker.ts:1011-1014`) but not the message volume.
 
 ### 3.6 Frame path: ~4,800 objects/second, from a cache that is rebuilt every frame
@@ -224,7 +227,7 @@ parameter map plus its handler object, a `new Map()` named `partRefCache`, a `ma
 closure, the context literal, three method closures, and — for each distinct part `onFrame`
 touches — one part-ref object plus nine method closures.
 
-Because `partRefCache` is created *inside* `createFrameContext`, **every part ref is a
+Because `partRefCache` is created _inside_ `createFrameContext`, **every part ref is a
 guaranteed cache miss every frame.** Estimated ~80 allocations/frame.
 
 Contributing: `applyMotions` allocates 15–20 objects per motion per frame (`motions.ts:265-414`);
@@ -255,7 +258,7 @@ the user drags.
 
 `orbit` / `zoom` / `pan` are handled immediately on message receipt
 (`sandbox-worker.ts:1385-1427`), each calling `updateCamera`. During a drag that is ~60
-redundant camera updates per second *between* frames, each competing with the rAF render for
+redundant camera updates per second _between_ frames, each competing with the rAF render for
 the worker's event loop.
 
 `updateCamera` itself is cheap (~sub-microsecond), so the redundant calls are not the cost —
@@ -293,7 +296,7 @@ and the worker is terminated and respawned on **every** model load (`sandbox-hos
 
 ### 3.13 Nothing in the build path is abortable
 
-`instrument.ts:103-140` injects `__edu3d_tick()` into *guest* loops only. Nothing in
+`instrument.ts:103-140` injects `__edu3d_tick()` into _guest_ loops only. Nothing in
 `packages/engine/src/geometry/*` is instrumented and nothing calls `guard.tick()`.
 
 Therefore `geom.sdf` at resolution 160 (4.17M samples, `implicit.ts:460-469`) executes with
@@ -303,18 +306,18 @@ linear scan over every vertex, per sample. Two 100k-vertex inputs at max resolut
 ~14 minutes. The only backstop is `worker.terminate()`, which produces "it hung" rather than an
 actionable repair message.
 
-Compounding: `register()` runs `build()` *before* the vertex-ceiling check
+Compounding: `register()` runs `build()` _before_ the vertex-ceiling check
 (`factory.ts:277` vs `:290`), contradicting the file's own header promise of pricing
 "before allocation".
 
 ### 3.14 The four quality lies
 
-| # | Lie | Location |
-|---|-----|----------|
-| 1 | Instance capping ignores `hero`; `Math.max(3, …)` can cut a hero part to 13.6% when `HERO_FLOOR` is 0.55 — and the recognizability floors are consulted only in the decimation branch | `admission.ts:197-214` vs `:119-120` |
-| 2 | Index-stride decimation produces isolated, non-adjacent triangles. The comment claiming "the silhouette survives" is false. `flatShading` is enabled exactly when decimation engages, so it is worst where it triggers | `realize.ts:64-78`, `admission.ts:303-304` |
-| 3 | Admission credits a static-merge that the realizer never performs — `RealizationDecisions` has no merge field and `realize.ts` contains no merge path | `admission.ts:265-277` |
-| 4 | The `physicsSubsteps` rung is priced with a user-facing notice, but `PhysicsWorld` hardcodes `MAX_SUBSTEPS = 3` and never reads `DEVICE_BUDGETS[tier].maxSubsteps` (low = 2). On a low-tier device the solver runs 50% over budget under a notice saying otherwise | `admission.ts:312-317` vs `physics-world.ts:52,57` |
+| #   | Lie                                                                                                                                                                                                                                                                | Location                                           |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| 1   | Instance capping ignores `hero`; `Math.max(3, …)` can cut a hero part to 13.6% when `HERO_FLOOR` is 0.55 — and the recognizability floors are consulted only in the decimation branch                                                                              | `admission.ts:197-214` vs `:119-120`               |
+| 2   | Index-stride decimation produces isolated, non-adjacent triangles. The comment claiming "the silhouette survives" is false. `flatShading` is enabled exactly when decimation engages, so it is worst where it triggers                                             | `realize.ts:64-78`, `admission.ts:303-304`         |
+| 3   | Admission credits a static-merge that the realizer never performs — `RealizationDecisions` has no merge field and `realize.ts` contains no merge path                                                                                                              | `admission.ts:265-277`                             |
+| 4   | The `physicsSubsteps` rung is priced with a user-facing notice, but `PhysicsWorld` hardcodes `MAX_SUBSTEPS = 3` and never reads `DEVICE_BUDGETS[tier].maxSubsteps` (low = 2). On a low-tier device the solver runs 50% over budget under a notice saying otherwise | `admission.ts:312-317` vs `physics-world.ts:52,57` |
 
 Plus, adjacent to them: the `geometryDetail` ladder rung is marked applied but returns without
 doing anything (`sandbox-worker.ts:1160-1166`), which blocks `ladderStep` from ever reaching
@@ -381,20 +384,20 @@ Each phase is one commit. Each carries before/after figures from §4.2 where app
 
 Targets L1, L2, L7. Touches no engine logic. Lowest risk, highest user-visible value.
 
-| Change | Location |
-|--------|----------|
-| Add a `blobs?: boolean` option to `Ambient`; gate blob creation alongside `useGrid`/`useSpot`. Viewer passes `blobs: false`, so `mount()` creates nothing and `start()` never runs | `ambient.ts:164-183`; `+page.svelte:163-164` |
-| Gate the right panel on `selectedPart`, not `activePart`; let the tooltip (already gated `hoveredPart && !selectedPart`) be the only hover consumer | `+page.svelte:1332` |
-| Build an id→part `Map` once per manifest; collapse the four `.find()` scans to one lookup | `+page.svelte:447-449, 1251, 1253, 1255` |
-| `$state.raw` on `manifest`, `verdict`, `stats`, `metrics`, `parameterValues` | `+page.svelte:44-49` |
-| Cache the canvas rect in the existing `ResizeObserver`; stop calling `getBoundingClientRect()` per `pointermove` | `+page.svelte:176, 568-579` |
-| Coalesce `pointer` messages to one per frame on the main thread | `+page.svelte:568-579` |
-| Give `.tooltip-3d` real `position: absolute` geometry; drop `glass-panel` for a solid background (`backdrop-filter: none`) | `+page.svelte:1248-1261` + style block |
-| Pause rendering while any modal is open — `viewer.css:1520-1527` already claims this happens | `+page.svelte:244, 1034` |
-| Delete the redundant `heartbeat` message and its special-case handler | `sandbox-worker.ts:1032-1038`; `sandbox-host.ts:373-375` |
-| Delete `window.__edu3dHost` on destroy (leaks a closure over a disposed host) | `+page.svelte:171-174, 295` |
+| Change                                                                                                                                                                             | Location                                                 |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Add a `blobs?: boolean` option to `Ambient`; gate blob creation alongside `useGrid`/`useSpot`. Viewer passes `blobs: false`, so `mount()` creates nothing and `start()` never runs | `ambient.ts:164-183`; `+page.svelte:163-164`             |
+| Gate the right panel on `selectedPart`, not `activePart`; let the tooltip (already gated `hoveredPart && !selectedPart`) be the only hover consumer                                | `+page.svelte:1332`                                      |
+| Build an id→part `Map` once per manifest; collapse the four `.find()` scans to one lookup                                                                                          | `+page.svelte:447-449, 1251, 1253, 1255`                 |
+| `$state.raw` on `manifest`, `verdict`, `stats`, `metrics`, `parameterValues`                                                                                                       | `+page.svelte:44-49`                                     |
+| Cache the canvas rect in the existing `ResizeObserver`; stop calling `getBoundingClientRect()` per `pointermove`                                                                   | `+page.svelte:176, 568-579`                              |
+| Coalesce `pointer` messages to one per frame on the main thread                                                                                                                    | `+page.svelte:568-579`                                   |
+| Give `.tooltip-3d` real `position: absolute` geometry; drop `glass-panel` for a solid background (`backdrop-filter: none`)                                                         | `+page.svelte:1248-1261` + style block                   |
+| Pause rendering while any modal is open — `viewer.css:1520-1527` already claims this happens                                                                                       | `+page.svelte:244, 1034`                                 |
+| Delete the redundant `heartbeat` message and its special-case handler                                                                                                              | `sandbox-worker.ts:1032-1038`; `sandbox-host.ts:373-375` |
+| Delete `window.__edu3dHost` on destroy (leaks a closure over a disposed host)                                                                                                      | `+page.svelte:171-174, 295`                              |
 
-**Risk:** low. Removing decoration is visually a *loss* on the viewer — but the viewer
+**Risk:** low. Removing decoration is visually a _loss_ on the viewer — but the viewer
 already asked for `grid:false, spotlight:false`, so this restores intent, not removes design.
 The `.tooltip-3d` change is the one visible-behaviour fix: it is currently an unpositioned
 full-width block with a 16px backdrop-filter sitting over the canvas.
@@ -455,11 +458,11 @@ into an actionable repair message, and makes `sdf`/`boolean` abortable at ~2ms g
 - Spatial acceleration for `meshToField` — a uniform voxel hash or BVH, taking boolean from
   O(R³·V) to ~O(R³·log V); memoize per-mesh so N booleans against one operand don't rescan it N times
 - Pre-flight estimate in `register()` for `sdf`/`boolean` so the vertex ceiling is enforced
-  *before* allocation, as the file header already promises
+  _before_ allocation, as the file header already promises
 - Make `carry()`'s dead `recomputeNormals` flag chain-aware: recompute normals once at the end
   of a modifier chain, not N times (`modifiers.ts:23-35`)
 - Stop registering and billing modifier intermediates to `totalVertices` (`factory.ts:1592, 295`)
-- Coerce `geom.mesh` / `geom.points` inputs to typed arrays *before* keying, so the 32-sample
+- Coerce `geom.mesh` / `geom.points` inputs to typed arrays _before_ keying, so the 32-sample
   digest branch applies (`factory.ts:188`)
 - Memoize `makeProfile` / `makePath` / `pattern.*` behind the structural keys they already compute
 - Hoist `triangulateProfile` + `ensureCcw` out of the two `addCap` calls (`solids.ts:72`)
@@ -478,18 +481,18 @@ and zero modifiers and therefore exercises none of the worst paths.
 
 Targets Q2–Q7. Quality can only improve.
 
-| Change | Location |
-|--------|----------|
-| **Replace index-stride decimation with quadric-error-metric edge collapse.** QEM is the industry standard (Garland & Heckbert 1997; `vtkQuadricDecimation`); index-stride is not in the standard taxonomy (vertex remove / edge collapse / vertex clustering) and is why geometry shatters. New module in `packages/engine/src/runtime/`, unit-tested in isolation | `realize.ts:64-78` |
-| Hero-aware, floor-respecting instance capping using `decimationOrder`'s existing "non-hero before hero, largest first" policy, which the instance path omits entirely | `admission.ts:197-214` |
-| Fix `decimationOrder` to price from the post-cap instance count (currently over-claims by up to `n/cap`×) | `admission.ts:98-101` |
-| Implement static merging in the realizer, **or** stop crediting it — pick one and make `RealizationDecisions` honest | `admission.ts:265-277`, `realize.ts` |
-| Track the capped point-cloud geometry in `geometryCache` (currently leaks a `WebGLBuffer` per load cycle) and the fallback material in `materialCache` | `realize.ts:327-342, 311-313, 459-470` |
-| Honour `DEVICE_BUDGETS[tier].maxSubsteps` / `manifest.physics.world.substeps`, **or** stop emitting the rung | `physics-world.ts:52,57` |
-| `stats.triangles` reports realized; set `GeometryRef.decimated` honestly (hardcoded `false` at all three authoring sites) | `realize.ts:350`; `scene.ts:802,867,919` |
-| Fix the `geometryDetail` rung so it does not block the ladder from reaching `flatShading` | `sandbox-worker.ts:1105, 1160-1166` |
-| Fix the wrong quaternion→Euler conversion — degrees, X-axis only, and `y/w` is not even the correct X formula. A correct implementation exists at `motions.ts:204-221` and should be reused | `physics-world.ts:393` |
-| Make `MeshData.groups` survive realization, or delete the feature (currently built, threaded, documented, tested, and discarded) | `realize.ts:55-95` |
+| Change                                                                                                                                                                                                                                                                                                                                                             | Location                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------- |
+| **Replace index-stride decimation with quadric-error-metric edge collapse.** QEM is the industry standard (Garland & Heckbert 1997; `vtkQuadricDecimation`); index-stride is not in the standard taxonomy (vertex remove / edge collapse / vertex clustering) and is why geometry shatters. New module in `packages/engine/src/runtime/`, unit-tested in isolation | `realize.ts:64-78`                       |
+| Hero-aware, floor-respecting instance capping using `decimationOrder`'s existing "non-hero before hero, largest first" policy, which the instance path omits entirely                                                                                                                                                                                              | `admission.ts:197-214`                   |
+| Fix `decimationOrder` to price from the post-cap instance count (currently over-claims by up to `n/cap`×)                                                                                                                                                                                                                                                          | `admission.ts:98-101`                    |
+| Implement static merging in the realizer, **or** stop crediting it — pick one and make `RealizationDecisions` honest                                                                                                                                                                                                                                               | `admission.ts:265-277`, `realize.ts`     |
+| Track the capped point-cloud geometry in `geometryCache` (currently leaks a `WebGLBuffer` per load cycle) and the fallback material in `materialCache`                                                                                                                                                                                                             | `realize.ts:327-342, 311-313, 459-470`   |
+| Honour `DEVICE_BUDGETS[tier].maxSubsteps` / `manifest.physics.world.substeps`, **or** stop emitting the rung                                                                                                                                                                                                                                                       | `physics-world.ts:52,57`                 |
+| `stats.triangles` reports realized; set `GeometryRef.decimated` honestly (hardcoded `false` at all three authoring sites)                                                                                                                                                                                                                                          | `realize.ts:350`; `scene.ts:802,867,919` |
+| Fix the `geometryDetail` rung so it does not block the ladder from reaching `flatShading`                                                                                                                                                                                                                                                                          | `sandbox-worker.ts:1105, 1160-1166`      |
+| Fix the wrong quaternion→Euler conversion — degrees, X-axis only, and `y/w` is not even the correct X formula. A correct implementation exists at `motions.ts:204-221` and should be reused                                                                                                                                                                        | `physics-world.ts:393`                   |
+| Make `MeshData.groups` survive realization, or delete the feature (currently built, threaded, documented, tested, and discarded)                                                                                                                                                                                                                                   | `realize.ts:55-95`                       |
 
 **QEM edge collapse is the largest single piece of work in this spec** — roughly 300 lines
 plus tests. It is worth doing properly rather than substituting the existing voxel-clustering
@@ -500,14 +503,14 @@ that quality must not degrade.
 
 ## 6. Explicit non-goals
 
-| Not doing | Why |
-|-----------|-----|
-| WebGPU / `WebGPURenderer` | Three.js's own guidance: *"WebGLRenderer is still maintained and the recommended choice for pure WebGL 2 applications."* Migrating a 188-member custom scene API with a strict sandbox boundary, Rapier and determinism requirements onto node materials/TSL is a large risk for an unproven gain here. |
-| Adding capabilities to the sandbox | Violates A2. |
-| Implementing the orphaned viewer features | Annotations, settings, export/video and QR are ~600 lines of CSS with no markup. Removing that CSS is a Phase 1-adjacent cleanup; *implementing* the features is a different project. |
-| Fixing the dead-code CSS wholesale | ~1,100 of `viewer.css`'s 3,462 lines match no markup. Worth deleting, but it is parse cost, not frame cost, so it is not a Phase 1 priority. |
-| Fixing the server-side generation pipeline | Real findings exist (`openStreams` leak, `AI_CHAT_MODEL` never read, phase-vocabulary drift). Out of scope for a render-performance sweep. |
-| Changing the API surface | A4: the surface is a single reflected source of truth. Adding a builder widens the gate, the prompt and diagnostics together, by design. |
+| Not doing                                  | Why                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WebGPU / `WebGPURenderer`                  | Three.js's own guidance: _"WebGLRenderer is still maintained and the recommended choice for pure WebGL 2 applications."_ Migrating a 188-member custom scene API with a strict sandbox boundary, Rapier and determinism requirements onto node materials/TSL is a large risk for an unproven gain here. |
+| Adding capabilities to the sandbox         | Violates A2.                                                                                                                                                                                                                                                                                            |
+| Implementing the orphaned viewer features  | Annotations, settings, export/video and QR are ~600 lines of CSS with no markup. Removing that CSS is a Phase 1-adjacent cleanup; _implementing_ the features is a different project.                                                                                                                   |
+| Fixing the dead-code CSS wholesale         | ~1,100 of `viewer.css`'s 3,462 lines match no markup. Worth deleting, but it is parse cost, not frame cost, so it is not a Phase 1 priority.                                                                                                                                                            |
+| Fixing the server-side generation pipeline | Real findings exist (`openStreams` leak, `AI_CHAT_MODEL` never read, phase-vocabulary drift). Out of scope for a render-performance sweep.                                                                                                                                                              |
+| Changing the API surface                   | A4: the surface is a single reflected source of truth. Adding a builder widens the gate, the prompt and diagnostics together, by design.                                                                                                                                                                |
 
 ---
 
@@ -551,15 +554,15 @@ before continuing rather than after.
 
 ### 8.1 Expected outcome per phase
 
-| Phase | Solves | Expected to be worth it on its own |
-|---|---|---|
-| 0 | Makes every other phase safe | Yes — the broken suite is currently a false green |
-| 1 | The reported orbit jank | **Yes** — this is the complaint |
-| 2 | Steady-state allocation churn | Measure after Phase 1; may be unnecessary |
-| 3 | Wasted frames while paused | Yes on battery/thermal, invisible while moving |
-| 4 | First-load weight, raycast cost | Yes — Rapier on every spawn is indefensible |
-| 5 | Unbounded/frozen builds | Yes — turns hangs into diagnosable failures |
-| 6 | Four user-visible lies | Yes — quality goes up |
+| Phase | Solves                          | Expected to be worth it on its own                |
+| ----- | ------------------------------- | ------------------------------------------------- |
+| 0     | Makes every other phase safe    | Yes — the broken suite is currently a false green |
+| 1     | The reported orbit jank         | **Yes** — this is the complaint                   |
+| 2     | Steady-state allocation churn   | Measure after Phase 1; may be unnecessary         |
+| 3     | Wasted frames while paused      | Yes on battery/thermal, invisible while moving    |
+| 4     | First-load weight, raycast cost | Yes — Rapier on every spawn is indefensible       |
+| 5     | Unbounded/frozen builds         | Yes — turns hangs into diagnosable failures       |
+| 6     | Four user-visible lies          | Yes — quality goes up                             |
 
 ---
 

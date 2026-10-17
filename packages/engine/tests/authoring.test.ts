@@ -340,7 +340,7 @@ describe('the reference turbofan', () => {
     const cutawayWrites = result.builder.observedWrites.get('cutaway');
     expect(
       [...(cutawayWrites ?? [])],
-      "cutaway must write the visibility channel it declares",
+      'cutaway must write the visibility channel it declares',
     ).toContain('visibility');
   });
 

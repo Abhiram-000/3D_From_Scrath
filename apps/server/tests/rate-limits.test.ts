@@ -6,7 +6,12 @@
  * controls the identity string controls the limiter.
  */
 import { describe, expect, it } from 'vitest';
-import { RateLimiter, clientKey, isBatteryExemption, connectionAddress } from '../src/services/rate-limits.ts';
+import {
+  RateLimiter,
+  clientKey,
+  isBatteryExemption,
+  connectionAddress,
+} from '../src/services/rate-limits.ts';
 import type { Context } from 'hono';
 
 /** A context carrying one header and one socket address — the only two identity inputs. */
@@ -37,13 +42,15 @@ describe('clientKey — a client cannot choose its own bucket', () => {
     // Three forged headers, three allowed calls — all landing in one bucket because the socket is
     // the identity.
     for (const forged of ['1.1.1.1', '2.2.2.2', '3.3.3.3']) {
-      expect(limiter.check(clientKey(request({ 'x-forwarded-for': forged }, socket), 1, socket)).allowed)
-        .toBe(true);
+      expect(
+        limiter.check(clientKey(request({ 'x-forwarded-for': forged }, socket), 1, socket)).allowed,
+      ).toBe(true);
     }
     // The fourth carries a header never seen before, and is refused anyway — a new forged value
     // does not buy a new bucket.
     expect(
-      limiter.check(clientKey(request({ 'x-forwarded-for': '4.4.4.4' }, socket), 1, socket)).allowed,
+      limiter.check(clientKey(request({ 'x-forwarded-for': '4.4.4.4' }, socket), 1, socket))
+        .allowed,
     ).toBe(false);
   });
 
@@ -97,8 +104,8 @@ describe('the battery exemption cannot be self-granted', () => {
   });
 
   it('reads only the socket, never a forwarded header, for the exemption', () => {
-    expect(
-      connectionAddress(request({ 'x-forwarded-for': '127.0.0.1' }, '203.0.113.9')),
-    ).toBe('203.0.113.9');
+    expect(connectionAddress(request({ 'x-forwarded-for': '127.0.0.1' }, '203.0.113.9'))).toBe(
+      '203.0.113.9',
+    );
   });
 });

@@ -92,7 +92,8 @@ export function buildLimiters(config: ServerConfig): LimiterSet {
  * forwarded header it sends is its own lie. A *private* socket means something inside the deployment
  * is in front of us and may have appended a genuine client address.
  */
-const PRIVATE_ADDRESS = /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|::1$|f[cd])/i;
+const PRIVATE_ADDRESS =
+  /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|::1$|f[cd])/i;
 
 export function isPrivateAddress(address: string): boolean {
   return PRIVATE_ADDRESS.test(address);
@@ -202,8 +203,7 @@ export function connectionAddress(context: Context): string | undefined {
   // object off `env.server`. Both shapes are the same socket, so both are read rather than one
   // shape being asserted and the other silently undefined.
   const env = context.env as
-    | { server?: { incoming?: SocketBinding }; incoming?: SocketBinding }
-    | undefined;
+    { server?: { incoming?: SocketBinding }; incoming?: SocketBinding } | undefined;
   const bindings = env?.server ?? env;
   return bindings?.incoming?.socket?.remoteAddress;
 }

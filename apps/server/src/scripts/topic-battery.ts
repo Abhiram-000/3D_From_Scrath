@@ -218,11 +218,8 @@ async function runTopic(topic: string, domain: string): Promise<TopicResult> {
             };
             provenance: { repairPasses: number; refinementPasses: number };
           };
-          const audit = (
-            'audit' in event
-              ? event.audit
-              : undefined
-          ) as { score: number; unboundParameterIds?: string[] } | undefined;
+          const audit = ('audit' in event ? event.audit : undefined) as
+            { score: number; unboundParameterIds?: string[] } | undefined;
           const manifest = bundle.manifest;
           base.built = true;
           base.partCount = manifest.cost.parts;
@@ -333,7 +330,9 @@ async function main(): Promise<void> {
 
   // Append to a cumulative history so prompt versions can be compared (`00`: evidence, not vibes).
   const historyPath = path.resolve('battery-history.jsonl');
-  const historyLine = JSON.stringify(historyRow(PROMPT_VERSION, config.ai.model, summary, startedAt));
+  const historyLine = JSON.stringify(
+    historyRow(PROMPT_VERSION, config.ai.model, summary, startedAt),
+  );
   if (existsSync(historyPath)) {
     const prior = readFileSync(historyPath, 'utf8').trim();
     if (prior.length > 0) writeFileSync(historyPath, prior + '\n');

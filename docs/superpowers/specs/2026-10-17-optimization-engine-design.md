@@ -10,9 +10,9 @@ devices — same lesson, same quality. Use advanced, efficient techniques — no
 ## 0. What this spec is
 
 The platform already has an optimization engine: `DEVICE_BUDGETS`, `QUALITY_LADDER`,
-`priceModel`, the adaptive ladder in `sandbox-worker.ts`. Its *architecture* is right — admission
+`priceModel`, the adaptive ladder in `sandbox-worker.ts`. Its _architecture_ is right — admission
 prices before allocation, degradation is tier-governed and announced, no part is ever removed. Its
-*implementation* is shallow: three of its rungs do nothing, the one that would help most is a
+_implementation_ is shallow: three of its rungs do nothing, the one that would help most is a
 no-op, its decimation shatters geometry, its raycast walks every triangle, and its frame path
 allocates ~7,450 objects per second at idle.
 
@@ -20,8 +20,8 @@ So this is not a rebuild. It is making the existing engine do what it already cl
 making every claim verifiable.
 
 Distinguishing feature of the work: **techniques are adopted only where they show up in the
-numbers.** `Build_Docs/08` states the meta-rule plainly — *"a technique that isn't showing up in
-the numbers is complexity without benefit and gets removed."* Every phase below names the number
+numbers.** `Build_Docs/08` states the meta-rule plainly — _"a technique that isn't showing up in
+the numbers is complexity without benefit and gets removed."_ Every phase below names the number
 it moves. A phase that cannot name its number is not in this spec.
 
 ### 0.1 Evidence basis — measured vs. read
@@ -31,16 +31,16 @@ Findings marked **M** (measured) come from the existing harness: `frame-cost.tes
 marked **R** (read) are derived from source and are treated as hypotheses until a phase's test
 confirms them. No commit claims a speedup it has not measured.
 
-| Finding | Basis |
-|---|---|
-| Frame path allocates a frame-context Proxy + guaranteed-miss `Map` per frame | R + `frame-cost.test.ts` baseline |
-| Raycast is O(total triangles), per pointer event | R (no `firstHitOnly`, no BVH, intersect all) |
-| `three-mesh-bvh` and `three-bvh-csg` are declared in `PLAN.md` §B and absent from every lockfile | M (grep) |
-| `geometryDetail` rung is a no-op; ladder can never reach `flatShading` | R |
-| Decimation is index-stride; shatters when `flatShading` engages | R |
-| `admission` credits a static merge `realize` never performs | R |
-| Hero instance cap breaches `HERO_FLOOR` | R (`admission.ts:203`, `Math.max(3,…)`) |
-| QEM decimation reduces cost without silhouette loss | industry (Garland & Heckbert 1997) — to be confirmed perPart by test |
+| Finding                                                                                          | Basis                                                                |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Frame path allocates a frame-context Proxy + guaranteed-miss `Map` per frame                     | R + `frame-cost.test.ts` baseline                                    |
+| Raycast is O(total triangles), per pointer event                                                 | R (no `firstHitOnly`, no BVH, intersect all)                         |
+| `three-mesh-bvh` and `three-bvh-csg` are declared in `PLAN.md` §B and absent from every lockfile | M (grep)                                                             |
+| `geometryDetail` rung is a no-op; ladder can never reach `flatShading`                           | R                                                                    |
+| Decimation is index-stride; shatters when `flatShading` engages                                  | R                                                                    |
+| `admission` credits a static merge `realize` never performs                                      | R                                                                    |
+| Hero instance cap breaches `HERO_FLOOR`                                                          | R (`admission.ts:203`, `Math.max(3,…)`)                              |
+| QEM decimation reduces cost without silhouette loss                                              | industry (Garland & Heckbert 1997) — to be confirmed perPart by test |
 
 ---
 
@@ -49,28 +49,28 @@ confirms them. No commit claims a speedup it has not measured.
 These are assertions, not prose. Q-numbers continue the series from
 `2026-10-17-render-performance-design.md` so the two specs read as one programme.
 
-| ID | Invariant | Enforced by |
-|----|-----------|-------------|
-| Q1 | Every declared parameter that renders a value still renders the same value after any rung | audit sweep |
-| Q2 | Geometry a learner sees is never *less* correct than before any rung | Phase 4 floors + mesh tests |
-| Q3 | No decimation path may reduce a part below `RECOGNIZABILITY_FLOOR`/`HERO_FLOOR` | Phase 4/5 admission tests |
-| Q4 | Decimated output contains zero degenerate triangles and zero newly-disconnected surface | Phase 4 unit tests |
-| Q5 | `stats.triangles` reports what is actually drawn, not what was authored | Phase 5 realize test |
-| Q6 | No user-visible notice describes an effect that does not occur | Phase 6 rung tests |
-| Q7 | A part's info text never disagrees with what is drawn | Phase 5 hero-cap test |
-| **Q8** | **The part list a learner can select is identical on every tier** — the lesson is the same, only its triangle budget differs | Phase 4 potato e2e |
-| **Q9** | **First frame on a low-tier device is already correct** — the tier's realization plan is derived at load, not discovered by lagging | Phase 5 predict test |
-| **Q10** | **Every optimization technique adopted in this programme has a number that moved** | per-phase commit message |
+| ID      | Invariant                                                                                                                           | Enforced by                 |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| Q1      | Every declared parameter that renders a value still renders the same value after any rung                                           | audit sweep                 |
+| Q2      | Geometry a learner sees is never _less_ correct than before any rung                                                                | Phase 4 floors + mesh tests |
+| Q3      | No decimation path may reduce a part below `RECOGNIZABILITY_FLOOR`/`HERO_FLOOR`                                                     | Phase 4/5 admission tests   |
+| Q4      | Decimated output contains zero degenerate triangles and zero newly-disconnected surface                                             | Phase 4 unit tests          |
+| Q5      | `stats.triangles` reports what is actually drawn, not what was authored                                                             | Phase 5 realize test        |
+| Q6      | No user-visible notice describes an effect that does not occur                                                                      | Phase 6 rung tests          |
+| Q7      | A part's info text never disagrees with what is drawn                                                                               | Phase 5 hero-cap test       |
+| **Q8**  | **The part list a learner can select is identical on every tier** — the lesson is the same, only its triangle budget differs        | Phase 4 potato e2e          |
+| **Q9**  | **First frame on a low-tier device is already correct** — the tier's realization plan is derived at load, not discovered by lagging | Phase 5 predict test        |
+| **Q10** | **Every optimization technique adopted in this programme has a number that moved**                                                  | per-phase commit message    |
 
 Non-negotiable architecture, unchanged from the prior spec:
 
-| ID | Invariant | Source |
-|----|-----------|--------|
-| A1 | The server never renders a pixel | `PLAN.md:32-47` |
-| A2 | Untrusted code's capability set is unchanged by this work | `PLAN.md:18-24` |
-| A3 | `engine` and `sandbox` stay DOM-free | `eslint.config.js:16-20` |
-| A4 | The API surface stays a single reflected source of truth | `api-surface.ts:79-122` |
-| I1 | The 20 s build / 50 ms frame sandbox deadlines are never relaxed to buy performance | `contracts/wire/sandbox.ts` |
+| ID  | Invariant                                                                           | Source                      |
+| --- | ----------------------------------------------------------------------------------- | --------------------------- |
+| A1  | The server never renders a pixel                                                    | `PLAN.md:32-47`             |
+| A2  | Untrusted code's capability set is unchanged by this work                           | `PLAN.md:18-24`             |
+| A3  | `engine` and `sandbox` stay DOM-free                                                | `eslint.config.js:16-20`    |
+| A4  | The API surface stays a single reflected source of truth                            | `api-surface.ts:79-122`     |
+| I1  | The 20 s build / 50 ms frame sandbox deadlines are never relaxed to buy performance | `contracts/wire/sandbox.ts` |
 
 ---
 
@@ -88,7 +88,7 @@ live frame loop ──monitorLadder(frameMillis)──▶ ladderStep() ──▶
 ```
 
 `admission.ts` walks `QUALITY_LADDER` in order — postProcessing, shadows, particles, instances,
-geometryDetail, draw calls, flatShading, physicsSubsteps — producing a *plan*. `realize.ts`
+geometryDetail, draw calls, flatShading, physicsSubsteps — producing a _plan_. `realize.ts`
 consumes it. A second, live ladder in `sandbox-worker.ts` re-walks `remainingRungs()` when
 sustained frame pressure is measured, with 90-frame hysteresis.
 
@@ -96,7 +96,7 @@ Three facts break this today:
 
 1. **The two ladders disagree about order.** The live ladder inherits `remainingRungs()` but the
    static plan's least-damage-first ordering is fixed, not cost-derived — so a device whose
-   bottleneck is *draw calls* still sees *pixel ratio* cut first.
+   bottleneck is _draw calls_ still sees _pixel ratio_ cut first.
 2. **Rungs lie.** `geometryDetail` marks itself applied and returns (blocking every rung after
    it); the draw-call rung credits a merge `realize.ts` never performs; the substeps rung emits a
    notice `PhysicsWorld` ignores.
@@ -105,22 +105,22 @@ Three facts break this today:
 
 ---
 
-## 3. Techniques — what "advanced" means here, and where it is *not* wanted
+## 3. Techniques — what "advanced" means here, and where it is _not_ wanted
 
 Each technique names the number it moves and the phase that installs it. This section is the
 spec's answer to "use advanced techniques — not dumb working code": an advanced technique that
 cannot name its number is rejected on sight.
 
-| Technique | Moves | Phase | Why not the simpler thing |
-|---|---|---|---|
-| **QEM edge collapse** (Garland-Heckbert quadric matrices, lazy heap) | Q2, Q3 | 4 | Index-stride produces isolated non-adjacent triangles and fails Q4 by construction. Vertex clustering (`simplify`, already present) is documented fast-but-low-quality; it cannot hold a hero blade's silhouette at 0.55 keep. |
-| **Screen-space LOD** — swaps by projected screen coverage, not camera distance | Q8, L2 | 5 | Distance-scaled LOD is wrong for any FOV the learner can set; `Build_Docs/08` mandates screen-space. Cost per frame: one `project()` per part per frame → amortized to every 4th frame per part (staggered, per `08`'s "amortize by cost"). |
-| **Lazy per-geometry BVH** — `three-mesh-bvh`, `acceleratedRaycast`, `firstHitOnly`, built on first raycast, only for meshes ≥ `BVH_MIN_TRIANGLES` (2 000) | L2 (hover), 3 | 3 | A BVH built per geometry at realize time costs build budget on parts never picked; the threshold keeps the build cost off models that don't need it and keeps the worker chunk honest (measured before/after, per Q10). |
-| **Zero-allocation frame path** — hoisted context, module scratch, dirty flags | L3 | 2 | GC scavenges fast, but steady-state churn is what turns a battery warm, and `08` mandates zero allocation in the hot path. |
-| **Predicted tier plan** — realization decisions derived at load from measured manifest cost | Q9 | 5 | Starting at full quality and stepping down after 90 frames is precisely the reported first-second lag. |
-| **Cost-ordered ladder** — rung *order* re-ranked by measured per-part cost attribution, order still least-damage-first within a tied cost | Q10 | 5 | A full PID controller (rejected) buys its gain only after cost attribution exists and has no number today; re-ranking an existing ladder gets most of it and keeps `08`'s ordering contract. |
-| **Packed-integer mesh keys, CSR adjacency** in `weld`/`simplify`/`smooth` | build L6 | 4 | Template-literal string keys allocate a string per vertex pair; `number[][]` of length V allocates V arrays. Already planned in the prior spec §Phase 5 and still undone. |
-| **Structural cache with `nextClosureId`** — closure identity via `WeakMap` counter | correctness | 7 (`patch`) | Already the engine's own pattern (`factory.ts:1611`); `patch` alone skips it. The fix is to use the existing mechanism, not invent one. |
+| Technique                                                                                                                                                 | Moves         | Phase       | Why not the simpler thing                                                                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **QEM edge collapse** (Garland-Heckbert quadric matrices, lazy heap)                                                                                      | Q2, Q3        | 4           | Index-stride produces isolated non-adjacent triangles and fails Q4 by construction. Vertex clustering (`simplify`, already present) is documented fast-but-low-quality; it cannot hold a hero blade's silhouette at 0.55 keep.              |
+| **Screen-space LOD** — swaps by projected screen coverage, not camera distance                                                                            | Q8, L2        | 5           | Distance-scaled LOD is wrong for any FOV the learner can set; `Build_Docs/08` mandates screen-space. Cost per frame: one `project()` per part per frame → amortized to every 4th frame per part (staggered, per `08`'s "amortize by cost"). |
+| **Lazy per-geometry BVH** — `three-mesh-bvh`, `acceleratedRaycast`, `firstHitOnly`, built on first raycast, only for meshes ≥ `BVH_MIN_TRIANGLES` (2 000) | L2 (hover), 3 | 3           | A BVH built per geometry at realize time costs build budget on parts never picked; the threshold keeps the build cost off models that don't need it and keeps the worker chunk honest (measured before/after, per Q10).                     |
+| **Zero-allocation frame path** — hoisted context, module scratch, dirty flags                                                                             | L3            | 2           | GC scavenges fast, but steady-state churn is what turns a battery warm, and `08` mandates zero allocation in the hot path.                                                                                                                  |
+| **Predicted tier plan** — realization decisions derived at load from measured manifest cost                                                               | Q9            | 5           | Starting at full quality and stepping down after 90 frames is precisely the reported first-second lag.                                                                                                                                      |
+| **Cost-ordered ladder** — rung _order_ re-ranked by measured per-part cost attribution, order still least-damage-first within a tied cost                 | Q10           | 5           | A full PID controller (rejected) buys its gain only after cost attribution exists and has no number today; re-ranking an existing ladder gets most of it and keeps `08`'s ordering contract.                                                |
+| **Packed-integer mesh keys, CSR adjacency** in `weld`/`simplify`/`smooth`                                                                                 | build L6      | 4           | Template-literal string keys allocate a string per vertex pair; `number[][]` of length V allocates V arrays. Already planned in the prior spec §Phase 5 and still undone.                                                                   |
+| **Structural cache with `nextClosureId`** — closure identity via `WeakMap` counter                                                                        | correctness   | 7 (`patch`) | Already the engine's own pattern (`factory.ts:1611`); `patch` alone skips it. The fix is to use the existing mechanism, not invent one.                                                                                                     |
 
 **Deliberately rejected**, with the reason recorded so nobody re-proposes them:
 
@@ -182,7 +182,7 @@ Targets the reported zoom lag. The number: hover raycast cost on the reference t
 
 - install `three-mesh-bvh`; adopt `acceleratedRaycast` + `firstHitOnly`
 - **lazy BVH build**: on first raycast against a mesh whose `geometry.index.count/3 ≥
-  BVH_MIN_TRIANGLES = 2000`; `dispose()` on model unload, tracked per geometry in a `WeakMap`
+BVH_MIN_TRIANGLES = 2000`; `dispose()` on model unload, tracked per geometry in a `WeakMap`
 - the module-level `computeBoundsTree`/`disposeBoundsTree`/`acceleratedRaycast` setup lives in
   `sandbox-worker.ts` behind one helper so the fallback below is a two-line swap
 - fallback (documented, not implemented unless measurement demands): per-mesh bounding-sphere
@@ -212,7 +212,7 @@ Targets Q9, Q10 and the L2/ladder gap. `admission.ts`/`sandbox-worker.ts`.
 - `priceModel` derives the tier's initial `RealizationDecisions` from the manifest's measured
   cost — a potato's first frame is already inside budget, rather than arriving at full quality
   and stepping down after 90 frames
-- the live ladder's rung *order* is re-ranked by measured per-builder/per-part cost attribution
+- the live ladder's rung _order_ is re-ranked by measured per-builder/per-part cost attribution
   (from Phase 2's `buildTimings` + manifest `boundingRadius`), order still least-damage-first
   within a tie; hysteresis and both-direction movement unchanged
 - screen-space LOD for hero and repeated parts: 2–3 `decimate()` variants per part, `THREE.LOD`
@@ -230,7 +230,7 @@ Targets Q9, Q10 and the L2/ladder gap. `admission.ts`/`sandbox-worker.ts`.
 Targets Q5, Q6. One rule: **a rung that does not change a field of `RealizationDecisions` may
 not emit a notice, and a field that nothing reads is deleted.**
 
-- static-merge: *implement* merging for `staticGeometry` parts in `realize.ts` (Build_Docs 08
+- static-merge: _implement_ merging for `staticGeometry` parts in `realize.ts` (Build_Docs 08
   mandates the technique class; per-part selection is unnecessary by construction) — or, if the
   measured merge saves fewer than 10 % of draw calls on the reference model, stop crediting it
   and record that number in the commit
@@ -252,7 +252,7 @@ Q10's "number" is the regression test itself.
 **Geometry**
 
 - `geom.patch`: key its cache entry with `nextClosureId(spec.heightAt)` — two `patch` calls with
-  the same profile+plane and *different* relief functions currently return the first one's mesh
+  the same profile+plane and _different_ relief functions currently return the first one's mesh
   (`factory.ts:1118`)
 - `primitives.polyhedron`: add the `dodecahedron` branch the docstring promises (or shrink the
   docstring and refuse the name with a `GeometryError` pointing at the real set)
@@ -343,29 +343,29 @@ spec's Phase 5 and still undone:
 - `carry()`'s dead `recomputeNormals` flag becomes chain-aware: one recompute per modifier chain,
   not N
 - modifier intermediates stop being counted against `totalVertices` (`factory.ts:1592, 295`)
-- `geom.mesh`/`geom.points` inputs coerce to typed arrays *before* keying, so the 32-sample
+- `geom.mesh`/`geom.points` inputs coerce to typed arrays _before_ keying, so the 32-sample
   digest branch applies
 - `makeProfile`/`makePath`/`pattern.*` memoize behind the structural keys they already compute
 - `triangulateProfile`/`ensureCcw` hoist out of the two `addCap` call sites (`solids.ts:72`)
 - per-vertex `cos`/`sin` hoist out of `revolve`/`extrude`/`sweep`'s `place()` (`solids.ts:144-150`)
 - `resampleProfile`'s `span` cursor becomes monotonic (O(n²) → O(n), `solids.ts:441`)
 - `sdCylinder` uses `len2`/`len3` rather than an array literal per SDF sample (`implicit.ts:52-58`)
-- `register()` pre-flights `sdf`/`boolean` cost so the vertex ceiling is enforced *before*
+- `register()` pre-flights `sdf`/`boolean` cost so the vertex ceiling is enforced _before_
   allocation, as the file's own header promises (`factory.ts:277` vs `:290`)
 
 ---
 
 ## 6. Explicit non-goals
 
-| Not doing | Why |
-|---|---|
-| WebGPU | Unproven gain against a 188-member API + Rapier + determinism (§3). |
-| Sandbox capability additions | A2. Every change here is host-side or builder-side. |
-| PID/ML frame controller | No field telemetry to learn from; hysteresis ladder + cost ordering is the measured ceiling available today. |
-| Tier-aware *generation* (different prompts per tier) | The lesson must not differ by device; `Build_Docs/08` says degrade, never re-author. Revisit with field data. |
-| Annotations, settings, export/video, QR | Orphaned viewer features, ~600 lines of CSS with no markup. A different project. |
-| The live server-side pipeline rewrite | Out of scope by choice; the honest-rungs items in Phase 7 that touch the server do so because they are deployment correctness, not because the pipeline is being re-architected. |
-| `three-bvh-csg` install | No model in the battery uses booleans today; tracking per Phase 4's timing stat and adding when a number demands it. |
+| Not doing                                            | Why                                                                                                                                                                              |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WebGPU                                               | Unproven gain against a 188-member API + Rapier + determinism (§3).                                                                                                              |
+| Sandbox capability additions                         | A2. Every change here is host-side or builder-side.                                                                                                                              |
+| PID/ML frame controller                              | No field telemetry to learn from; hysteresis ladder + cost ordering is the measured ceiling available today.                                                                     |
+| Tier-aware _generation_ (different prompts per tier) | The lesson must not differ by device; `Build_Docs/08` says degrade, never re-author. Revisit with field data.                                                                    |
+| Annotations, settings, export/video, QR              | Orphaned viewer features, ~600 lines of CSS with no markup. A different project.                                                                                                 |
+| The live server-side pipeline rewrite                | Out of scope by choice; the honest-rungs items in Phase 7 that touch the server do so because they are deployment correctness, not because the pipeline is being re-architected. |
+| `three-bvh-csg` install                              | No model in the battery uses booleans today; tracking per Phase 4's timing stat and adding when a number demands it.                                                             |
 
 ---
 
@@ -382,7 +382,7 @@ spec's Phase 5 and still undone:
   noise, and the `buildTimings` stat from 2 is what ranks the ladder in 5.
 - **4 before 5** — LOD variants are made by QEM; admission's floors are meaningless without a
   decimator that respects them.
-- **5 before 6** — honest rungs must exist as *working* rungs before they can be honest ones.
+- **5 before 6** — honest rungs must exist as _working_ rungs before they can be honest ones.
 - **7 is parallel-safe** across 2–6 (its items touch different files), but lands after 5 so the
   collider and physics fixes are not invalidated by decisions still changing.
 - **10 last** — the gate asserts contracts 1–9 built.

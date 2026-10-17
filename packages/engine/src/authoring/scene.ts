@@ -480,7 +480,8 @@ export class SceneBuilder {
   private restoreSweepBaseline(): void {
     if (!this.sweepBaseline) return;
     this.parameterValues.clear();
-    for (const [key, value] of this.sweepBaseline.parameterValues) this.parameterValues.set(key, value);
+    for (const [key, value] of this.sweepBaseline.parameterValues)
+      this.parameterValues.set(key, value);
     for (const [id, entry] of this.sweepBaseline.parts) {
       const record = this.parts.get(id);
       if (!record) continue;

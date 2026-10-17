@@ -52,11 +52,14 @@ describe('the rendered reference', () => {
       // argument list (`(`), its type (`:`), or — for the nested-namespace markers geom.field /
       // geom.pattern — the nested-member pointer (`.`). Anything else is the old bare-name
       // listing this rewrite exists to replace.
-      const line = first.split('\n').find((candidate) =>
-        candidate.startsWith(`  ${member}(`) ||
-        candidate.startsWith(`  ${member}:`) ||
-        candidate.startsWith(`  ${member}.`),
-      );
+      const line = first
+        .split('\n')
+        .find(
+          (candidate) =>
+            candidate.startsWith(`  ${member}(`) ||
+            candidate.startsWith(`  ${member}:`) ||
+            candidate.startsWith(`  ${member}.`),
+        );
       expect(line, `a rendered line for ${member}`).toBeDefined();
       expect(line, `${member} must be documented, not merely named`).toContain('(');
     }
@@ -111,7 +114,12 @@ describe('the load-bearing examples', () => {
 
       // `harden: false` because realm hardening deletes capabilities from the test process —
       // the same discipline as authoring.test.ts; the hardening path has its own suite.
-      const result = authorModel({ code: prepared.instrumented, tier: 'mid', seed: 11, harden: false });
+      const result = authorModel({
+        code: prepared.instrumented,
+        tier: 'mid',
+        seed: 11,
+        harden: false,
+      });
       expect(result.ok, result.ok ? '' : result.message).toBe(true);
     });
   }

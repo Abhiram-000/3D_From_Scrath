@@ -44,14 +44,19 @@ function scene(bodies: unknown[], parts: string[], world = 'gravity: [0, -9.81, 
 function author(source: string) {
   const prepared = prepareProgram(source, { apiSurface: apiSurfaceSet() });
   if (!prepared.ok) {
-    throw new Error(`gate refused a legal fixture:\n${describeViolations(prepared.gate).join('\n')}`);
+    throw new Error(
+      `gate refused a legal fixture:\n${describeViolations(prepared.gate).join('\n')}`,
+    );
   }
   const result = authorModel({ code: prepared.instrumented, tier: 'mid', seed: 7, harden: false });
   if (!result.ok) throw new Error(`authoring failed: ${result.message}`);
   return result;
 }
 
-const BALL = scene([{ id: 'ball', partId: 'ball' }], [part('ball', 'geom.sphere({ radius: 0.5 })', [0, 100, 0])]);
+const BALL = scene(
+  [{ id: 'ball', partId: 'ball' }],
+  [part('ball', 'geom.sphere({ radius: 0.5 })', [0, 100, 0])],
+);
 
 /** Step a world for `seconds` of simulated time at a real frame cadence. */
 function run(world: PhysicsWorld, seconds: number, fps = 60): PhysicsProbes {

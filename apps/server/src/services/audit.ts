@@ -83,7 +83,10 @@ function sweepValuesFor(
   if (parameter.kind === 'number') {
     const span = parameter.max - parameter.min || 1;
     return [
-      ...new Set([...SWEEP_FRACTIONS.map((fraction) => parameter.min + span * fraction), parameter.default]),
+      ...new Set([
+        ...SWEEP_FRACTIONS.map((fraction) => parameter.min + span * fraction),
+        parameter.default,
+      ]),
     ];
   }
   if (parameter.kind === 'boolean') return [false, true];
@@ -155,7 +158,12 @@ export function auditModel(input: AuditInput): AuditOutcome {
   const motionBoundParams = new Set<string>();
   for (const motion of manifest.motions) {
     for (const source of [motion.rate, motion.amplitude]) {
-      if (source && typeof source === 'object' && 'param' in source && typeof source.param === 'string') {
+      if (
+        source &&
+        typeof source === 'object' &&
+        'param' in source &&
+        typeof source.param === 'string'
+      ) {
         motionBoundParams.add(source.param);
       }
     }

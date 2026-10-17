@@ -35,11 +35,11 @@ Phases 0–1 at all.
 
 Conditions the spec implies but no test in this plan exercises. Each is pinned in the task that owns the relevant code.
 
-1. **A model with no parameters** — the right panel must still show the part list and the `{#if}` flip must not strand it. *(Task 5)*
-2. **Viewer opened with `prefers-reduced-motion`** — `Ambient.tracking` is false, so `mount()` creates the layer but never starts the rAF; the blob must still be absent. *(Task 4)*
-3. **`pointercancel` mid-drag** — `setPointerCapture` releases without a `pointerup`, leaving `dragging` set and the camera spinning. *(Task 7)*
-4. **Model swap while a modal is open** — pause state must not survive into the next model. *(Task 9)*
-5. **Narrow viewport** — `.panel` becomes `position: absolute; inset: 0` over the canvas at ≤768px, so the compositor lint's overlay list must include it even though desktop panels do not overlap. *(Task 3)*
+1. **A model with no parameters** — the right panel must still show the part list and the `{#if}` flip must not strand it. _(Task 5)_
+2. **Viewer opened with `prefers-reduced-motion`** — `Ambient.tracking` is false, so `mount()` creates the layer but never starts the rAF; the blob must still be absent. _(Task 4)_
+3. **`pointercancel` mid-drag** — `setPointerCapture` releases without a `pointerup`, leaving `dragging` set and the camera spinning. _(Task 7)_
+4. **Model swap while a modal is open** — pause state must not survive into the next model. _(Task 9)_
+5. **Narrow viewport** — `.panel` becomes `position: absolute; inset: 0` over the canvas at ≤768px, so the compositor lint's overlay list must include it even though desktop panels do not overlap. _(Task 3)_
 
 ---
 
@@ -52,10 +52,12 @@ Conditions the spec implies but no test in this plan exercises. Each is pinned i
 Two mismatches are worth fixing in the app rather than the test, because they are real gaps: stat read-outs have no hover text, and parameter sliders have no stable DOM id.
 
 **Files:**
+
 - Modify: `apps/web/src/routes/viewer/+page.svelte:1421-1439` (add `title` to four `.stat-item`s), `:1141-1152` (add `id` to the range input)
 - Modify: `tests/e2e/viewer.spec.ts`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: `.stat-item[data-stat]` and `input#param-{parameterId}` as stable test hooks. Task 3's lint and Task 5's panel work both rely on these class names existing.
 
@@ -63,12 +65,12 @@ Two mismatches are worth fixing in the app rather than the test, because they ar
 
 In `+page.svelte`, give each of the four left-group `.stat-item` divs a `title` and a `data-stat`. Exact values, in source order:
 
-| label | `data-stat` | `title` |
-|---|---|---|
-| `FPS` | `fps` | `Frames per second, measured over a rolling window` |
-| `Draws` | `draws` | `Draw calls in the last rendered frame` |
-| `Triangles` | `triangles` | `Triangles this frame` |
-| `Time` | `time` | `Model time` |
+| label       | `data-stat` | `title`                                             |
+| ----------- | ----------- | --------------------------------------------------- |
+| `FPS`       | `fps`       | `Frames per second, measured over a rolling window` |
+| `Draws`     | `draws`     | `Draw calls in the last rendered frame`             |
+| `Triangles` | `triangles` | `Triangles this frame`                              |
+| `Time`      | `time`      | `Model time`                                        |
 
 Give the `Tier` `.stat-item` `data-stat="tier"` and `title="Device tier"`.
 
@@ -78,16 +80,16 @@ In the number-parameter branch, add `id={'param-' + parameter.id}` to the `<inpu
 
 Replace, exactly:
 
-| Line | Old | New |
-|---|---|---|
-| 73, 87 | `page.locator('#param-spoolRpm')` / `#param-fuelFlow` | unchanged — Task 1 Step 1 creates them |
-| 78 | `page.locator('.control', { has: slider }).locator('output')` | `page.locator('.parameter-item', { has: slider }).locator('.parameter-value')` |
-| 91 | `page.locator('dt', { hasText: 'Thrust' }).locator('+ dd')` | `page.locator('.metric-item', { hasText: 'Thrust' }).locator('.metric-value')` |
-| 63 | `page.getByText('quality adapted')` | `page.getByText('Adapted')` |
-| 117 | `['X-ray', 'Wire', 'Explode', 'Solid']` | `['X-ray', 'Wireframe', 'Explode']` |
-| 118 | after each click, also click again | there is no `Solid` button — the three are toggles, so click each twice to return to normal before the next |
-| 146, 228 | `page.locator('.canvas-holder')` | `page.locator('.main-canvas-holder')` |
-| 166–173 | diagnostics button + `region 'Diagnostics'` | no diagnostics panel exists — delete the block and assert the AI Output toolbar button opens `code-view-modal` with a `<pre>` that is non-empty |
+| Line     | Old                                                           | New                                                                                                                                             |
+| -------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| 73, 87   | `page.locator('#param-spoolRpm')` / `#param-fuelFlow`         | unchanged — Task 1 Step 1 creates them                                                                                                          |
+| 78       | `page.locator('.control', { has: slider }).locator('output')` | `page.locator('.parameter-item', { has: slider }).locator('.parameter-value')`                                                                  |
+| 91       | `page.locator('dt', { hasText: 'Thrust' }).locator('+ dd')`   | `page.locator('.metric-item', { hasText: 'Thrust' }).locator('.metric-value')`                                                                  |
+| 63       | `page.getByText('quality adapted')`                           | `page.getByText('Adapted')`                                                                                                                     |
+| 117      | `['X-ray', 'Wire', 'Explode', 'Solid']`                       | `['X-ray', 'Wireframe', 'Explode']`                                                                                                             |
+| 118      | after each click, also click again                            | there is no `Solid` button — the three are toggles, so click each twice to return to normal before the next                                     |
+| 146, 228 | `page.locator('.canvas-holder')`                              | `page.locator('.main-canvas-holder')`                                                                                                           |
+| 166–173  | diagnostics button + `region 'Diagnostics'`                   | no diagnostics panel exists — delete the block and assert the AI Output toolbar button opens `code-view-modal` with a `<pre>` that is non-empty |
 
 `X-ray`, `Wireframe` and `Explode` already have `title` attributes (`X-ray Mode (X)`, `Wireframe (W)`, `Explode View (E)`); `getByRole('button', { name: 'Wireframe', exact: true })` matches the visible `<span>` text.
 
@@ -119,10 +121,12 @@ the user-facing affordance are the same change."
 Measures bytes allocated per frame by regression, so it needs no instrumentation in production code and no counter to remove later.
 
 **Files:**
+
 - Modify: `vitest.config.ts` (expose `gc` to the test worker)
 - Create: `packages/engine/tests/frame-cost.test.ts`
 
 **Interfaces:**
+
 - Consumes: `REFERENCE_MODEL_SOURCE` from `@edu3d/engine`; `prepareProgram` from `@edu3d/sandbox`; `createGuard` from `@edu3d/sandbox`.
 - Produces: a vitest assertion that no frame path may exceed `MAX_BYTES_PER_FRAME`. Every later engine task cites this number.
 
@@ -181,11 +185,13 @@ The highest-value test in the plan: it detects the dominant cause of the reporte
 `scripts/` already establishes the pattern (`check-secrets.mjs` + `check-secrets.test.ts`), and `scripts/*.test.ts` is in vitest's `include`.
 
 **Files:**
+
 - Create: `scripts/check-compositor.mjs`
 - Create: `scripts/check-compositor.test.ts`
 - Modify: `scripts/verify.mjs`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: `findCompositorOffenders(stylesheets) -> Offender[]` and `KNOWN_OFFENDERS: Record<string, string>`. Tasks 4 and 8 delete entries from `KNOWN_OFFENDERS`; a removal without the matching fix must fail.
 
@@ -253,15 +259,17 @@ canvas at <=768px."
 
 Removes §3.1 and §3.2 together: the animated `blur(60px)` layers above the canvas, and the per-frame rAF that keeps the main thread's frame queue occupied.
 
-`ambient.ts:164-183` creates both blobs unconditionally *before* the `useGrid`/`useSpot` checks, and `:196-203` starts the rAF whenever `tracking` is true — which is independent of the options the viewer passes.
+`ambient.ts:164-183` creates both blobs unconditionally _before_ the `useGrid`/`useSpot` checks, and `:196-203` starts the rAF whenever `tracking` is true — which is independent of the options the viewer passes.
 
 **Files:**
+
 - Modify: `apps/web/src/lib/ambient.ts`
 - Modify: `apps/web/src/lib/styles/base.css`
 - Modify: `scripts/check-compositor.mjs` (remove the `.ambient-blob` entry)
 - Modify: `apps/web/src/routes/viewer/+page.svelte:163-164`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: `AmbientOptions` gains `blobs?: boolean` (default `true`, so the landing and loading pages are unchanged) and `export function ambientLayerRequested(options: AmbientOptions): boolean`.
 
@@ -361,9 +369,11 @@ and the landing page is unchanged."
 §3.3. `+page.svelte:447-449` resolves `activePart` against `selectedPart ?? hoveredPart`, so hovering alone makes `selectedPartInfo` truthy, which flips the right panel's branch (`:1332`) and destroys the `{:else if}` arm holding up to 200 `.part-button` elements.
 
 **Files:**
+
 - Modify: `apps/web/src/routes/viewer/+page.svelte:447-449, 455-464, 1332, 1251, 1253, 1255`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: `partsById: Map<string, ModelManifest['parts'][number]>`, a `$derived` keyed off `manifest`.
 
@@ -372,7 +382,10 @@ and the landing page is unchanged."
 There is no DOM in vitest, so pin the branch condition as a pure predicate in the page's script:
 
 ```ts
-export function panelShowsSelectedPart(selectedPart: string | null, selectedPartInfo: unknown): boolean {
+export function panelShowsSelectedPart(
+  selectedPart: string | null,
+  selectedPartInfo: unknown,
+): boolean {
   return Boolean(selectedPart) && Boolean(selectedPartInfo);
 }
 ```
@@ -382,7 +395,7 @@ Test it in `apps/web/src/lib/components/right-panel-branch.test.ts` by importing
 Assert:
 
 ```ts
-expect(panelShowsSelectedPart(null, { title: 'Fan blades' })).toBe(false);  // hovering only
+expect(panelShowsSelectedPart(null, { title: 'Fan blades' })).toBe(false); // hovering only
 expect(panelShowsSelectedPart('fanBlades', null)).toBe(false);
 expect(panelShowsSelectedPart('fanBlades', { title: 'Fan blades' })).toBe(true);
 ```
@@ -425,6 +438,7 @@ scans over a proxied array per hover change collapse to one Map lookup."
 §3.4. Svelte issue #14721 measures ~20% proxy overhead and reports frame stutter as the symptom. **Do not apply this to `progress`** — `ProgressModel` is a class whose `index` is mutated in place and read through getters.
 
 **Files:**
+
 - Modify: `apps/web/src/routes/viewer/+page.svelte:44-49`
 
 - [ ] **Step 1: Change the five declarations**
@@ -456,12 +470,14 @@ freeze the stage chips."
 
 ### Task 7: Pointer path — one layout read per resize, not per event
 
-§3.5. `getBoundingClientRect()` runs on every `pointermove` (up to 120/s) *before* the drag check, and each event becomes its own `postMessage`.
+§3.5. `getBoundingClientRect()` runs on every `pointermove` (up to 120/s) _before_ the drag check, and each event becomes its own `postMessage`.
 
 **Files:**
+
 - Modify: `apps/web/src/routes/viewer/+page.svelte:176-177, 556-586`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: `canvasRect: DOMRect | null`, refreshed by the existing `ResizeObserver`.
 
@@ -502,9 +518,10 @@ without a pointerup."
 
 ### Task 8: Chrome over the canvas stops blurring the canvas
 
-§3.1's second half. `viewer.css:1520-1527` already documents the diagnosis — *"Stacking the overlay's blur on top of the glass panel's blur forced the compositor to re-filter every frame on integrated GPUs, freezing the page"* — and implements the blur half but not the pause half.
+§3.1's second half. `viewer.css:1520-1527` already documents the diagnosis — _"Stacking the overlay's blur on top of the glass panel's blur forced the compositor to re-filter every frame on integrated GPUs, freezing the page"_ — and implements the blur half but not the pause half.
 
 **Files:**
+
 - Modify: `apps/web/src/routes/viewer/+page.svelte` (tooltip markup + style block; modal open/close handlers)
 - Modify: `apps/web/src/lib/styles/viewer.css:1461-1475` (`.modal-overlay`), `:2154-2167` (`.panel` at ≤768px)
 - Modify: `scripts/check-compositor.mjs` (remove four entries)
@@ -548,6 +565,7 @@ the same. Chromium reproduces this pattern at 60fps down to 10-20."
 ### Task 9: Pause rendering behind a modal, and drop the redundant heartbeat
 
 **Files:**
+
 - Modify: `apps/web/src/routes/viewer/+page.svelte` (each `*ModalOpen = true`/`false` site)
 - Modify: `apps/web/src/lib/engine/sandbox-worker.ts` (heartbeat post + response type)
 - Modify: `apps/web/src/lib/engine/sandbox-host.ts` (heartbeat case)
@@ -558,8 +576,14 @@ Add one helper in the page:
 
 ```ts
 function syncRenderPause(): void {
-  const anyOpen = quizModalOpen || shortcutsModalOpen || shareModalOpen || galleryOpen
-    || generateOpen || codeViewModalOpen || viewPresetsOpen;
+  const anyOpen =
+    quizModalOpen ||
+    shortcutsModalOpen ||
+    shareModalOpen ||
+    galleryOpen ||
+    generateOpen ||
+    codeViewModalOpen ||
+    viewPresetsOpen;
   host?.setPaused(anyOpen || paused);
 }
 ```

@@ -60,7 +60,10 @@ const DONE = 'data: [DONE]\n';
 
 /** Answer with one response body, without the retry cascade re-reading a consumed stream. */
 function respondWith(body: () => Response): void {
-  vi.stubGlobal('fetch', vi.fn(async () => body()));
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => body()),
+  );
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -85,19 +88,23 @@ describe('a stream that dies mid-program', () => {
     expect(result.retryable).toBe(true);
   });
 
-  it('reports nothing written at all as a network failure, not truncation', { timeout: 20_000 }, async () => {
-    respondWith(() => interruptedSse([]));
+  it(
+    'reports nothing written at all as a network failure, not truncation',
+    { timeout: 20_000 },
+    async () => {
+      respondWith(() => interruptedSse([]));
 
-    const result = await new AiClient(config).complete({
-      maxOutputTokens: 4096,
-      messages: [{ role: 'user', content: 'anything' }],
-      onProgress: () => {},
-    });
+      const result = await new AiClient(config).complete({
+        maxOutputTokens: 4096,
+        messages: [{ role: 'user', content: 'anything' }],
+        onProgress: () => {},
+      });
 
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error('unreachable');
-    expect(result.code).toBe('network');
-  });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('unreachable');
+      expect(result.code).toBe('network');
+    },
+  );
 
   it('still accepts a stream that completed on its own terms', async () => {
     respondWith(() => sse([delta('const a = 1;'), delta('const b = 2;'), finish('stop'), DONE]));

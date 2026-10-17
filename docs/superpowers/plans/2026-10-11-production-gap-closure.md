@@ -22,14 +22,14 @@
 - Never commit a credential. `deploy.env` is gitignored from Phase 0 onward.
 - No hex literal in a component file; every colour, radius, shadow and easing is a CSS custom property in one theme sheet (`07`).
 - Generated text renders as **text nodes** everywhere — chat replies, quiz explanations, part info, model descriptions (`05`).
-- Comments carry *why*, cite the failure they prevent, and are never restatements of the code (`09`).
+- Comments carry _why_, cite the failure they prevent, and are never restatements of the code (`09`).
 
 ## Review Focus
 
 Five input/failure classes the spec implies but individual task tests miss. Each gets its owning test in the task that owns the code.
 
 1. **A visitor with no AI key** — the only person who can try the product before it is configured. Must reach a working model in one click and be told honestly what is unavailable. (2.5, 6.3)
-2. **A generated model that shares cleanly** — publish → thumbnail → link → a stranger opens the link → sees *that* model. The turbofan-fallback shipped because no test crossed the publish/load boundary. (3.1, 3.2)
+2. **A generated model that shares cleanly** — publish → thumbnail → link → a stranger opens the link → sees _that_ model. The turbofan-fallback shipped because no test crossed the publish/load boundary. (3.1, 3.2)
 3. **A parameter that changes nothing** — `00:210` says such a control is rejected, not shipped. The audit currently cannot detect it. (1.3)
 4. **A learner on a budget phone on school wifi** — mobile panels, a four-minute generation, a failed publish, a weak GPU. Degrade honestly, never silently. (5.2, 9.4)
 5. **Someone with curl** — no auth on the expensive AI endpoint, a spoofable rate-limit header, an ungated publish path, and a key on disk. (4.1, 4.2, 0.1)
@@ -79,12 +79,16 @@ Five input/failure classes the spec implies but individual task tests miss. Each
 **Files:** Create `packages/engine/src/runtime/motions.ts`; export from `packages/engine/src/index.ts`; call from the worker frame loop after `runFrame`, before `syncTransforms`. Test `packages/engine/tests/motions.test.ts`.
 
 **Interfaces (Produces):**
+
 ```ts
-export function resolveScalar(source: ScalarSource, params: Readonly<Record<string, number>>): number;
+export function resolveScalar(
+  source: ScalarSource,
+  params: Readonly<Record<string, number>>,
+): number;
 export interface MotionHost {
   motions: readonly MotionDecl[];
-  baseTransform(partId: string): PartTransformLike | undefined;   // authored, never mutated
-  liveTransform(partId: string): PartTransformLike | undefined;    // mutated in place
+  baseTransform(partId: string): PartTransformLike | undefined; // authored, never mutated
+  liveTransform(partId: string): PartTransformLike | undefined; // mutated in place
   params: Readonly<Record<string, number>>;
   pointOnPath?(pathId: string, t: number): Vec3 | undefined;
 }
@@ -105,7 +109,7 @@ export function applyMotions(host: MotionHost, elapsed: number, paused: boolean)
 
 ### Task 1.3: Make the audit prove causal parameter linkage
 
-`00:210` — "a control that changes nothing is rejected, not shipped." `01:137` names *parameter leverage* as an audit dimension. Today the sweep credits any parameter whose sweep coincided with any part being written.
+`00:210` — "a control that changes nothing is rejected, not shipped." `01:137` names _parameter leverage_ as an audit dimension. Today the sweep credits any parameter whose sweep coincided with any part being written.
 
 **Files:** `packages/engine/src/authoring/scene.ts:334-345`, `apps/server/src/services/audit.ts:79-108`, `packages/engine/src/reference/turbofan.ts:648-654`, `packages/engine/tests/authoring.test.ts`.
 
@@ -231,7 +235,7 @@ export function applyMotions(host: MotionHost, elapsed: number, paused: boolean)
 `06:65` calls trust-proxy "the single most consequential deployed-server setting." The current index math takes the **leftmost** hop, which an attacker controls by sending their own `X-Forwarded-For`.
 
 - [ ] **Step 1: Failing test.** Three requests with different spoofed headers land in one bucket.
-- [ ] **Step 2: Implement.** Take the rightmost untrusted hop; document that the edge must *replace* rather than append. Wire the real socket address instead of the literal `'127.0.0.1'`.
+- [ ] **Step 2: Implement.** Take the rightmost untrusted hop; document that the edge must _replace_ rather than append. Wire the real socket address instead of the literal `'127.0.0.1'`.
 - [ ] **Step 3: Commit.** `fix(server): derive the client address from the rightmost trusted hop`.
 
 ### Task 4.2: Gate the publish path and cap bodies
@@ -304,7 +308,7 @@ Share and AI Output render below a clipped container — two toolbar buttons and
 `03:51` — "Hover → tooltip"; hover and selection are different acts. Today moving the mouse swaps the whole right panel and unmounts the parts list — which `03` and the canvas's `aria-hidden` make the **only** keyboard path into the model.
 
 - [ ] **Step 1: Failing test.** The parts list stays keyboard-reachable while a part is hovered.
-- [ ] **Step 2: Implement.** Separate *selected* (drives the panel) from *hovered* (drives highlight and tooltip only); keep the list mounted; disambiguate duplicate display names — six buttons reading "Stator vanes" is unusable.
+- [ ] **Step 2: Implement.** Separate _selected_ (drives the panel) from _hovered_ (drives highlight and tooltip only); keep the list mounted; disambiguate duplicate display names — six buttons reading "Stator vanes" is unusable.
 - [ ] **Step 3: Commit.** `fix(web): hover no longer hijacks the info panel; duplicate part names disambiguated`.
 
 ### Task 5.5: Failure states that are honest
@@ -347,7 +351,7 @@ The page ships **no title and not one word of copy** — `ssr = false` prerender
 
 ### Task 6.2: A demo entry point
 
-`00:158` forbids "we don't support that"; the visitor needs to *see* the product before committing to a four-minute wait. The turbofan — ~40 parts, no key, no database, no login — is the proof and has no link.
+`00:158` forbids "we don't support that"; the visitor needs to _see_ the product before committing to a four-minute wait. The turbofan — ~40 parts, no key, no database, no login — is the proof and has no link.
 
 - [ ] **Step 1: Failing test.** One click from `/` reaches a working model.
 - [ ] **Step 2: Implement.** A prominent **See a live demo** CTA beside Generate, a footer linking the demo/gallery/repo, and a gallery entry point. **Per `07:24`, quick-start chips fill the input and focus it — they do not auto-submit**; the demo CTA is the one-click path.
@@ -559,7 +563,7 @@ git status          # clean
 Then, by hand:
 
 1. Fresh clone, `docker compose up`, open the landing page, click **See a live demo**, drag **Spool speed** — the fan turns.
-2. Generate "how does a pendulum work" — you get *that* model, and physics reads On.
+2. Generate "how does a pendulum work" — you get _that_ model, and physics reads On.
 3. Toggle **Cutaway** — the nacelle changes.
 4. Share → publish → open the link in a private window — same model, with a thumbnail.
 5. Rotate a phone — both panels reachable; touch-orbit works.

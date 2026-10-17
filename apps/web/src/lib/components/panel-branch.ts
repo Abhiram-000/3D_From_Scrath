@@ -12,6 +12,9 @@
  *
  * Hover belongs to the tooltip. Selection belongs to the panel.
  */
-export function panelShowsSelectedPart(selectedPart: string | null, selectedPartInfo: unknown): boolean {
+export function panelShowsSelectedPart(
+  selectedPart: string | null,
+  selectedPartInfo: unknown,
+): boolean {
   return selectedPart !== null && selectedPart !== '' && Boolean(selectedPartInfo);
 }

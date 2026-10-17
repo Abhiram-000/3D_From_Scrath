@@ -260,11 +260,4 @@ export const FROZEN_INTRINSICS = Object.freeze([
  * Phase 7. `console` is present because a model that cannot log is a model nobody can debug, and
  * the host routes it into the diagnostics panel rather than the real console.
  */
-export const GUEST_BINDINGS = Object.freeze([
-  'scene',
-  'geom',
-  'mat',
-  'M',
-  'console',
-  'random',
-]);
+export const GUEST_BINDINGS = Object.freeze(['scene', 'geom', 'mat', 'M', 'console', 'random']);

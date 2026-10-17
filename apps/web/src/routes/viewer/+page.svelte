@@ -19,7 +19,7 @@
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
   import { apiFetch, takeBundle, storedRuntime } from '$lib/core/api.ts';
-import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
+  import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   import { shouldSendPointerNow, toCanvasPoint, type RectLike } from '$lib/core/pointer.ts';
   import { anyOverlayOpen, shouldPauseRender } from '$lib/core/render-pause.ts';
   import { toContext } from '$lib/core/model-context.ts';
@@ -485,7 +485,9 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   // single hover change cost several full scans of the parts array.
   const partsById = $derived(new Map((manifest?.parts ?? []).map((part) => [part.id, part])));
 
-  const metricsById = $derived(new Map((manifest?.metrics ?? []).map((metric) => [metric.id, metric])));
+  const metricsById = $derived(
+    new Map((manifest?.metrics ?? []).map((metric) => [metric.id, metric])),
+  );
 
   const activePart = $derived(partsById.get(selectedPart ?? hoveredPart ?? '') ?? null);
 
@@ -1530,7 +1532,11 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   <!-- ── Bottom Stats Bar ─────────────────────────────────────────────────── -->
   <footer class="bottom-bar glass-panel">
     <div class="stats-group">
-      <div class="stat-item" data-stat="fps" title="Frames per second, measured over a rolling window">
+      <div
+        class="stat-item"
+        data-stat="fps"
+        title="Frames per second, measured over a rolling window"
+      >
         <span class="stat-label">FPS</span>
         <span class="stat-value">{stats ? stats.fps.toFixed(0) : '—'}</span>
       </div>

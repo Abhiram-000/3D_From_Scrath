@@ -19,6 +19,7 @@
 import { describe, expect, it } from 'vitest';
 import v8 from 'node:v8';
 import vm from 'node:vm';
+import { PerformanceObserver, constants } from 'node:perf_hooks';
 import { prepareProgram, describeViolations, createGuard } from '@edu3d/sandbox';
 import { apiSurfaceSet } from '../src/authoring/api-surface.ts';
 import { authorModel, runFrame } from '../src/authoring/guest.ts';
@@ -90,16 +91,15 @@ const MAX_RETAINED_BYTES_PER_FRAME = 512;
 const MAX_P99_FRAME_MILLIS = 5;
 
 describe('the cost of a frame', () => {
-  it('allocates a bounded number of bytes per frame', () => {
-    const gc = resolveGc();
-    if (!gc) {
-      console.warn('[frame-cost] skipped: no collector available in this runtime');
-      return;
-    }
-
+  /**
+   * The shared fixture: reference model through the real gate and authoring pass, plus a `frame()`
+   * in the worker's exact order. Both cost tests drive it — the retained-bytes one and the churn
+   * gate — so a disagreement between them is about what they measure, never what they run.
+   */
+  const prepareHarness = () => {
     const prepared = prepareProgram(REFERENCE_MODEL_SOURCE, { apiSurface: apiSurfaceSet() });
     expect(prepared.ok, describeViolations(prepared.gate).join('\n')).toBe(true);
-    if (!prepared.ok) return;
+    if (!prepared.ok) return null;
 
     // `harden: false`: hardening deletes capabilities from this process's realm and would break every
     // later test in the file. The sandbox package has its own dedicated hardening suite.
@@ -110,7 +110,7 @@ describe('the cost of a frame', () => {
       harden: false,
     });
     expect(result.ok, result.ok ? '' : result.message).toBe(true);
-    if (!result.ok) return;
+    if (!result.ok) return null;
 
     const nodes = new Map(result.manifest.parts.map((part) => [part.id, part]));
     const snapshot = (transform: PartTransformLike): PartTransformLike => ({
@@ -156,6 +156,19 @@ describe('the cost of a frame', () => {
         false,
       );
     };
+    return { frame };
+  };
+
+  it('allocates a bounded number of bytes per frame', () => {
+    const gc = resolveGc();
+    if (!gc) {
+      console.warn('[frame-cost] skipped: no collector available in this runtime');
+      return;
+    }
+
+    const harness = prepareHarness();
+    if (!harness) return;
+    const { frame } = harness;
 
     // Warm up: the first frames pay one-time costs (JIT, lazy facade construction, closure creation)
     // that would otherwise be charged to the sample and read as a per-frame cost.
@@ -204,5 +217,97 @@ describe('the cost of a frame', () => {
       `engine frame path retained ${bytesPerFrame.toFixed(0)} bytes/frame, over the ` +
         `${MAX_RETAINED_BYTES_PER_FRAME} byte budget`,
     ).toBeLessThan(MAX_RETAINED_BYTES_PER_FRAME);
+  });
+
+  /**
+   * Ceiling on scavenges attributable to the frame path, over FRAMES_CHURN frames.
+   *
+   * Pinned from the first measured run: the frame path scavenged 3 times over 20 000 frames against
+   * an idle baseline of 0 — roughly 1.2–2.4 KB of short-lived objects per frame, which is the
+   * read-off-source estimate of the render-perf spec now converted into a number. The plan's frame
+   * tasks cut that churn; this constant is re-pinned downward at this phase's end to the measured
+   * remainder plus headroom, and a phase that cannot lower the number has not done what it claimed.
+   *
+   * The frame-run number is read against an idle baseline over the same iteration count, so
+   * scavenges the runtime takes for its own reasons cancel out of the comparison.
+   */
+  const FRAMES_CHURN = 20_000;
+  const MAX_CHURN_SCAVENGES = 5;
+
+  /**
+   * Minor-GC events observed while the given body executes.
+   *
+   * PerformanceObserver callbacks are queued, not synchronous, so the records are drained after the
+   * body via macrotask boundaries rather than read inline — reading inline counts almost nothing
+   * and makes the gate pass by deafness. GC kinds other than the scavenger (`kMinor`) are excluded:
+   * full and incremental marks belong to the runtime's own bookkeeping, not to this file's subject.
+   *
+   * The `control` run exists because a gate that cannot see degradation is worse than no gate: it
+   * allocates millions of small objects, asserts it saw at least one scavenge, and thereby proves
+   * the observer works before the frame-run number is allowed to mean anything.
+   */
+  const countScavenges = async (frames: number, body: (i: number) => void): Promise<number> => {
+    let count = 0;
+    const observer = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        // The scavenger discriminant moved: current Node exposes it as `detail.kind` (1 = minor gc),
+        // where `entry.kind` used to sit flat on the entry. Read both, prefer detail, and compare
+        // against the constant so a version that reshapes this again fails the control below rather
+        // than silently passing — the control run is what keeps this reader honest.
+        const detail = (entry as unknown as { detail?: { kind?: number } }).detail;
+        const flat = (entry as unknown as { kind?: number }).kind;
+        const kind = detail?.kind ?? flat;
+        if (kind === constants.NODE_PERFORMANCE_GC_MINOR) count += 1;
+      }
+    });
+    observer.observe({ entryTypes: ['gc'] });
+    try {
+      for (let i = 0; i < frames; i += 1) body(i);
+      // Two macrotask turns: observer callbacks queue behind the current synchronous block, and a
+      // scavenge triggered by the last few frames can land in either.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      observer.disconnect();
+    }
+    return count;
+  };
+
+  it('does not churn: frame-run scavenges stay near an idle-run baseline', async () => {
+    const harness = prepareHarness();
+    if (!harness) return;
+    const { frame } = harness;
+
+    // Instrument self-check: four million escaping small objects must read as scavenges. They are
+    // pushed into an array deliberately — an object that never escapes is scalar-replaced by V8 and
+    // allocates nothing, so a control written the obvious way proves V8's optimiser, not the
+    // observer. If this ever reads zero the instrument is broken and the frame number below is
+    // meaningless — fail loudly rather than vacuously.
+    let sink: object[] = [];
+    const control = await countScavenges(4_000_000, (i) => {
+      sink.push({ i, pad: i * 2 });
+      if (sink.length >= 100_000) sink = [];
+    });
+    expect(
+      control,
+      'the churn observer saw no scavenge while allocating four million objects — ' +
+        'the instrument is broken, so the frame-run figure is meaningless',
+    ).toBeGreaterThanOrEqual(1);
+
+    // The idle baseline executes the same iteration count doing no allocation, so scavenges the
+    // runtime takes for its own reasons land on both sides and cancel.
+    const idle = await countScavenges(FRAMES_CHURN, (i) => {
+      if (Math.sin(i) > 2) throw new Error('unreachable');
+    });
+    const running = await countScavenges(FRAMES_CHURN, () => frame());
+    console.log(
+      `[frame-cost] churn: control ${control} | idle ${idle} vs frame-run ${running} ` +
+        `over ${FRAMES_CHURN} frames`,
+    );
+    expect(
+      running,
+      `frame path scavenged ${running} times vs idle baseline ${idle} over ` +
+        `${FRAMES_CHURN} frames — the frame path is allocating`,
+    ).toBeLessThanOrEqual(idle + MAX_CHURN_SCAVENGES);
   });
 });

@@ -79,6 +79,16 @@ const FRAMES_PER_SAMPLE = 2000;
  */
 const MAX_RETAINED_BYTES_PER_FRAME = 512;
 
+/**
+ * Ceiling on p99 frame time for the engine's per-frame path, in milliseconds.
+ *
+ * A leak is caught by the retained-bytes assertion above; this catches the other kind of regression,
+ * where a frame allocates so much short-lived garbage that the scavenger runs constantly. Measured
+ * p99 here is a small fraction of a millisecond, so this is set with wide headroom and exists to fail
+ * on a step change rather than to police microseconds.
+ */
+const MAX_P99_FRAME_MILLIS = 5;
+
 describe('the cost of a frame', () => {
   it('allocates a bounded number of bytes per frame', () => {
     const gc = resolveGc();
@@ -153,14 +163,36 @@ describe('the cost of a frame', () => {
     };
 
     const before = settle();
-    for (let i = 0; i < FRAMES_PER_SAMPLE; i += 1) frame();
+    // Wall time per frame, recorded alongside the retained-bytes figure. The two answer different
+    // questions and neither substitutes for the other: bytes-retained catches a leak, and frame time
+    // is what the phase-timeout budget actually cares about. A frame-path change that removes
+    // thousands of short-lived objects moves the wall clock and barely moves the retained figure.
+    const durations = new Float64Array(FRAMES_PER_SAMPLE);
+    for (let i = 0; i < FRAMES_PER_SAMPLE; i += 1) {
+      const started = performance.now();
+      frame();
+      durations[i] = performance.now() - started;
+    }
     const after = settle();
 
+    const sorted = Array.from(durations).sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length * 0.5)] ?? 0;
+    const p99 = sorted[Math.floor(sorted.length * 0.99)] ?? 0;
     const bytesPerFrame = (after - before) / FRAMES_PER_SAMPLE;
     console.log(
-      `[frame-cost] retained ${bytesPerFrame.toFixed(0)} bytes/frame over ${FRAMES_PER_SAMPLE} frames ` +
-        `(frame budget ${SANDBOX_LIMITS.frameDeadlineMs}ms; the model's own callback is a fraction of it)`,
+      `[frame-cost] retained ${bytesPerFrame.toFixed(0)} B/frame | frame time median ` +
+        `${median.toFixed(4)}ms p99 ${p99.toFixed(4)}ms over ${FRAMES_PER_SAMPLE} frames ` +
+        `(budget ${SANDBOX_LIMITS.frameDeadlineMs}ms)`,
     );
+
+    // The frame budget is 50ms for the *model's own callback*; the whole engine frame must sit far
+    // under it, so 5ms p99 is a generous ceiling that still fails loudly on a regression that costs
+    // real time.
+    expect(
+      p99,
+      `frame path p99 was ${p99.toFixed(4)}ms, over the ${MAX_P99_FRAME_MILLIS}ms ceiling ` +
+        `(median ${median.toFixed(4)}ms)`,
+    ).toBeLessThan(MAX_P99_FRAME_MILLIS);
 
     expect(
       bytesPerFrame,

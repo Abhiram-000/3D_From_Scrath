@@ -78,6 +78,14 @@ export interface PartRef {
 }
 
 /** What a frame callback receives. Deliberately small: a clock, the parameters, and part handles. */
+/** The internal, writable shape of the reused frame context. Callers only ever see `FrameContext`. */
+interface MutableFrameContext extends Omit<FrameContext, 'time' | 'dt' | 'paused' | 'probes'> {
+  time: number;
+  dt: number;
+  paused: boolean;
+  probes: Readonly<Record<string, number>>;
+}
+
 export interface FrameContext {
   /** Seconds since the model started, authored time — unaffected by the render rate (`02` R4). */
   readonly time: number;
@@ -233,6 +241,9 @@ export class SceneBuilder {
     this.geometry.dispose();
     this.materials.dispose();
     this.parts.clear();
+    // A part reference closes over its node; with `parts` gone it must not survive.
+    this.partRefs.clear();
+    this.frameContext = null;
     this.order.length = 0;
     this.parameters.clear();
     this.callbacks.frame.length = 0;
@@ -540,12 +551,38 @@ export class SceneBuilder {
   }
 
   /**
-   * Build the per-frame context handed to callbacks.
+   * The per-frame context handed to callbacks.
    *
-   * Recreated per frame but shallow: the `params` object is a live proxy over the value map rather than a copy,
-   * because copying 24 parameters every frame is the kind of per-frame allocation `08` bans from the hot path.
+   * Built once and reused, not rebuilt per frame. This used to construct a Proxy and its handler, a
+   * `partRefCache` Map, a part-ref factory, the context literal and three method closures on every
+   * single frame — and because the cache was created *inside* this method, every `ctx.part(id)` was a
+   * guaranteed miss, so each part a model's frame code touched also allocated an object with nine
+   * closures of its own. That is roughly 80 allocations per frame, every frame, forever.
+   *
+   * All of it can be reused safely, because nothing here is per-frame state:
+   *
+   *   - `params` is a live proxy over `parameterValues`, a Map that outlives every frame;
+   *   - `part()` closes over `this`, so its result stays valid as long as the part exists;
+   *   - `metric()` and `motor()` write to Maps on `this`.
+   *
+   * Only `time`, `dt`, `paused` and `probes` vary, so those four fields are assigned per frame and
+   * nothing else is touched. A frame now allocates zero objects for the context itself.
+   *
+   * The part-ref cache is a field rather than a local, and is cleared wherever `parts` is, so a
+   * reference can never outlive the node it closes over.
    */
   createFrameContext(time: number, dt: number, paused: boolean): FrameContext {
+    const cached = this.frameContext;
+    if (cached) {
+      cached.time = time;
+      cached.dt = dt;
+      cached.paused = paused;
+      cached.probes = this.publishedProbes;
+      return cached;
+    }
+
+    // A live proxy rather than a copy: copying every parameter every frame is the exact allocation
+    // this method exists to avoid, and a proxy reads the live Map the host writes.
     const params = new Proxy(
       {},
       {
@@ -556,70 +593,18 @@ export class SceneBuilder {
       },
     ) as Readonly<Record<string, number | boolean | string>>;
 
-    const partRefCache = new Map<string, PartRef>();
-
-    const makePartRef = (id: string): PartRef => {
-      const record = this.parts.get(id);
-      if (!record) {
-        throw new SceneError(
-          `ctx.part('${id}') does not exist. Check the id matches a part declared during the build.`,
-        );
-      }
-      const node = record.node;
-      return {
-        id,
-        setPosition: (x, y, z) => {
-          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
-          node.transform.position = [x, y, z];
-          this.noteWrite(id, 'transform');
-        },
-        setRotation: (x, y, z) => {
-          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
-          node.transform.rotation = [x, y, z];
-          this.noteWrite(id, 'transform');
-        },
-        setScale: (x, y, z) => {
-          if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
-          node.transform.scale = [x, y, z];
-          this.noteWrite(id, 'transform');
-        },
-        setVisible: (visible) => {
-          node.visible = !!visible;
-          this.noteWrite(id, 'visibility');
-        },
-        setEmissive: (intensity) => {
-          if (!Number.isFinite(intensity)) return;
-          if (node.material)
-            node.material = { ...node.material, emissiveIntensity: clamp(intensity, 0, 64) };
-          this.noteWrite(id, 'material');
-        },
-        setOpacity: (opacity) => {
-          if (!Number.isFinite(opacity)) return;
-          if (node.material) node.material = { ...node.material, opacity: clamp(opacity, 0, 1) };
-          this.noteWrite(id, 'material');
-        },
-        setColor: (hex) => {
-          if (typeof hex !== 'string' || !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) return;
-          if (node.material) node.material = { ...node.material, color: hex };
-          this.noteWrite(id, 'material');
-        },
-        position: () => node.transform.position,
-        rotation: () => node.transform.rotation ?? [0, 0, 0],
-      };
-    };
-
-    return {
+    const context: MutableFrameContext = {
       time,
       dt,
       paused,
       params,
       probes: this.publishedProbes,
       part: (id: string) => {
-        const cached = partRefCache.get(id);
-        if (cached) return cached;
-        const ref = makePartRef(id);
-        partRefCache.set(id, ref);
-        return ref;
+        const hit = this.partRefs.get(id);
+        if (hit) return hit;
+        const made = this.makePartRef(id);
+        this.partRefs.set(id, made);
+        return made;
       },
       metric: (id: string, value: number) => {
         if (!Number.isFinite(value)) return;
@@ -632,6 +617,65 @@ export class SceneBuilder {
         this.motorTargets.set(jointId, targetVelocity);
         this.noteWrite('__physics', 'physics');
       },
+    };
+
+    this.frameContext = context;
+    return context;
+  }
+
+  /** The single reusable frame context; null until the first frame builds it. */
+  private frameContext: MutableFrameContext | null = null;
+  /** Part references, cached across frames. Cleared with `parts`. */
+  private readonly partRefs = new Map<string, PartRef>();
+
+  /** Build one part reference. Hoisted so the closure is created once per part, not once per frame. */
+  private makePartRef(id: string): PartRef {
+    const record = this.parts.get(id);
+    if (!record) {
+      throw new SceneError(
+        `ctx.part('${id}') does not exist. Check the id matches a part declared during the build.`,
+      );
+    }
+    const node = record.node;
+    return {
+      id,
+      setPosition: (x, y, z) => {
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+        node.transform.position = [x, y, z];
+        this.noteWrite(id, 'transform');
+      },
+      setRotation: (x, y, z) => {
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+        node.transform.rotation = [x, y, z];
+        this.noteWrite(id, 'transform');
+      },
+      setScale: (x, y, z) => {
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+        node.transform.scale = [x, y, z];
+        this.noteWrite(id, 'transform');
+      },
+      setVisible: (visible) => {
+        node.visible = !!visible;
+        this.noteWrite(id, 'visibility');
+      },
+      setEmissive: (intensity) => {
+        if (!Number.isFinite(intensity)) return;
+        if (node.material)
+          node.material = { ...node.material, emissiveIntensity: clamp(intensity, 0, 64) };
+        this.noteWrite(id, 'material');
+      },
+      setOpacity: (opacity) => {
+        if (!Number.isFinite(opacity)) return;
+        if (node.material) node.material = { ...node.material, opacity: clamp(opacity, 0, 1) };
+        this.noteWrite(id, 'material');
+      },
+      setColor: (hex) => {
+        if (typeof hex !== 'string' || !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) return;
+        if (node.material) node.material = { ...node.material, color: hex };
+        this.noteWrite(id, 'material');
+      },
+      position: () => node.transform.position,
+      rotation: () => node.transform.rotation ?? [0, 0, 0],
     };
   }
 

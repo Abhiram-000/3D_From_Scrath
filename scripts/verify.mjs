@@ -23,6 +23,11 @@ const onlyStep = process.argv[2];
 const STEPS = [
   { id: 'secrets', label: 'secret scan', command: ['node', 'scripts/check-secrets.mjs'] },
   { id: 'config', label: 'config check', command: ['node', 'scripts/check-config.mjs'] },
+  {
+    id: 'compositor',
+    label: 'compositor cost check',
+    command: ['node', 'scripts/check-compositor.mjs'],
+  },
   { id: 'format', label: 'formatting', command: ['pnpm', 'exec', 'prettier', '--check', '.'] },
   { id: 'lint', label: 'lint', command: ['pnpm', 'exec', 'eslint', '.'] },
   { id: 'typecheck', label: 'typecheck', command: ['pnpm', '-r', 'typecheck'] },

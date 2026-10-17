@@ -1358,23 +1358,15 @@ body {
   animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.subtitle-content {
-  padding: var(--spacing-lg);
-  border-radius: var(--border-radius-lg);
-  background: var(--bg-panel);
-  backdrop-filter: blur(20px);
-  border: 1px solid var(--border-subtle);
-  box-shadow: var(--shadow-lg);
-  text-align: center;
-}
-
-.subtitle-header {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--spacing-md);
-  margin-bottom: var(--spacing-sm);
-}
+/*
+ * `.subtitle-content` and `.subtitle-header` were removed here.
+ *
+ * Both were dead: the story subtitle is rendered by `story-mode.svelte` as `.subtitle.glass` with a
+ * `.subtitle-head` child, so nothing in the app matched either selector. `.subtitle-content` carried
+ * a 20px `backdrop-filter`, which is a full re-blur of the canvas behind it on every presented frame
+ * — for an element that never renders. `scripts/check-compositor.mjs` flagged it as an unaccounted
+ * cost, which is the correct outcome for CSS with no markup behind it: delete it, do not allow-list it.
+ */
 
 .scene-counter {
   font-size: 11px;

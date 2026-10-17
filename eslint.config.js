@@ -30,6 +30,9 @@ export default tseslint.config(
       '**/coverage/**',
       '**/playwright-report/**',
       '**/test-results/**',
+      // Plan-workspace scratch (git-ignored): probe scripts written during an implementation
+      // session are not shipped code, and linting them fails the gate on debris it cannot see.
+      '**/.superpowers/**',
     ],
   },
 

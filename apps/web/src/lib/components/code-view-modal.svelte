@@ -20,12 +20,9 @@
     onclose: () => void;
   } = $props();
 
-  let rawCode = $state('');
-
-  $effect(() => {
-    rawCode =
-      peekBundleCode() ?? '(the model came from the reference set — no AI output for this session)';
-  });
+  const rawCode = $derived(
+    peekBundleCode() ?? '(the model came from the reference set — no AI output for this session)',
+  );
 
   async function copy() {
     const text = tab === 'raw' ? rawCode : JSON.stringify(manifest, null, 2);

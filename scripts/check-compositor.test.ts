@@ -106,7 +106,10 @@ describe('the compositor linter', () => {
 
   it('flags a backdrop blur on a known canvas overlay', () => {
     const offenders = findCompositorOffenders([
-      { file: 'synthetic.css', text: '.modal-overlay { position: fixed; backdrop-filter: blur(5px); }' },
+      {
+        file: 'synthetic.css',
+        text: '.modal-overlay { position: fixed; backdrop-filter: blur(5px); }',
+      },
     ]);
     expect(offenders).toHaveLength(1);
     expect(offenders[0]?.property).toBe('backdrop-filter');
@@ -142,7 +145,9 @@ describe('the compositor linter', () => {
   it('has every real offender accounted for, each with a reason and an owner', () => {
     const offenders = findCompositorOffenders(sheets);
     for (const offender of offenders) {
-      const reason = KNOWN_OFFENDERS[offender.selector];
+      const reason: string | undefined = (KNOWN_OFFENDERS as Readonly<Record<string, string>>)[
+        offender.selector
+      ];
       expect(
         reason,
         `unaccounted compositor cost: ${offender.property} ${offender.radius}px on ` +

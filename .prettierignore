@@ -5,6 +5,8 @@ build
 coverage
 playwright-report
 test-results
+# Plan-workspace scratch (git-ignored probe scripts written during an implementation session).
+.superpowers
 pnpm-lock.yaml
 .data
 artifacts

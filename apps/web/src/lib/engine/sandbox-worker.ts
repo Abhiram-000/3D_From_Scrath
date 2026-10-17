@@ -50,6 +50,10 @@ import {
 import { PhysicsWorld } from './physics-world.ts';
 import { computeFrameRate } from './frame-rate.ts';
 import { devEnabled } from '../dev-console.ts';
+import {
+  resetMotionDriven as resetMotionDrivenInto,
+  syncTransforms as syncManifestTransforms,
+} from './frame-compose.ts';
 
 /** Messages the page sends into the worker. */
 export type WorkerRequest =
@@ -899,14 +903,9 @@ function updateHover(target: WorkerState): void {
  * than multiplying on itself every frame.
  */
 function resetMotionDrivenParts(target: WorkerState, paused: boolean): void {
-  for (const [partId, base] of target.motionBases) {
-    if (paused && !target.runsWhilePausedParts.has(partId)) continue;
-    const live = target.partNodes.get(partId)?.transform;
-    if (!live) continue;
-    live.position = [...base.position] as [number, number, number];
-    live.rotation = base.rotation ? ([...base.rotation] as [number, number, number]) : undefined;
-    live.scale = [...base.scale] as [number, number, number];
-  }
+  // Delegated, in place: the worker's parts are the copy buffers, so the reset copies components
+  // and allocates nothing per part per frame (see frame-compose.ts for the identity contract).
+  resetMotionDrivenInto(target.motionBases, target.partNodes, target.runsWhilePausedParts, paused);
 }
 
 /**
@@ -1059,35 +1058,26 @@ function syncTransforms(target: WorkerState): void {
   const manifest = target.manifest;
   if (!model || !manifest) return;
 
-  for (const node of manifest.parts) {
-    const object = model.parts.get(node.id);
-    if (!object) continue;
-    // A simulated dynamic body drives its part; everything else follows the authored transform.
-    const simulated = target.physics?.simulatedParts.get(node.id);
-    if (simulated) {
-      object.position.set(...simulated.position);
-      object.rotation.set(...simulated.rotation);
-      object.visible = node.visible;
-      continue;
-    }
-    object.position.set(...node.transform.position);
-    if (node.transform.rotation) object.rotation.set(...node.transform.rotation);
-    object.scale.set(...node.transform.scale);
-    object.visible = node.visible;
+  // Delegated, by components: position/Euler/scale/visibility/material channels, no spreads.
+  syncManifestTransforms(model.parts, manifest.parts);
 
-    // Material channel writes: emissive intensity and opacity are the two the API exposes per frame.
-    if (node.material && (object instanceof THREE.Mesh || object instanceof THREE.InstancedMesh)) {
-      const material = object.material as THREE.Material & {
-        emissiveIntensity?: number;
-        opacity?: number;
-      };
-      if (node.material.emissiveIntensity !== undefined && 'emissiveIntensity' in material) {
-        material.emissiveIntensity = node.material.emissiveIntensity;
-      }
-      if (node.material.opacity !== undefined && 'opacity' in material) {
-        material.opacity = node.material.opacity;
-      }
+  // Physics-driven parts take their pose from the solver, not the manifest — the override after
+  // the manifest sync, exactly as before. Solver outputs are plain triples read off the Rapier
+  // body, written component-wise into the realized object.
+  const simulated = target.physics?.simulatedParts;
+  if (!simulated || simulated.size === 0) return;
+  for (const [partId, pose] of simulated) {
+    const object = model.parts.get(partId);
+    if (!object) continue;
+    object.position.x = pose.position[0];
+    object.position.y = pose.position[1];
+    object.position.z = pose.position[2];
+    if (object.rotation !== undefined && pose.rotation) {
+      object.rotation.x = pose.rotation[0];
+      object.rotation.y = pose.rotation[1];
+      object.rotation.z = pose.rotation[2];
     }
+    object.visible = true;
   }
 }
 

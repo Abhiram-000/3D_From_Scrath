@@ -19,6 +19,7 @@
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
   import { apiFetch, takeBundle, storedRuntime } from '$lib/core/api.ts';
+import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   import { toContext } from '$lib/core/model-context.ts';
   import { Ambient, getTheme, setTheme } from '$lib/ambient.ts';
   // V1's viewer stylesheets, verbatim (app shell + extended modals).
@@ -448,9 +449,14 @@
   }
 
   // ── Derived data ──────────────────────────────────────────────────────────
-  const activePart = $derived(
-    manifest?.parts.find((part) => part.id === (selectedPart ?? hoveredPart)) ?? null,
-  );
+  // An id → part index, built once per manifest. The tooltip and the panel each looked a part up
+  // with a linear `.find()` per read, and each of those reads walked a Svelte deep proxy, so a
+  // single hover change cost several full scans of the parts array.
+  const partsById = $derived(new Map((manifest?.parts ?? []).map((part) => [part.id, part])));
+
+  const metricsById = $derived(new Map((manifest?.metrics ?? []).map((metric) => [metric.id, metric])));
+
+  const activePart = $derived(partsById.get(selectedPart ?? hoveredPart ?? '') ?? null);
 
   const listedParts = $derived(
     manifest?.parts.filter((part) => part.selectable && part.kind !== 'group').slice(0, 200) ?? [],
@@ -480,7 +486,7 @@
   );
 
   const formatMetric = (id: string): string => {
-    const declaration = manifest?.metrics.find((metric) => metric.id === id);
+    const declaration = metricsById.get(id);
     const value = metrics[id];
     if (value === undefined || !declaration) return '—';
     return `${value.toFixed(declaration.precision)}${declaration.unit ? ` ${declaration.unit}` : ''}`;
@@ -1253,11 +1259,11 @@
       {#if hoveredPart && !selectedPart}
         <div class="tooltip-3d glass-panel">
           <div class="tooltip-header">
-            {manifest?.parts.find((p) => p.id === hoveredPart)?.name}
+            {partsById.get(hoveredPart)?.name}
           </div>
-          {#if manifest?.parts.find((p) => p.id === hoveredPart)?.info?.bullets?.length}
+          {#if partsById.get(hoveredPart)?.info?.bullets?.length}
             <ul class="tooltip-bullets">
-              {#each manifest.parts.find((p) => p.id === hoveredPart)?.info?.bullets as bullet, index (index)}
+              {#each partsById.get(hoveredPart)?.info?.bullets as bullet, index (index)}
                 <li>{bullet}</li>
               {/each}
             </ul>
@@ -1334,7 +1340,7 @@
 
       <div class="panel-content">
         <div class="info-panel">
-          {#if selectedPartInfo}
+          {#if selectedPartInfo && panelShowsSelectedPart(selectedPart, selectedPartInfo)}
             <div class="info-section">
               <h4 class="info-heading">Selected part</h4>
               <div class="info-content">

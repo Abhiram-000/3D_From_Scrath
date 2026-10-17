@@ -148,8 +148,8 @@ Commit the author's uncommitted work (prompts v7, `dev-console.ts` and its wirin
 half-done; delete the four scratch `*.tmp.mjs` scripts at the repo root. Run `pnpm verify`; record:
 
 - `frame-cost.test.ts` bytes/frame **(L3 baseline)**
-- reference-model build ms and per-builder ms **(no stat exists yet — add it in Phase 2 before
-  anything else, because nothing downstream can prove a claim without it)**
+- reference-model build wall-clock ms **per-builder ms cannot be recorded yet — the stat arrives
+  in Phase 2; Phase 1 records whole-build time only**
 
 Recorded in the commit message. Every later phase cites these numbers.
 
@@ -290,8 +290,6 @@ Q10's "number" is the regression test itself.
 - fix the broken `./authoring` export map target (`src/authoring/index.ts` does not exist)
 - delete the dead `chat-panel.svelte`/`quiz-modal.svelte` trees; export or delete the orphaned
   862-line `WATCH_MODEL_SOURCE`
-- `viewPresetsOpen` in `render-pause`'s overlay set: confirm the pure predicate test still holds
-  after Phase 2's dirty-flag change (it should — the predicate is unrelated)
 
 ### Phase 8 — Motion honesty
 
@@ -303,8 +301,12 @@ Q10's "number" is the regression test itself.
 - reject `flowAlongPath` at declaration with a naming-the-gap `SceneError`, and drop it from the
   API reference and audit vocabulary
 
-Pick one in the plan; both satisfy Q6. The existing `pathFrames` parallel transport in
-`solids.ts` is available if the implement path is chosen.
+Pick one here, now: **implement `pointOnPath`**, position-only, as an arc-length parameterisation
+over the declared `PathDecl` (~60 lines, reusing the path representations `solids.ts` already
+builds for `sweep`). The schema, audit and generation prompt already promise this capability, so
+rejecting it would shrink a surface the prompt advertises; the honest gap to close is the
+sampler, not the declaration. Uniform tangent frames are explicitly out of scope — the motion
+consumer needs position only.
 
 `SceneBuilder.dispose()` clears every registry it claims to own (it currently leaves `metrics`,
 `motions`, `paths`, `lights`, `shots`, `story`, `quiz`, `components`, `warnings`,
@@ -389,15 +391,19 @@ spec's Phase 5 and still undone:
 
 ## 8. Workflow
 
-- One phase, one commit; the commit message names the invariant (Q-number) it protects and the
+- Phases 1–6, 8, 9 and 10 land as one commit each. Phase 7 is the deliberate exception: its items
+  are unrelated to each other, so it lands as review-sized commits — one per defect or defect
+  group — inside the phase. The commit message names the invariant (Q-number) it protects and the
   number it moved.
 - `pnpm verify` green before every commit — secrets, config, compositor, format, lint,
   typecheck, unit, build, e2e.
 - TDD on the engine work: the failing test (degenerate triangles, floor breach, wrong `patch`
   collision, unguarded arrow loop) precedes the fix, per the repo's own standing rule that a
   regression test must demonstrably fail against the old code.
-- Phase 7's items are batched into review-sized commits inside the phase, each naming its own
-  regression test.
 
 No commit bundles a refactor with a behavioural change. No commit relaxes a deadline in
 `contracts/wire/sandbox.ts`.
+
+This spec covers the whole programme, but the implementation plan may follow the repo's own
+convention of one plan file per phase (as `2026-10-17-phase-0-1-render-performance.md` did) if a
+single plan grows past reviewable size. Phases 2+3 and 4+5 are the likely split points.

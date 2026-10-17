@@ -215,6 +215,8 @@ export class GeometryFactory {
   /** Cache hits, surfaced as a stat because `08` requires the technique to show up in the numbers. */
   private hits = 0;
   private misses = 0;
+  /** Cumulative build milliseconds per builder — the accumulator `buildTimings()` exposes. */
+  private readonly timings = new Map<string, number>();
 
   /** Warnings the build should report — clamped values, dropped triangles, repaired meshes. */
   readonly warnings: string[] = [];
@@ -252,6 +254,19 @@ export class GeometryFactory {
     this.hits = 0;
     this.misses = 0;
     this.warnings.length = 0;
+    this.timings.clear();
+  }
+
+  /**
+   * Cumulative construction milliseconds per builder, across this factory's lifetime.
+   *
+   * Cache hits bill nothing: the stat prices *construction*, and dedup is what the structural cache
+   * is for — a 200-bolt assembly billed per call would look two hundred times more expensive than
+   * it builds. Surface lives in the benchmark and (from Phase 6) the diagnostics panel; before
+   * this existed, "the SDF is slow" was folklore nobody could print.
+   */
+  buildTimings(): ReadonlyMap<string, number> {
+    return this.timings;
   }
 
   /**
@@ -274,7 +289,17 @@ export class GeometryFactory {
     }
 
     this.misses += 1;
-    const mesh = build();
+    // Timed around the builder only: validation, ceiling checks and normal computation are charged
+    // to registration overhead, not to the shape's construction cost — and a throw still bills its
+    // elapsed time, because a builder that fails after 14 s of marching cubes is exactly the cost
+    // the stat exists to make nameable.
+    const startedAt = performance.now();
+    let mesh: MeshData;
+    try {
+      mesh = build();
+    } finally {
+      this.timings.set(builder, (this.timings.get(builder) ?? 0) + (performance.now() - startedAt));
+    }
 
     const vertices = vertexCount(mesh);
     const triangles = triangleCount(mesh);

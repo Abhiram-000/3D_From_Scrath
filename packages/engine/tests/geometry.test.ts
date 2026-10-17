@@ -763,3 +763,24 @@ describe('parametric and implicit builders', () => {
     expect(soft.builder).toBe('sdf');
   });
 });
+
+describe('per-builder cost — the number cost claims cite', () => {
+  it('records cumulative build time per builder and bills cache misses only', () => {
+    const { factory, geom } = setup();
+    geom.sphere({ radius: 1 });
+    geom.box({ size: [1, 1, 1] });
+    // A snapshot, not the live map: buildTimings hands back the accumulator itself, so holding the
+    // reference would alias the second read and hide a hit-billing regression.
+    const once = new Map(factory.buildTimings());
+    // A cache hit must not bill the builder again: the stat prices construction, and dedup is the
+    // whole point of the structural cache. Billing hits would make a 200-bolt assembly look 200x
+    // more expensive than it builds.
+    geom.sphere({ radius: 1 });
+    const twice = factory.buildTimings();
+    expect(once.get('sphere')).toBe(twice.get('sphere'));
+    expect(once.get('box')).toBeGreaterThanOrEqual(0);
+    // Both entries exist with finite numbers — a stat that is NaN or absent is no stat at all.
+    expect(Number.isFinite(once.get('sphere')!)).toBe(true);
+    expect(Number.isFinite(once.get('box')!)).toBe(true);
+  });
+});

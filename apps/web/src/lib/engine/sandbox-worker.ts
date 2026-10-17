@@ -242,8 +242,22 @@ interface WorkerState {
   partNodes: Map<string, ModelManifest['parts'][number]>;
   motionBases: Map<string, PartTransformLike>;
   runsWhilePausedParts: Set<string>;
-  /** The latest physics probe read-outs, so `{ probe: … }` scalar sources resolve per frame. */
+  /** Latest physics probe read-outs, so `{ probe: … }` scalar sources resolve per frame. */
   lastProbes: Readonly<Record<string, number>>;
+  /**
+   * The numeric parameter record the applicator resolves against, `null` when invalidated.
+   *
+   * `setParameter` nulls it; the next `applyDeclaredMotions` rebuilds it lazily. The record is
+   * read-only for its consumers — a parameter that arrives mid-frame is honoured next frame, which
+   * is within the same wall-clock window the slider's own event happened in.
+   */
+  paramsRecord: Record<string, number> | null;
+  /**
+   * A deferred-frame request. Phase 2 honours it trivially (the loop runs continuously); Phase 3's
+   * on-demand rendering is what reads it as a gate. Kept as a declared field so the setParameter
+   * contract does not change shape between the phases.
+   */
+  needsFrame: boolean;
 
   paused: boolean;
   timeScale: number;
@@ -505,6 +519,8 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     motionBases: new Map(),
     runsWhilePausedParts: new Set(),
     lastProbes: {},
+    paramsRecord: null,
+    needsFrame: false,
 
     paused: false,
     timeScale: 1,
@@ -925,11 +941,18 @@ function applyDeclaredMotions(target: WorkerState): void {
     // skips in the browser (declared, audited, not yet flowing). Adding the sampler is a matter
     // of resolving manifest.paths here — deliberately not guessed at today.
   };
-  const params: Record<string, number> = {};
-  if (target.builder) {
-    for (const [id, value] of Object.entries(target.builder.currentParameters())) {
-      if (typeof value === 'number') params[id] = value;
+  // The parameter record is rebuilt only when a parameter changes (the `setParameter` handler
+  // invalidates it), not per frame: `Object.entries` over the model's parameters was an allocation
+  // every frame for data that changes on slider input alone.
+  let params = target.paramsRecord;
+  if (!params) {
+    params = {};
+    if (target.builder) {
+      for (const [id, value] of Object.entries(target.builder.currentParameters())) {
+        if (typeof value === 'number') params[id] = value;
+      }
     }
+    target.paramsRecord = params;
   }
   const context: ScalarContext = {
     params,
@@ -970,6 +993,11 @@ function renderFrame(target: WorkerState, timestamp: number): void {
 
   // Guest frame logic, budgeted. A callback that overruns repeatedly gets the model paused with an explanation
   // rather than being killed: `SANDBOX_LIMITS.frameOverrunLimit`.
+  // The loop still runs while paused at this phase — the guest holds its own clock via `ctx.paused`,
+  // and declared runsWhilePaused parts compose off the wall clock below — so `needsFrame` has no
+  // gate to fire here yet; it is the on-demand-rendering hook the next phase wires in. Parameter
+  // invalidation reaches the applicator through `paramsRecord` alone.
+  target.needsFrame = false;
   if (target.builder && target.guard && !target.frameDisabled && !CONTEXT_LOST) {
     target.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
     const callbackStart = now();
@@ -1337,20 +1365,13 @@ function loop(timestamp: number): void {
         state.builder.setParameter(request.id, request.value);
         // A sleeping body must hear a parameter change (`02` R5).
         state.physics?.wakeAll();
-        // Run one frame immediately so the change is visible within a frame rather than at the next tick (`03` R4).
-        if (!state.frameDisabled && state.guard) {
-          state.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
-          try {
-            // Same order as the frame loop: base reset, model code, declared motion — so a
-            // paused model whose slider moved re-poses its runsWhilePaused motions immediately.
-            resetMotionDrivenParts(state, state.paused);
-            state.builder.runFrame(state.elapsed, 0, state.paused);
-            applyDeclaredMotions(state);
-            syncTransforms(state);
-          } catch {
-            // A parameter change that throws is reported by the next frame's handler; nothing to do here.
-          }
-        }
+        // The change is honoured by the next frame — which this request lands within, since the
+        // rAF loop is already scheduled and a parameter's visible effect is measured against the
+        // presented frame, not the message tick. The old synchronous extra frame here doubled the
+        // worker's per-frame work for the whole drag; `needsFrame` below carries the same promise
+        // (visible within a frame, `03` R4) at one frame's cost.
+        state.paramsRecord = null;
+        state.needsFrame = true;
         break;
       }
 

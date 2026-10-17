@@ -21,6 +21,7 @@
   import { apiFetch, takeBundle, storedRuntime } from '$lib/core/api.ts';
 import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   import { shouldSendPointerNow, toCanvasPoint, type RectLike } from '$lib/core/pointer.ts';
+  import { anyOverlayOpen, shouldPauseRender } from '$lib/core/render-pause.ts';
   import { toContext } from '$lib/core/model-context.ts';
   import { Ambient, getTheme, setTheme } from '$lib/ambient.ts';
   // V1's viewer stylesheets, verbatim (app shell + extended modals).
@@ -325,6 +326,9 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
 
   onDestroy(() => {
     cancelPendingHover();
+    // The handle closes over a SandboxHost that is about to be disposed. Leaving it on `window`
+    // means a later caller would postMessage to a terminated worker.
+    delete (window as unknown as { __edu3dHost?: unknown }).__edu3dHost;
     host?.dispose();
     host = null;
   });
@@ -590,6 +594,34 @@ import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
       ],
     },
   ];
+
+  /**
+   * Stop the engine while an overlay is open.
+   *
+   * `viewer.css` documents this - "the engine's render loop is stopped while it is open" - and no
+   * handler implemented it. The worker kept presenting frames behind a modal whose overlay the
+   * compositor was re-filtering every frame, which is the freeze that comment was written about.
+   *
+   * An effect rather than a call in each of the fifteen places a modal flag is assigned, because a
+   * missed site is a missed pause and nothing would say so. It reads every flag AND `paused`, so it
+   * re-runs when the learner pauses or resumes too — which is what makes it impossible to latch, and
+   * impossible for one modal's pause to survive into the next model.
+   */
+  $effect(() => {
+    const overlayOpen = anyOverlayOpen({
+      quizModalOpen,
+      shortcutsModalOpen,
+      shareModalOpen,
+      galleryOpen,
+      generateOpen,
+      codeViewModalOpen,
+      viewPresetsOpen,
+    });
+    // Read both before acting, so the dependency set includes them.
+    const requestedPause = shouldPauseRender(overlayOpen, paused);
+    if (!engineReady) return;
+    host?.setPaused(requestedPause);
+  });
 
   // ── Pointer handlers (V1: primary orbits, middle/shift pans) ──────────────
   /**

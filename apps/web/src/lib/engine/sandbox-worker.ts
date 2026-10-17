@@ -91,7 +91,6 @@ export type WorkerResponse =
   | { type: 'log'; level: 'log' | 'warn' | 'error'; message: string }
   | { type: 'notice'; message: string }
   | { type: 'snapshot'; blob: Blob }
-  | { type: 'heartbeat'; frame: number }
   | { type: 'disposed' };
 
 /** The admission verdict, minus the `Map`/`Set` fields that do not survive structured cloning cleanly. */
@@ -248,7 +247,7 @@ interface WorkerState {
   wallElapsed: number;
   frame: number;
   lastFrameAt: number;
-  /** Wall-clock of the last heartbeat/stats post, so slow frames cannot starve the watchdog. */
+  /** Wall-clock of the last stats post, so slow frames cannot starve the watchdog. */
   lastHeartbeatMs: number;
   lastStatsMs: number;
   frameTimes: number[];
@@ -995,12 +994,10 @@ function renderFrame(target: WorkerState, timestamp: number): void {
 
   target.frame += 1;
 
+  // No heartbeat message. It shared a 1,000ms interval and a start instant with the stats publish
+  // below, so it posted in the same frame, every second, forever - and the host treats *any* message
+  // as proof the worker's event loop is turning, so it proved nothing the stats post did not.
   const clockMs = now();
-  if (clockMs - target.lastHeartbeatMs >= TIMING.heartbeatIntervalMs) {
-    target.lastHeartbeatMs = clockMs;
-    post({ type: 'heartbeat', frame: target.frame });
-  }
-
   if (clockMs - target.lastStatsMs >= TIMING.statsIntervalMs) {
     target.lastStatsMs = clockMs;
     publishStats(target);

@@ -315,9 +315,6 @@ export class SandboxHost {
       case 'snapshot':
         this.callbacks.onSnapshot?.(message.blob);
         break;
-      case 'heartbeat':
-        this.lastHeartbeatAt = performance.now();
-        break;
       case 'disposed':
         break;
       default:

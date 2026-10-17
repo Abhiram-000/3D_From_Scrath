@@ -160,7 +160,11 @@
     theme = getTheme();
     if (!support.supported || !canvasHolder) return;
 
-    ambient = new Ambient({ grid: false, spotlight: false }); // The viewer is chrome-heavy; V1 ran no cursor system here.
+    // The viewer is chrome-heavy and has no cursor system. `blobs: false` matters more than it looks:
+    // the ambient blobs are blur(60px) on ~780px surfaces, and this page has an opaque WebGL canvas
+    // underneath them, where a non-integer animated scale forces the blur to re-rasterise on every
+    // presented frame. Passing only grid/spotlight left them created anyway.
+    ambient = new Ambient({ grid: false, spotlight: false, blobs: false });
     ambient.mount();
 
     host = new SandboxHost(canvasHolder, callbacks);

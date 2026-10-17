@@ -32,10 +32,30 @@ interface ParallaxLayer {
 export interface AmbientOptions {
   grid?: boolean;
   spotlight?: boolean;
+  /**
+   * The drifting colour blobs.
+   *
+   * Opt-out rather than opt-in-by-default for the viewer specifically: these are `blur(60px)` on
+   * ~780px surfaces, and over an opaque canvas a non-integer scale in their animation forces a
+   * re-rasterisation every presented frame. Defaults to true, so the landing and loading pages —
+   * which have no canvas underneath and want the decoration — are unaffected.
+   */
+  blobs?: boolean;
   magnetStrength?: number;
   magnetRadius?: number;
   /** Spotlight easing speed; the grid trails slightly slower for depth. */
   ease?: number;
+}
+
+/**
+ * Whether an ambient layer is worth creating at all.
+ *
+ * When this returns false, `mount()` must append nothing to the document and must not start the
+ * animation loop — the loop keeps the main thread's frame queue occupied every frame, so an ambient
+ * layer that renders nothing is not free even when it draws nothing visible.
+ */
+export function ambientLayerRequested(options: AmbientOptions = {}): boolean {
+  return options.grid !== false || options.spotlight !== false || options.blobs !== false;
 }
 
 export class Ambient {
@@ -155,24 +175,32 @@ export class Ambient {
     this.ease = options.ease ?? 0.11;
     this.useGrid = options.grid !== false;
     this.useSpot = options.spotlight !== false;
+    this.useBlobs = options.blobs !== false;
   }
 
   private readonly useGrid: boolean;
   private readonly useSpot: boolean;
+  private readonly useBlobs: boolean;
 
   mount(): this {
     if (this.layer) return this;
+    // Nothing was asked for, so nothing is created and nothing animates. The viewer takes this path:
+    // it wants no cursor system, and an ambient layer here sits above an opaque WebGL canvas where
+    // its blur is re-rasterised on every presented frame.
+    if (!this.useGrid && !this.useSpot && !this.useBlobs) return this;
 
     const layer = document.createElement('div');
     layer.className = 'ambient-layer';
     layer.setAttribute('aria-hidden', 'true');
 
     // Slow-drifting colour blobs: the always-on base, and the whole show on touch devices.
-    const blobA = document.createElement('div');
-    blobA.className = 'ambient-blob ambient-blob-a';
-    const blobB = document.createElement('div');
-    blobB.className = 'ambient-blob ambient-blob-b';
-    layer.append(blobA, blobB);
+    if (this.useBlobs) {
+      const blobA = document.createElement('div');
+      blobA.className = 'ambient-blob ambient-blob-a';
+      const blobB = document.createElement('div');
+      blobB.className = 'ambient-blob ambient-blob-b';
+      layer.append(blobA, blobB);
+    }
 
     if (this.useSpot && this.tracking) {
       this.spot = document.createElement('div');

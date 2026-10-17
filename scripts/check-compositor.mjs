@@ -52,9 +52,9 @@ const MIN_ANIMATED_FILTER_RADIUS_PX = 20;
  */
 export const KNOWN_OFFENDERS = Object.freeze({
   '.ambient-blob':
-    'Landing and loading pages only — the viewer must pass blobs:false (performance plan Phase 1, Task 4). ' +
-    'The blob CSS is global and shared, so no stylesheet rule can prove the viewer is exempt; that is ' +
-    'enforced at runtime instead.',
+    'Landing and loading pages only. The viewer passes blobs:false, so it instantiates nothing; ' +
+    'asserted at runtime by the viewer e2e test, because the blob CSS is shared and no stylesheet ' +
+    'rule can prove the viewer is exempt. Removing the shared CSS would remove this entry.',
   '.modal-overlay':
     'Full-viewport backdrop blur while the engine is still rendering (performance plan Phase 1, Task 8). ' +
     'Viewer.css already documents the diagnosis and implements the solid-background half.',

@@ -48,6 +48,19 @@ test.describe('the viewer', () => {
     expect(consoleErrors, consoleErrors.join('\n')).toHaveLength(0);
   });
 
+  test('instantiates no blurred decoration over the canvas', async ({ page }) => {
+    await page.goto('/viewer');
+    await waitForModel(page);
+
+    // The viewer asks for no cursor system, and `Ambient.mount()` used to create its blur(60px) blobs
+    // regardless — above an opaque canvas, where a non-integer animated scale forces the blur to
+    // re-rasterise on every presented frame. `scripts/check-compositor.mjs` cannot enforce this: the
+    // blob CSS is shared with the landing page, so no stylesheet rule can prove the viewer is exempt.
+    // The page itself has to be the assertion.
+    await expect(page.locator('.ambient-layer')).toHaveCount(0);
+    await expect(page.locator('.ambient-blob')).toHaveCount(0);
+  });
+
   test('draws frames rather than a single static image', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);

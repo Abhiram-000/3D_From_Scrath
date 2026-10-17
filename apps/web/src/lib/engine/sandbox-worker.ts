@@ -48,6 +48,8 @@ import {
   type ScalarContext,
 } from '@edu3d/engine';
 import { PhysicsWorld } from './physics-world.ts';
+import { computeFrameRate } from './frame-rate.ts';
+import { devEnabled } from '../dev-console.ts';
 
 /** Messages the page sends into the worker. */
 export type WorkerRequest =
@@ -234,6 +236,9 @@ interface WorkerState {
   paused: boolean;
   timeScale: number;
   elapsed: number;
+  /** Previous frame-rate sample: the frame count and clock reading `computeFrameRate` measures against. */
+  lastRateFrame: number;
+  lastRateAt: number;
   /**
    * Wall-clock seconds — advances every frame regardless of pause, and is consumed only by
    * `runsWhilePaused` motions. The pausable `elapsed` freezes with the model, so without this
@@ -490,6 +495,8 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     paused: false,
     timeScale: 1,
     elapsed: 0,
+    lastRateFrame: 0,
+    lastRateAt: 0,
     wallElapsed: 0,
     frame: 0,
     lastFrameAt: 0,
@@ -1185,6 +1192,8 @@ function monitorLadder(target: WorkerState, frameTimeMs: number): void {
 /** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */ function publishStats(
   target: WorkerState,
 ): void {
+  const publishedAt = now();
+
   const average =
     target.frameTimes.length > 0
       ? target.frameTimes.reduce((sum, value) => sum + value, 0) / target.frameTimes.length
@@ -1197,7 +1206,11 @@ function monitorLadder(target: WorkerState, frameTimeMs: number): void {
   post({
     type: 'stats',
     stats: {
-      fps: average > 0 ? Math.min(240, 1000 / average) : 0,
+      // Frames actually presented per second, measured across the window since the last publish.
+      // This used to be `1000 / average`, which reports how fast a frame COULD complete rather than
+      // how often one ran: a stalled loop whose last frames were fast claimed 68fps while presenting
+      // nothing for 29 seconds. `frameMillis` stays as the mean per-frame work duration.
+      fps: computeFrameRate(target.frame, target.lastRateFrame, publishedAt, target.lastRateAt),
       frameMillis: average,
       drawCalls: info.render.calls,
       triangles: info.render.triangles,
@@ -1209,6 +1222,9 @@ function monitorLadder(target: WorkerState, frameTimeMs: number): void {
       degradedRungs: [...target.ladder.applied],
     },
   });
+
+  target.lastRateFrame = target.frame;
+  target.lastRateAt = publishedAt;
 }
 
 /** Release everything the worker owns. Idempotent and tolerant of partial prior failures (`02` R7). */
@@ -1231,7 +1247,16 @@ function disposeAll(): void {
 /** The frame loop. `requestAnimationFrame` in a worker pauses when the page is hidden, which is wanted (`08`). */
 function loop(timestamp: number): void {
   if (!state) return;
-  renderFrame(state, timestamp);
+  // The reschedule must not be conditional on this frame succeeding. An exception thrown anywhere
+  // in worker-internal code — the adaptive ladder, statistics, the hover cast — used to escape past
+  // `scheduleFrame`, so the loop simply stopped being rescheduled: the page kept showing the last
+  // frame forever, with no notice, no console error and no watcher trip, because a dead render loop
+  // sends nothing. `00`: "a model's runtime failure is a normal event, not an exception."
+  try {
+    renderFrame(state, timestamp);
+  } catch (error) {
+    post({ type: 'notice', message: `Rendering stopped: ${describeFailure(error).message}` });
+  }
   scheduleFrame(loop);
 }
 

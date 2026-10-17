@@ -13,11 +13,18 @@ import { expect, test, type Page } from '@playwright/test';
 
 /** Wait until the worker has authored, priced and realized the model. */
 async function waitForModel(page: Page): Promise<void> {
-  // The status bar only shows measured numbers once frames are running, so its presence is the honest signal that
-  // the whole pipeline completed — not a spinner disappearing.
-  await expect(page.getByTitle('Frames per second, measured over a rolling window')).toBeVisible({
+  // The stat item itself is always in the markup — it renders a dash until the first measured
+  // frame. So its PRESENCE proves the toolbar painted, not that a model built; the honest signal
+  // is the measured value replacing that dash. (An earlier version of this helper waited on the
+  // element, which passed before any geometry existed and let every later assertion fail.)
+  await expect(page.locator('[data-stat="fps"] .stat-value')).not.toHaveText('—', {
     timeout: 60_000,
   });
+}
+
+/** A measured stat's value, not the stat item (whose textContent also contains its label). */
+function statValue(page: Page, stat: string) {
+  return page.locator(`[data-stat="${stat}"] .stat-value`);
 }
 
 test.describe('the viewer', () => {
@@ -35,7 +42,7 @@ test.describe('the viewer', () => {
 
     // Something was actually drawn. A canvas that exists but renders nothing would pass a visibility check, so the
     // assertion is on the *measured* triangle count the worker reports.
-    const triangles = await page.getByTitle('Triangles this frame').textContent();
+    const triangles = await statValue(page, 'triangles').textContent();
     expect(Number.parseInt(triangles ?? '0', 10)).toBeGreaterThan(0);
 
     expect(consoleErrors, consoleErrors.join('\n')).toHaveLength(0);
@@ -46,9 +53,9 @@ test.describe('the viewer', () => {
     await waitForModel(page);
 
     // `00`: "the default state of a model is motion"; a viewer that renders one frame and stops is a picture.
-    const firstTime = await page.getByTitle('Model time').textContent();
+    const firstTime = await statValue(page, 'time').textContent();
     await page.waitForTimeout(1500);
-    const laterTime = await page.getByTitle('Model time').textContent();
+    const laterTime = await statValue(page, 'time').textContent();
     expect(laterTime).not.toBe(firstTime);
   });
 
@@ -56,12 +63,14 @@ test.describe('the viewer', () => {
     await page.goto('/viewer');
     await waitForModel(page);
 
-    const tier = await page.getByTitle('Device tier').textContent();
+    const tier = await statValue(page, 'tier').textContent();
     expect(['low', 'mid', 'high']).toContain((tier ?? '').trim());
 
-    // If the platform degraded anything, it says so. `08`: "silent degradation reads as breakage."
-    const badge = page.getByText('quality adapted');
+    // If the platform degraded anything, it says so, and says what it gave up. `08`: "silent
+    // degradation reads as breakage." The messages live on the stat item's title, not the value's.
+    const badge = page.locator('[data-stat="quality"]');
     if (await badge.isVisible()) {
+      await expect(badge.locator('.stat-value')).toHaveText('Adapted');
       await expect(badge).toHaveAttribute('title', /.{15,}/);
     }
   });
@@ -75,20 +84,24 @@ test.describe('the viewer', () => {
 
     // The read-out is a formatted number with a unit, which is `00`'s requirement that parameters be quantitative
     // rather than cosmetic.
-    const readout = page.locator('.control', { has: slider }).locator('output');
+    const readout = page.locator('.parameter-item', { has: slider }).locator('.parameter-value');
     const before = await readout.textContent();
     expect(before).toMatch(/rpm/);
 
-    await slider.fill('11000');
+    // A range input only accepts a value that is a multiple of its step, and `fill` enforces
+    // that. The viewer derives step as (max-min)/200, so spoolRpm steps by 60 and fuelFlow by
+    // 0.007: 10800 is 60x180, 0.7 is 0.007x100. A round-looking number that is off-step
+    // fails as "Malformed value" rather than snapping, which is the test's bug, not the app's.
+    await slider.fill('10800');
     await expect(readout).not.toHaveText(before ?? '');
 
     // The change reached the worker: fuel-driven metrics move with the parameters that feed them.
     await page.waitForTimeout(600);
     const fuel = page.locator('#param-fuelFlow');
-    await fuel.fill('1.3');
+    await fuel.fill('0.7');
     await page.waitForTimeout(600);
     // Thrust is published by the model's own frame code from those same inputs.
-    const thrust = page.locator('dt', { hasText: 'Thrust' }).locator('+ dd');
+    const thrust = page.locator('.metric-item', { hasText: 'Thrust' }).locator('.metric-value');
     await expect(thrust).not.toHaveText('—');
   });
 
@@ -114,14 +127,16 @@ test.describe('the viewer', () => {
     await page.goto('/viewer');
     await waitForModel(page);
 
-    for (const mode of ['X-ray', 'Wire', 'Explode', 'Solid']) {
-      await page.getByRole('button', { name: mode, exact: true }).click();
-      await page.waitForTimeout(350);
-      // Still rendering after the switch: a mode that kills the loop is the failure this catches.
-      const fps = await page
-        .getByTitle('Frames per second, measured over a rolling window')
-        .textContent();
-      expect(Number.parseFloat(fps ?? '0')).toBeGreaterThan(0);
+    // The three view modes are toggles, not a radio group: each returns to normal on a second
+    // click. There is no `Solid` button — normal is the state you get by turning the others off.
+    for (const mode of ['X-ray', 'Wireframe', 'Explode']) {
+      for (const turn of ['on', 'off'] as const) {
+        await page.getByRole('button', { name: mode, exact: true }).click();
+        await page.waitForTimeout(350);
+        // Still rendering after the switch: a mode that kills the loop is the failure this catches.
+        const fps = await statValue(page, 'fps').textContent();
+        expect(Number.parseFloat(fps ?? '0'), `${mode} ${turn}`).toBeGreaterThan(0);
+      }
     }
   });
 
@@ -130,20 +145,20 @@ test.describe('the viewer', () => {
     await waitForModel(page);
 
     await page.getByRole('button', { name: 'Pause' }).click();
-    const paused = await page.getByTitle('Model time').textContent();
+    const paused = await statValue(page, 'time').textContent();
     await page.waitForTimeout(900);
-    expect(await page.getByTitle('Model time').textContent()).toBe(paused);
+    expect(await statValue(page, 'time').textContent()).toBe(paused);
 
     await page.getByRole('button', { name: 'Play' }).click();
     await page.waitForTimeout(900);
-    expect(await page.getByTitle('Model time').textContent()).not.toBe(paused);
+    expect(await statValue(page, 'time').textContent()).not.toBe(paused);
   });
 
   test('orbits the camera on drag without losing the model', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
 
-    const holder = page.locator('.canvas-holder');
+    const holder = page.locator('.main-canvas-holder');
     const box = await holder.boundingBox();
     expect(box).not.toBeNull();
     if (!box) return;
@@ -155,22 +170,31 @@ test.describe('the viewer', () => {
 
     await page.waitForTimeout(400);
     // Still drawing triangles: an orbit that pushes the camera inside the model or to NaN would cull everything.
-    const triangles = await page.getByTitle('Triangles this frame').textContent();
+    const triangles = await statValue(page, 'triangles').textContent();
     expect(Number.parseInt(triangles ?? '0', 10)).toBeGreaterThan(0);
   });
 
-  test('exposes measured diagnostics rather than estimates', async ({ page }) => {
+  test('shows what the model actually produced rather than an estimate', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
 
-    await page.getByRole('button', { name: 'diagnostics' }).click();
-    const panel = page.getByRole('region', { name: 'Diagnostics' });
-    await expect(panel).toBeVisible();
+    // There is no diagnostics panel in the viewer. `03` R8 asks for the real cost next to the
+    // model's own output, and the AI Output modal is what ships: measured cost chips, the raw text
+    // the model wrote, and the manifest the engine validated and built from.
+    await page.getByRole('button', { name: 'AI Output' }).click();
+    const modal = page.locator('.code-view-modal');
+    await expect(modal).toBeVisible();
 
-    // `03` R8: the panel shows what the model actually produced, including its real cost.
-    await expect(panel.getByText(/unique geometries/)).toBeVisible();
-    await expect(panel.getByText(/instanced sets/)).toBeVisible();
-    await expect(panel.getByText(/Authoring pass took \d+ ms/)).toBeVisible();
+    // Measured, not estimated: these come from the authoring pass, so a change to the geometry
+    // builders moves them and a viewer that hard-coded them would fail here.
+    await expect(modal.locator('.code-view-chip', { hasText: 'parts' })).toBeVisible();
+    await expect(modal.locator('.code-view-chip', { hasText: 'triangles' })).toBeVisible();
+    await expect(modal.locator('.code-view-chip', { hasText: /^authoring \d+ ms$/ })).toBeVisible();
+
+    // The validated spec, not the raw tab: the raw tab legitimately says the model came from the
+    // reference set when there is no stored bundle, so asserting on it would assert nothing.
+    await page.getByRole('button', { name: 'Scene spec (validated)' }).click();
+    await expect(modal.locator('.code-view-pre code')).toContainText('Two-spool turbofan');
   });
 
   test('keeps the page alive when a model fails to build', async ({ page }) => {
@@ -193,7 +217,7 @@ test.describe('the viewer', () => {
       timeout: 30_000,
     });
     await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'diagnostics' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'AI Output' })).toBeEnabled();
   });
 
   test('survives a runaway model by killing the worker, not the page', async ({ page }) => {
@@ -225,7 +249,7 @@ test.describe('the viewer', () => {
     await waitForModel(page);
 
     // `08`: the canvas owns the screen and panels become sheets rather than columns.
-    const holder = await page.locator('.canvas-holder').boundingBox();
+    const holder = await page.locator('.main-canvas-holder').boundingBox();
     const viewport = page.viewportSize();
     expect(holder).not.toBeNull();
     expect(viewport).not.toBeNull();

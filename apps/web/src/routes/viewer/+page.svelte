@@ -1142,6 +1142,7 @@
                         <input
                           type="range"
                           class="parameter-slider"
+                          id={'param-' + parameter.id}
                           min={parameter.min}
                           max={parameter.max}
                           step={parameter.step ?? (parameter.max - parameter.min) / 200}
@@ -1420,25 +1421,25 @@
   <!-- ── Bottom Stats Bar ─────────────────────────────────────────────────── -->
   <footer class="bottom-bar glass-panel">
     <div class="stats-group">
-      <div class="stat-item">
+      <div class="stat-item" data-stat="fps" title="Frames per second, measured over a rolling window">
         <span class="stat-label">FPS</span>
         <span class="stat-value">{stats ? stats.fps.toFixed(0) : '—'}</span>
       </div>
-      <div class="stat-item">
+      <div class="stat-item" data-stat="draws" title="Draw calls in the last rendered frame">
         <span class="stat-label">Draws</span>
         <span class="stat-value">{stats?.drawCalls ?? '—'}</span>
       </div>
-      <div class="stat-item">
+      <div class="stat-item" data-stat="triangles" title="Triangles this frame">
         <span class="stat-label">Triangles</span>
         <span class="stat-value">{stats ? `${(stats.triangles / 1000).toFixed(0)}k` : '—'}</span>
       </div>
-      <div class="stat-item">
+      <div class="stat-item" data-stat="time" title="Model time">
         <span class="stat-label">Time</span>
         <span class="stat-value">{stats ? formatTime(stats.simSeconds) : '00:00'}</span>
       </div>
     </div>
     <div class="stats-group">
-      <div class="stat-item">
+      <div class="stat-item" data-stat="tier" title="Device tier">
         <span class="stat-label">Tier</span>
         <span class="stat-value">{deviceTier || '—'}</span>
       </div>
@@ -1447,7 +1448,11 @@
         <span class="stat-value">{manifest?.physics ? 'On' : 'Off'}</span>
       </div>
       {#if verdict && verdict.adjustments.length > 0}
-        <div class="stat-item" title={verdict.adjustments.map((a) => a.message).join(' ')}>
+        <div
+          class="stat-item"
+          data-stat="quality"
+          title={verdict.adjustments.map((a) => a.message).join(' ')}
+        >
           <span class="stat-label">Quality</span>
           <span class="stat-value warning">Adapted</span>
         </div>

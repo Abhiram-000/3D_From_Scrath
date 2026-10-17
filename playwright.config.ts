@@ -64,9 +64,17 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: `pnpm --filter @edu3d/web exec vite preview --port ${PORT} --strictPort`,
+    // `--host 127.0.0.1` is load-bearing, not decoration. Vite's preview server binds `localhost`,
+    // which resolves to ::1 first on many systems, so the process is listening on IPv6 while the
+    // `url` below probes IPv4 — the readiness check then never passes and every test fails for a
+    // reason that has nothing to do with the code under test. Pinning the bind to IPv4 makes the
+    // address in `url` the address the server actually holds.
+    command: `pnpm --filter @edu3d/web exec vite preview --host 127.0.0.1 --port ${PORT} --strictPort`,
     url: `http://127.0.0.1:${PORT}`,
-    reuseExistingServer: !process.env.CI,
+    // Never reuse a server we did not start. A preview server left over from an earlier run serves
+    // a stale build directory: hashed chunk names 404, the page renders as an empty fallback shell,
+    // and the whole suite fails in a way that looks like an application bug.
+    reuseExistingServer: false,
     timeout: 120_000,
     stdout: 'ignore',
     stderr: 'pipe',

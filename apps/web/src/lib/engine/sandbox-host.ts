@@ -60,13 +60,24 @@ const WATCHDOG = {
   /** The adaptive timeout is capped so a pathological stats value cannot disable the watchdog entirely. */
   maxHeartbeatTimeoutMs: 30_000,
   /**
-   * Grace period after a load request before heartbeat monitoring resumes.
+   * Grace period after a load request before heartbeat monitoring resumes, per device tier.
    *
    * A build legitimately blocks the worker's event loop for seconds — marching cubes on a complex SDF is the usual
    * case — and killing a model for successfully building would be absurd. The build deadline inside the worker is
    * the mechanism that bounds this phase.
+   *
+   * It is tier-scaled for the same reason `heartbeatTimeoutMs` scales with measured frame time: the worker cannot
+   * beat while it is compiling shaders, so the grace has to cover realization AND first-frame shader compilation,
+   * and that cost is several times higher on a weak device. A single flat number made a software rasterizer flaky
+   * — the same build finished in 16 s or was killed at 25 s depending on the run — so the suite that is supposed to
+   * catch regressions could not be trusted to. The kill still happens; it just stops firing on work that was going
+   * to finish.
    */
-  buildGraceMs: 25_000,
+  buildGraceMsByTier: {
+    low: 60_000,
+    mid: 40_000,
+    high: 25_000,
+  },
 } as const;
 
 /** Device detection, run once. `08`: detect cheaply at startup, then trust *measured behaviour* over strings. */
@@ -402,7 +413,7 @@ export class SandboxHost {
     this.recreateCanvas();
     this.spawnWorker();
 
-    this.buildingUntil = performance.now() + WATCHDOG.buildGraceMs;
+    this.buildingUntil = performance.now() + WATCHDOG.buildGraceMsByTier[this.tier];
     this.send({ type: 'load', code, seed, ...(runtime ? { runtime } : {}) });
   }
 

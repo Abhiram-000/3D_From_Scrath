@@ -168,6 +168,10 @@ function stageLog(message: string): void {
   if (devEnabled) post({ type: 'log', level: 'log', message: `stage · ${message}` });
 }
 
+/** Pan scratch, module-level: two vectors reused per gesture message instead of two fresh ones. */
+const CAMERA_PAN_RIGHT = new THREE.Vector3();
+const CAMERA_PAN_UP = new THREE.Vector3();
+
 /** Frame timing constants, each with a reason rather than a guessed number. */
 const TIMING = {
   /**
@@ -244,6 +248,8 @@ interface WorkerState {
   runsWhilePausedParts: Set<string>;
   /** Latest physics probe read-outs, so `{ probe: … }` scalar sources resolve per frame. */
   lastProbes: Readonly<Record<string, number>>;
+  /** Per-frame flag bank: camera gestures coalesce to one `updateCamera` per tick. */
+  cameraDirty: boolean;
   /**
    * The numeric parameter record the applicator resolves against, `null` when invalidated.
    *
@@ -521,6 +527,7 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     lastProbes: {},
     paramsRecord: null,
     needsFrame: false,
+    cameraDirty: false,
 
     paused: false,
     timeScale: 1,
@@ -1033,6 +1040,14 @@ function renderFrame(target: WorkerState, timestamp: number): void {
     syncTransforms(target);
   }
 
+  // Gestured camera state (orbit/zoom/pan messages) applies once per frame — the messages carry
+  // deltas, so applying at message rate bought nothing but event-loop contention against the
+  // render tick. The consumer clears the flag so a quiet gesture costs nothing either.
+  if (target.cameraDirty) {
+    target.cameraDirty = false;
+    updateCamera(target);
+  }
+
   // Idle orbit, so the viewer is never inert (`00`).
   if (target.autoRotate && !target.paused) {
     target.orbit.theta += (target.manifest?.camera.limits.autoRotateSpeed ?? 0.35) * delta * 0.2;
@@ -1426,7 +1441,9 @@ function loop(timestamp: number): void {
           minPhi,
           Math.min(maxPhi, state.orbit.phi - request.deltaY * 0.005),
         );
-        updateCamera(state);
+        // Applied once per frame, in renderFrame — the gesture message rate (up to 120Hz) does not
+        // need to fight the render tick for the worker's event loop.
+        state.cameraDirty = true;
         break;
       }
 
@@ -1441,7 +1458,7 @@ function loop(timestamp: number): void {
           min,
           Math.min(max, state.orbit.distance * (1 + request.delta * 0.001)),
         );
-        updateCamera(state);
+        state.cameraDirty = true;
         break;
       }
 
@@ -1449,12 +1466,15 @@ function loop(timestamp: number): void {
         if (!state) return;
         state.autoRotate = false;
         // Pan in the camera's own plane, scaled by distance so the gesture tracks the cursor at any zoom.
-        const right = new THREE.Vector3().setFromMatrixColumn(state.camera.matrix, 0);
-        const up = new THREE.Vector3().setFromMatrixColumn(state.camera.matrix, 1);
+        // `matrixWorld` (the composed world matrix), not `matrix` (its local one) — the camera is a
+        // root object so they coincide today, and reading the wrong one is the kind of bug that
+        // waits for a scene-graph parent to matter. The two vectors are module scratch.
+        CAMERA_PAN_RIGHT.setFromMatrixColumn(state.camera.matrixWorld, 0);
+        CAMERA_PAN_UP.setFromMatrixColumn(state.camera.matrixWorld, 1);
         const scale = state.orbit.distance * 0.001;
-        state.orbit.target.add(right.multiplyScalar(-request.deltaX * scale));
-        state.orbit.target.add(up.multiplyScalar(request.deltaY * scale));
-        updateCamera(state);
+        state.orbit.target.addScaledVector(CAMERA_PAN_RIGHT, -request.deltaX * scale);
+        state.orbit.target.addScaledVector(CAMERA_PAN_UP, request.deltaY * scale);
+        state.cameraDirty = true;
         break;
       }
 

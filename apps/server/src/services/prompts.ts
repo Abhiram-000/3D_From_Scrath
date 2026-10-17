@@ -8,10 +8,10 @@
  * battery's measured weaknesses (thin parameters averaging 2, textbook accuracy unverified,
  * understandability unguided). The techniques, each with its evidence:
  *
- *  1. **A complete, correct exemplar** (v2, kept). Models imitate structure they have seen far
- *     more faithfully than rules they have read. v3's exemplar models what the battery showed was
- *     missing: FOUR parameters with distinct physics, real-world numbers, plain-language info
- *     text, and a misconception distractor in the quiz.
+ *  1. **A complete, correct exemplar** (v2–v5; replaced in v6). Models imitate structure they have
+ *     seen far more faithfully than rules they have read. v5 removed the pendulum exemplar because
+ *     its small part count anchored what a generated model aims for; v6 ships something at the
+ *     platform's real ambition instead — see the v6 note below.
  *  2. **Role separation with a domain-scientist pass** (`00`: "separate the expert personas —
  *     domain scientist (what is true), instructional designer (what teaches), 3D engineer (what
  *     builds)"). v3 makes the scientist pass explicit: name the real quantities, real units, real
@@ -25,17 +25,40 @@
  *  5. **The API as a copyable reference table** (generated, never hand-written) and **negative
  *     examples from observed failures** (v2, kept — every NEVER line is a real live mistake).
  *  6. **Plan-first scaffolding**, extended with a FACTS line the scientist pass fills in.
- *  7. **A rubric-anchored self-check**: the model grades its own draft on the five dimensions the
- *     platform's audit scores, and fixes anything below standard before answering. Rubric-anchored
+ *  7. **A rubric-anchored self-check**: the model grades its own draft on the six dimensions the
+ *     platform's audit scores (RUNNABLE, ACCURATE, UNDERSTANDABLE, ALIVE, COMPLETE and — since v6 —
+ *     AMBITIOUS), and fixes anything below standard before answering. Rubric-anchored
  *     self-evaluation measurably outperforms bare checklists.
+ *
+ * v5 removes the hand-written example model from every prompt. The battery's measured part count
+ * (39 average against a requested 60–150) suggests the exemplar anchored how big a generated model
+ * aims to be, so the model now imitates the API contract rather than one small program. The
+ * generated API reference travels verbatim in every prompt; the worked mechanism patterns stay —
+ * they demonstrate the three mandated mechanisms, not one model's shape.
+ *
+ * v6 restores a complete example — deliberately the opposite shape. v5's diagnosis was never "no
+ * example", it was "an example smaller than the product". The prompt now ships the platform's
+ * hand-authored reference turbofan (the same source the viewer falls back to and the audit tests
+ * gate), so the model can see real hierarchy, instancing priced as one draw call, representation
+ * fidelity and measured cost in one place. Two framings make that an asset instead of a liability:
+ * *never imitate its subject — the topic decides the subject*, and *scale the ambition to the
+ * requested complexity while the teaching bar never scales down*. The disciplines are spelled out
+ * as domain-independent moves the model translates into each domain's own vocabulary.
+ *
+ * v7 adds build-and-frame discipline, from an observed failure class: an ambitious generated model
+ * spent its whole run inside `onFrame` re-doing work that belongs to the build pass, rendering an
+ * empty scene until the watchdog killed it. The prompt now teaches the two budgets the host
+ * enforces (20 s build, 50 ms frame), orders builders by construction cost so the cheapest honest
+ * shape is reached for first (SDF is the most expensive and is reserved for genuinely blended
+ * forms), and forbids geometry construction inside the frame callback outright.
  *
  * Versioned, because a prompt change is a code change; battery-history.jsonl holds the numbers
  * this version must beat.
  */
-import { describeApiSurface } from '@edu3d/engine';
+import { describeApiSurface, REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
 import type { ComplexityPreference } from '@edu3d/contracts';
 
-export const PROMPT_VERSION = '2026-10-v4-signatures';
+export const PROMPT_VERSION = '2026-10-v7-build-discipline';
 
 /** The domain grammar table from `00`, compressed to the rows the model can act on. */
 const DOMAIN_GRAMMARS: ReadonlyArray<{ domain: string; entities: string; motion: string }> = [
@@ -117,116 +140,12 @@ const COMPLEXITY_GUIDANCE: Readonly<Record<ComplexityPreference, string>> = {
 };
 
 /**
- * The v3 exemplar: complete, gate-clean, and modeling every teaching-quality behavior.
- *
- * Four parameters (not two — the battery showed models copy the exemplar's parameter COUNT):
- * length and gravity drive the physics with distinct laws, mass demonstrates what does NOT
- * matter (a real teaching point), damping shows decay. Real constants (g = 9.81), real formula
- * (T = 2π√(L/g)), plain-language info text, and a quiz whose distractor is the classic
- * misconception ("heavier swings slower").
- */
-const EXEMPLAR = `// A pendulum, taught honestly. Units: metres, kilograms, seconds.
-// PLAN: the period depends on length and gravity, NOT mass — the model must let the learner discover that.
-// FACTS: g = 9.81 m/s². T = 2π·sqrt(L/g). Small-angle swing. Damping shrinks amplitude, not period.
-// ENTITIES: pivot, rod, bob, protractor arc, timer marks. CAUSALITY: gravity → restoring torque → swing; length sets the tempo.
-// REPRESENTATION: rod = slim revolve, bob = sphere (mass slider changes SIZE ONLY — the period must not move), arc = line path.
-scene.describe({
-  name: 'Pendulum',
-  description: 'Swing a pendulum and discover what changes its tempo — and what surprisingly does not.',
-  domain: 'physics',
-  concept: 'A pendulum is a clock: its period is set by length and gravity alone — mass never matters.',
-  objectives: [
-    'Predict how doubling the length changes the period',
-    'Explain why adding mass leaves the swing unchanged',
-    'Read T = 2*pi*sqrt(L/g) off the live counter as you drag',
-  ],
-  level: 'secondary',
-  principles: [
-    'Restoring torque = -m·g·L·sin(θ); for small angles sin(θ) ≈ θ, giving simple harmonic motion',
-    'T = 2π·sqrt(L/g) — mass cancels out of the equation',
-  ],
-  simplifications: ['No pivot friction; the damping slider stands in for air drag'],
-});
-scene.colorRole({ id: 'structure', label: 'Structure', color: '#8a8f96', meaning: 'Fixed parts' });
-scene.colorRole({ id: 'energy', label: 'The swinger', color: '#c2885c', meaning: 'The moving mass' });
-scene.colorRole({ id: 'measure', label: 'Measurement', color: '#5b93c9', meaning: 'Scales and read-outs' });
-scene.param({ id: 'length', label: 'Length', kind: 'number', min: 0.3, max: 3, default: 1.5, unit: 'm', affects: [{ partId: 'bob', channel: 'transform' }] });
-scene.param({ id: 'gravity', label: 'Gravity', kind: 'number', min: 1.6, max: 25, default: 9.81, unit: 'm/s²', affects: [{ partId: 'bob', channel: 'transform' }] });
-scene.param({ id: 'mass', label: 'Bob mass', kind: 'number', min: 0.5, max: 5, default: 1, unit: 'kg', affects: [{ partId: 'bob', channel: 'material' }] });
-scene.param({ id: 'damping', label: 'Air drag', kind: 'number', min: 0, max: 0.5, default: 0.02, affects: [{ partId: 'bob', channel: 'transform' }] });
-scene.metric({ id: 'period', label: 'Period', unit: 's', formula: 'T = 2π·sqrt(L/g)' });
-scene.metric({ id: 'amplitude', label: 'Amplitude', unit: '°' });
-var steel = mat.metal({ role: 'structure', roughness: 0.35 });
-var brass = mat.metal({ role: 'energy', roughness: 0.25 });
-var ink = mat.plastic({ role: 'measure', color: '#5b93c9' });
-scene.group({ id: 'rig', name: 'Pendulum rig' });
-scene.mesh({
-  id: 'pivot', name: 'Pivot', parentId: 'rig',
-  geometry: geom.cylinder({ radius: 0.05, height: 0.06 }),
-  material: steel, position: [0, 0, 0],
-  info: { title: 'Pivot', summary: 'The fixed point. Frictionless here, so energy only leaves through air drag.' },
-});
-scene.mesh({
-  id: 'bob', name: 'Bob', parentId: 'rig', hero: true,
-  geometry: geom.sphere({ radius: 0.14, segments: 32 }),
-  material: brass, position: [0, -1.5, 0],
-  info: {
-    title: 'Bob',
-    summary: 'The swinging weight. Drag its mass up — the tempo refuses to change.',
-    bullets: ['Mass appears on both sides of the equation of motion and cancels', 'Only length and gravity set the period'],
-  },
-});
-// Measurement arc the learner reads the angle against.
-var arcPts = [];
-for (var a = -0.6; a <= 0.6; a += 0.05) arcPts.push([Math.sin(a) * 1.7, -Math.cos(a) * 1.7, 0]);
-scene.mesh({
-  id: 'arc', name: 'Angle scale', parentId: 'rig',
-  geometry: geom.pipe({ path: geom.path(arcPts), radius: 0.008 }),
-  material: ink, position: [0, 0, 0],
-  info: { title: 'Angle scale', summary: 'Read the swing amplitude here in degrees.' },
-});
-var theta0 = 0.35;
-scene.onFrame(function (ctx) {
-  var L = ctx.params.length, g = ctx.params.gravity, b = ctx.params.damping;
-  var T = 2 * Math.PI * Math.sqrt(L / g);
-  // Amplitude decays with damping; the period stays T throughout — damping steals height, not time.
-  var decay = Math.exp(-b * ctx.time);
-  var theta = theta0 * decay * Math.cos(ctx.time * ((2 * Math.PI) / T));
-  ctx.part('bob').setPosition(Math.sin(theta) * L, -Math.cos(theta) * L, 0);
-  ctx.part('bob').setScale(Math.cbrt(ctx.params.mass), Math.cbrt(ctx.params.mass), Math.cbrt(ctx.params.mass));
-  ctx.metric('period', T);
-  ctx.metric('amplitude', theta0 * decay * 57.3);
-});
-scene.story([
-  { id: 'b1', title: 'One clean swing', narration: 'Gravity pulls the bob back toward the bottom; the rod turns that pull into a curved path.', targetPartId: 'bob' },
-  { id: 'b2', title: 'Length is the clock', narration: 'Drag Length up — longer arm, lazier swing. The Period counter follows sqrt of what you dragged.', targetPartId: 'bob' },
-  { id: 'b3', title: 'The mass surprise', narration: 'Now drag Bob mass. The bob grows, but the tempo never blinks. Mass cancels.', targetPartId: 'bob' },
-  { id: 'b4', title: 'The equation', narration: 'T = 2π·sqrt(L/g). Everything you just felt, in five symbols.', targetPartId: 'bob' },
-]);
-scene.quiz([
-  {
-    id: 'q1', question: 'You double the bob mass. The period will…',
-    options: ['Double', 'Increase slightly', 'Stay exactly the same', 'Halve'],
-    correctIndex: 2,
-    explanation: 'Mass appears in both the restoring force and the inertia, and cancels: T = 2π·sqrt(L/g) has no m in it. The "heavier swings slower" instinct is the classic misconception.',
-  },
-  {
-    id: 'q2', question: 'Take this pendulum to the Moon (g ≈ 1.6). Compared to Earth it swings…',
-    options: ['Faster', 'Slower, by a factor of about 2.5', 'At the same rate', 'Not at all'],
-    correctIndex: 1,
-    explanation: 'T grows as 1/sqrt(g): sqrt(9.81/1.6) ≈ 2.5, so each swing takes about 2.5× longer.',
-  },
-]);
-scene.camera({ position: [3.2, -0.4, 3.6], target: [0, -1.1, 0], fov: 42 });`;
-
-/**
  * The mandated mechanisms, as short worked forms.
  *
- * v4: the exemplar above demonstrates none of the mechanisms the hard contract mandates (instances,
- * components, patterns, param-bound motion), so models met mandate #4 with guesswork. These are
- * verified executable — the same snippets run through the authoring builder in CI via the
- * api-reference tests' scaffold — and each is deliberately 2–4 lines: dense patterns to copy, not a
- * second exemplar.
+ * These demonstrate the mechanisms the hard contract mandates (instances, components, patterns,
+ * param-bound motion) that the reference table alone cannot show in use. They are verified
+ * executable — the same snippets run through the authoring builder in CI via the api-reference
+ * tests' scaffold — and each is deliberately 2–4 lines: dense patterns to copy, not a model.
  */
 const WORKED_MECHANISMS = `// Repetition as instances: one geometry, N placements, ONE draw call.
 var blade = geom.box({ size: [0.02, 0.004, 0.12] });
@@ -290,8 +209,53 @@ PASS 2 — INSTRUCTIONAL DESIGNER (what teaches). Choose the 3–6 parameters th
   bullet, no jargon without a plain gloss.
 PASS 3 — 3D ENGINEER (what builds). Write the program against the API below.
 
-=== COMPLETE WORKING EXAMPLE (your program must reach this standard) ===
-${EXEMPLAR}
+=== THE REFERENCE MODEL — the bar this platform authored, audits and ships ===
+Below, verbatim, is a complete model: a two-spool turbofan engine written against exactly the API in
+this prompt. It passes this platform's static gate, its headless audit and its teaching rubric. It
+is here so you can see the whole bar at once — then reach it or beat it for YOUR topic.
+
+Read it as a craftsman, then never imitate its subject — the topic decides the subject: a model of
+a plant cell is a model of a plant cell, not a jet engine wearing biology labels — so the
+disciplines are domain-independent: carry each one across untranslated as a *move*, and translate
+only the vocabulary: in anatomy, hierarchy is organ → tissue → organelle and motion is transport
+along a path; in computing, it is the call stack executing step by step; in economics, it is actor →
+flow → stock; in mathematics, it is the variable sweeping its range; in chemistry, it is the
+reaction running in stages. The domain grammar table later in this prompt supplies each domain's
+vocabulary.
+
+Scale the ambition to the requested complexity — never below the bar. Part count, triangle budget
+and mechanism count follow the complexity row you are given: at the small rows the bar is a
+well-crafted smaller model, not a lazy one. But the teaching bar never scales down in any row —
+every parameter still drives visibly distinct behaviour, every shape still moves the way the real
+thing moves, every selectable part still carries info text, story and quiz are still present, and
+the model still moves by default. Then go further: be as ambitious as the topic deserves. A rich
+topic answered with six boxes is this platform's canonical defect, and the reference is what the
+opposite looks like.
+
+What to steal from it, wherever your domain puts these disciplines:
+- Hierarchy from few definitions — the compressor stage is defined once and placed seven times, so
+  one definition plus placements author what copy-paste never could. Feed the hierarchy the way the
+  real thing is assembled (subassemblies inside assemblies), because the learner's understanding
+  follows that shape.
+- Repetition priced as one draw call — scene.instances with geom.pattern for every repeated
+  structure, so a 300-part ambition stays inside the device budget.
+- Representation fidelity — shapes whose BEHAVIOUR is right, not their outline: real involute teeth
+  (geom.gear), a swept NACA airfoil with spanwise twist (geom.airfoilProfile + geom.sweep), a true
+  helical fuel line (geom.helix + geom.pipe), and the combustor marched from a signed distance
+  field (geom.field + geom.sdf) because no standard primitive could describe it. If your domain's
+  objects move in a characteristic way, your shape must be the one that can.
+- Motion bound to parameters — scene.motion with rate { param: 'rpm' }, so the audit can prove the
+  learner's slider drives the spin rather than hoping it does.
+- Textbook honesty — real units and constants, textbook part names, and every exaggeration declared
+  in simplifications with the true value stated.
+- Teaching density — info text on every selectable part, story beats walking the causal arc, a quiz
+  whose tempting wrong answer is the real learner misconception, metrics published from onFrame
+  whose numbers agree with the motion on screen.
+- Cost that fits the device — measured, structurally deduplicated, under this run's triangle and
+  draw-call budget, so the model is ambitious and still renders on a phone.
+
+=== REFERENCE MODEL SOURCE (verbatim — study it, then build something that is unmistakably yours) ===
+${REFERENCE_MODEL_SOURCE}
 
 === THE MANDATED MECHANISMS (short worked forms — copy these patterns) ===
 ${WORKED_MECHANISMS}
@@ -317,6 +281,30 @@ Rules for geometry arguments (the reference table above shows each correct form)
   ctx.part('bob').setPosition(...) inside onFrame instead.
 - Every part needs a unique id. Every param needs a unique id.
 
+=== WHICH BUILDER TO REACH FOR — the cost ladder (cheapest honest shape first) ===
+- Primitives (box, sphere, cylinder, cone, torus, capsule, disc, plane) are nearly free. Start here;
+  a molecule, a diagram, a graph or a machine frame rarely needs more.
+- Profile + solid operators (revolve, extrude, sweep, loft, pipe) cost more. Reach for them when the
+  shape is genuinely a ruled or swept solid: a vessel, a blade, a spring, a duct.
+- geom.sdf marches a 3D distance field into triangles — the most expensive builder you may call, and
+  the usual reason a build runs out of time. Reserve it for forms that are genuinely blended,
+  organic or latticed, and keep the resolution modest (48 is the default; raise it only when the
+  shape truly demands it).
+- geom.mesh with your own typed arrays is cheap to declare and only pay off when you can write the
+  formula. If a primitive plus a modifier (twist, taper, displace) says the same thing, it is the
+  better answer.
+Whatever you choose: build it once, at top level.
+
+=== BUILD AND FRAME DISCIPLINE — the budgets the host enforces ===
+- The program runs ONCE, with a 20 second build budget. Every geom.* call, every scene.mesh, every
+  pattern and every component definition happens inside that pass. Budget it like it matters: a
+  model that spends its build marching cubes will not finish.
+- onFrame runs up to 60 times per second with a 50 millisecond budget per call. It may move parts,
+  publish metrics, change visibility and read parameters. It must NEVER construct geometry, allocate
+  large arrays, or re-derive a shape — geometry exists only because the build pass made it.
+- Repetition is how ambition fits inside these budgets: one geometry reused via scene.instances, one
+  scene.defineComponent placed many times. Two hundred copies of a shape cost one shape's build.
+
 NEVER (each of these broke a real generated model):
 - bob.position.set / .rotation.set — part ids are strings, not objects
 - inventing argument names not in the reference table — the shapes above are the contract
@@ -324,6 +312,10 @@ NEVER (each of these broke a real generated model):
 - calling scene.anything before scene.describe
 - duplicate part or parameter ids
 - forgetting info text on selectable parts
+- constructing geometry inside onFrame (geom.* calls belong to the build pass; the frame budget is
+  50 ms and a frame that breaks it gets the model paused)
+- shipping the reference model's subject in any disguise — never imitate its subject; the topic
+  decides the subject, and the reference is a craftsmanship bar, not a template to resize
 
 TEXTBOOK FIDELITY — the bar your model is audited against:
 - Correct entities: every part the textbook names exists, named as the textbook names it.
@@ -355,7 +347,7 @@ HARD CONTRACT:
 4. Repeated structure is instanced (scene.instances + geom.pattern.*) or a component
    (scene.defineComponent + scene.place) — never copy-pasted parts.
 5. Semantic materials (mat.metal, mat.glass, mat.emissive, mat.organic) and declared color roles.
-6. The model must move by default. Metrics must agree with the motion (see the example's period).
+6. The model must move by default. Metrics must agree with the motion.
 7. 3–6 story beats along the causal arc, each narration one plain-language idea.
 8. Quiz: 2+ questions; at least one targets the misconception from your PLAN.
 9. Set the opening camera: scene.camera({ position, target, fov }).
@@ -371,6 +363,8 @@ BEFORE YOU ANSWER — grade your draft against this rubric and fix anything that
 [ ] ALIVE: the model moves by default; every parameter produces a distinct visible change; metrics
     track the motion.
 [ ] COMPLETE: story, quiz with a real misconception distractor, camera set, info on every part.
+[ ] AMBITIOUS: the model is as ambitious as the topic deserves — real hierarchy, repetition
+    instanced, shapes whose behaviour is right — and never a lazy six-box version.
 Output ONE fenced JavaScript block containing the complete, self-contained program.`;
 }
 
@@ -390,17 +384,14 @@ export function wrapTopic(topic: string): string {
 /**
  * The self-repair prompt: the model's own code plus the specific, enumerated errors.
  *
- * "Targeted revision beats re-rolling" (`04`). The exemplar rides along: repair imitates the same
- * way generation does. v4 also sends the full signature reference: repair is where an invented
- * argument shape was first rejected, and re-sending exemplar-only made the model guess again
- * against the same gap.
+ * "Targeted revision beats re-rolling" (`04`). The full signature reference rides along — repair is
+ * where an invented argument shape was first rejected, and re-sending exemplar-only made the model
+ * guess again against the same gap. v5 drops the exemplar here too: the errors name the lines that
+ * failed, and the reference table is the only set of shapes the gate will accept.
  */
 export function buildRepairPrompt(code: string, errors: readonly string[]): string {
   return `Your program was rejected. Fix it and return the COMPLETE corrected program in one fenced
 block. Change only what the errors name — everything else already passed.
-
-THE CORRECT CALL SHAPES (compare your failing lines against these):
-${EXEMPLAR}
 
 API REFERENCE (exact argument names the gate accepts):
 ${describeApiSurface()}
@@ -418,7 +409,9 @@ ${code}
  * The refinement prompt: audit deficiencies, phrased as instructions the generator can act on.
  *
  * The deficiencies arrive as imperative instructions from the audit (`01`); this wrapper adds the
- * acceptance rule — genuinely better, or the first version stands.
+ * acceptance rule — genuinely better, or the first version stands. v5 adds the full signature
+ * reference here as well: the exemplar that used to carry the structure bar is gone, and a
+ * refinement pass may rewrite calls outright rather than only adjusting numbers.
  */
 export function buildRefinementPrompt(code: string, deficiencies: readonly string[]): string {
   return `The platform audited your model and found it short of the teaching bar. Return the COMPLETE
@@ -426,8 +419,8 @@ improved program in one fenced block. Fix every deficiency without dropping what
 not remove parts, parameters or beats to dodge a finding — the audit re-runs on the revision and a
 revision that is not genuinely better is discarded.
 
-STRUCTURE AND STANDARD TO MATCH:
-${EXEMPLAR}
+API REFERENCE (exact argument names the gate accepts):
+${describeApiSurface()}
 
 DEFICIENCIES:
 ${deficiencies.map((deficiency, index) => `${index + 1}. ${deficiency}`).join('\n')}

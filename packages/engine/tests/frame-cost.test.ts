@@ -128,24 +128,47 @@ describe('the cost of a frame', () => {
     const guard = createGuard();
     let elapsed = 0;
 
-    /** One frame in the worker's exact order: host reset → model code → apply declared motions. */
+    // Mirrors the worker's post-Task-6 contract: the numeric parameter record is built once (the
+    // reference benchmark changes no parameters) and the applicator reads it every frame. Rebuilding
+    // it per frame here would measure the old implementation's churn, not the worker's.
+    const params: Record<string, number> = {};
+    for (const [id, value] of Object.entries(result.builder.currentParameters())) {
+      if (typeof value === 'number') params[id] = value;
+    }
+
+    /** One frame in the worker's exact order: host reset (in place) → model code → motions. */
     const frame = (): void => {
+      // The worker's reset (frame-compose.ts) copies components in place — the array-identity
+      // contract. The harness mirrors that behaviour locally rather than importing it, because the
+      // dependency direction forbids the engine from importing app code, and the six lines are the
+      // contract.
       for (const [id, base] of bases) {
         const live = nodes.get(id)?.transform;
         if (!live) continue;
-        live.position = [...base.position] as [number, number, number];
-        live.rotation = base.rotation
-          ? ([...base.rotation] as [number, number, number])
-          : undefined;
-        live.scale = [...base.scale] as [number, number, number];
+        const p = live.position;
+        if (p) {
+          p[0] = base.position[0];
+          p[1] = base.position[1];
+          p[2] = base.position[2];
+        }
+        if (live.rotation !== undefined) {
+          if (base.rotation) {
+            live.rotation[0] = base.rotation[0];
+            live.rotation[1] = base.rotation[1];
+            live.rotation[2] = base.rotation[2];
+          } else {
+            live.rotation = undefined;
+          }
+        }
+        const s = live.scale;
+        if (s) {
+          s[0] = base.scale[0];
+          s[1] = base.scale[1];
+          s[2] = base.scale[2];
+        }
       }
       elapsed += 1 / 60;
       runFrame(result.builder, guard, elapsed, 1 / 60, false);
-      const params = Object.fromEntries(
-        Object.entries(result.builder.currentParameters()).filter(
-          (entry): entry is [string, number] => typeof entry[1] === 'number',
-        ),
-      );
       applyMotions(
         {
           motions: result.manifest.motions,
@@ -222,17 +245,17 @@ describe('the cost of a frame', () => {
   /**
    * Ceiling on scavenges attributable to the frame path, over FRAMES_CHURN frames.
    *
-   * Pinned from the first measured run: the frame path scavenged 3 times over 20 000 frames against
-   * an idle baseline of 0 — roughly 1.2–2.4 KB of short-lived objects per frame, which is the
-   * read-off-source estimate of the render-perf spec now converted into a number. The plan's frame
-   * tasks cut that churn; this constant is re-pinned downward at this phase's end to the measured
-   * remainder plus headroom, and a phase that cannot lower the number has not done what it claimed.
+   * Pinned from the post-Task-4/5/6 measurements: the frame path scavenged 1–3 times per 20 000
+   * frames when the gate landed (spread across five runs); after the motions rewrite, the
+   * component-wise reset/sync and the parameter-record change it reads 0–1. Pinned at 2 — the
+   * measured worst plus its own headroom — so a regression to the old churn fails here and a
+   * phase claiming a further cut re-pins this number downward with its figures.
    *
    * The frame-run number is read against an idle baseline over the same iteration count, so
    * scavenges the runtime takes for its own reasons cancel out of the comparison.
    */
   const FRAMES_CHURN = 20_000;
-  const MAX_CHURN_SCAVENGES = 5;
+  const MAX_CHURN_SCAVENGES = 2;
 
   /**
    * Minor-GC events observed while the given body executes.

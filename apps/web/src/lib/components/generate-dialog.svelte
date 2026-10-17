@@ -10,6 +10,7 @@
   import { detectTier } from '$lib/engine/sandbox-host.ts';
   import { generateStream, storeBundle } from '$lib/core/api.ts';
   import { ProgressModel, STAGES } from '$lib/core/loading-progress.ts';
+  import { devEnabled, devError, devLog, devWarn } from '$lib/dev-console.ts';
 
   const {
     onclose,
@@ -54,6 +55,13 @@
         progress.apply(event);
         barWidth = progress.value;
         statusText = progress.status;
+        if (devEnabled) {
+          if (event.type === 'phase') devLog(`pipeline · ${event.phase} — ${event.message}`);
+          else if (event.type === 'notice') devWarn(`pipeline · ${event.message}`);
+          else if (event.type === 'error')
+            devError(`pipeline failed — ${event.code}: ${event.message}`);
+          else if (event.type === 'ready') devLog('pipeline · ready — bundle validated and stored');
+        }
       },
     });
 

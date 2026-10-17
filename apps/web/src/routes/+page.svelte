@@ -26,6 +26,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { resolve } from '$app/paths';
   import { COMPLEXITY_LEVELS, type ComplexityPreference } from '@edu3d/contracts';
   import { Ambient, getTheme, setTheme } from '$lib/ambient.ts';
   import { LandingBackground } from '$lib/landing-background.ts';
@@ -433,6 +434,53 @@
           }}></textarea>
         <div class="input-footer">
           <div class="input-meta">
+            <!--
+              How thorough, in the same row as the thing it applies to — and in the footer where the
+              gesture hint used to be, so the card reads input → choice → action with no spare row.
+
+              A native <select>, deliberately. A custom popover would mean re-implementing focus
+              trapping, arrow-key navigation, Escape, aria-activedescendant and the type-ahead a
+              screen reader expects — a listbox is a solved problem the platform already ships in
+              better form, and the browser's version opens the list of four on press and works on
+              touch, keyboard and assistive tech with no code of ours to get wrong.
+
+              The numbers in each option come from COMPLEXITY_LEVELS in contracts — the same table
+              the generation prompt derives its targets from — so this control cannot promise "60–150
+              parts" while the model is asked for something else.
+            -->
+            <div class="depth-control">
+              <label class="depth-label" for="depthSelect">Detail</label>
+              <div class="depth-select-wrap">
+                <select
+                  id="depthSelect"
+                  class="depth-select"
+                  bind:value={complexity}
+                  aria-describedby="depthBlurb"
+                >
+                  {#each COMPLEXITY_LEVELS as option (option.id)}
+                    <option value={option.id}>
+                      {option.label} — {option.parts[0]}–{option.parts[1]} parts
+                    </option>
+                  {/each}
+                </select>
+                <svg
+                  class="depth-chevron"
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M2.5 4.5L6 8l3.5-3.5"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </div>
+            </div>
             <div
               class="input-counter"
               class:warning={updateCounter().warning}
@@ -440,55 +488,6 @@
               aria-live="polite"
             >
               {topic.length} / 500
-            </div>
-            <span class="input-hint"
-              >Press <kbd>Enter</kbd> to generate · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line</span
-            >
-          </div>
-          <!--
-            How thorough, in the same row as the thing it applies to.
-
-            A native <select>, deliberately. A custom popover would mean re-implementing focus
-            trapping, arrow-key navigation, Escape, aria-activedescendant and the type-ahead a
-            screen reader expects — a listbox is a solved problem the platform already ships in
-            better form, and the browser's version opens the list of four on press and works on
-            touch, keyboard and assistive tech with no code of ours to get wrong.
-
-            The numbers in each option come from COMPLEXITY_LEVELS in contracts — the same table
-            the generation prompt derives its targets from — so this control cannot promise "60–150
-            parts" while the model is asked for something else.
-          -->
-          <div class="depth-control">
-            <label class="depth-label" for="depthSelect">Detail</label>
-            <div class="depth-select-wrap">
-              <select
-                id="depthSelect"
-                class="depth-select"
-                bind:value={complexity}
-                aria-describedby="depthBlurb"
-              >
-                {#each COMPLEXITY_LEVELS as option (option.id)}
-                  <option value={option.id}>
-                    {option.label} — {option.parts[0]}–{option.parts[1]} parts
-                  </option>
-                {/each}
-              </select>
-              <svg
-                class="depth-chevron"
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                aria-hidden="true"
-              >
-                <path
-                  d="M2.5 4.5L6 8l3.5-3.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
             </div>
           </div>
           <button
@@ -574,7 +573,7 @@
         to install") was reassurance nobody asked for — the absence of a signup form is not a feature
         a visitor is missing.
       -->
-      <a class="demo-link" href="/viewer">
+      <a class="demo-link" href={resolve('/viewer')}>
         <svg
           class="demo-icon"
           width="16"

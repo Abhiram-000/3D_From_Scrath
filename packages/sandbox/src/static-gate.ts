@@ -389,7 +389,6 @@ export function runStaticGate(source: string, options: GateOptions): GateResult 
     'decodeURIComponent',
     'structuredClone',
     'Intl',
-    'arguments',
     'this',
   ]);
 

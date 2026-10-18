@@ -199,6 +199,4 @@ export const SANDBOX_LIMITS = Object.freeze({
   maxTotalVertices: 6_000_000,
   /** Iterations allowed in a single guarded loop before it throws. */
   maxLoopIterations: 20_000_000,
-  /** Recursion depth allowed in guest code. */
-  maxCallDepth: 512,
 });

@@ -137,6 +137,20 @@ export function instrumentLoops(source: string): InstrumentResult {
         edits.push({ at: body.start + 1, insert: `${GUARD_IDENTIFIER}();` });
       }
     },
+    /**
+     * Arrow functions with block bodies get the same entry guard — `.sort(() => { … })` and
+     * friends are the most idiomatic constructs in generated code, and an unguarded block arrow
+     * containing a loop ran without a tick until the terminate backstop (the reviewer's gap).
+     * Concise-expression arrows contain no statements, so their inner loops (if any) are caught
+     * by the walk anyway.
+     */
+    ArrowFunctionExpression(node) {
+      const fn = node as unknown as AnyNode;
+      const body = fn.body as AnyNode;
+      if (body?.type === 'BlockStatement') {
+        edits.push({ at: body.start + 1, insert: `${GUARD_IDENTIFIER}();` });
+      }
+    },
   });
 
   if (edits.length === 0) return { code: source, guardedLoops };

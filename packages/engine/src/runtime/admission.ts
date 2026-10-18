@@ -230,7 +230,10 @@ export function priceModel(manifest: ModelManifest, tier: DeviceTier): Admission
       capped += take;
       triangles -= (part.geometry?.triangles ?? 0) * take;
     }
-    instances = budget.maxInstances - Math.max(0, excess);
+    // The kept count is what the solver runs against — `budget − shortfall` only when the floors
+    // never bind; when they do, `excess` is what was left over and the honest figure is drawn
+    // placements (the reviewer's M1: an authored-count path of exactly the kind Q5 bans).
+    instances = original.instances - capped;
     adjustments.push({
       rung: 'particles',
       message: 'Repeated parts thinned on this device to keep the frame rate up.',

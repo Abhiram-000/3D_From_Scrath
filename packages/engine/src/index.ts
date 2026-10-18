@@ -43,6 +43,7 @@ export * as modifiers from './geometry/modifiers.ts';
 export * as profiles from './geometry/profiles.ts';
 export * as patterns from './geometry/patterns.ts';
 export { triangulateProfile, type TriangulationResult } from './geometry/triangulate.ts';
+export { decimate } from './geometry/decimate.ts';
 export {
   GeometryFactory,
   GeometryError,
@@ -122,6 +123,7 @@ export {
 } from './runtime/motions.ts';
 
 // The hand-authored reference model: the on-disk fallback, the few-shot exemplar, and the test fixture.
+export { WATCH_MODEL_SOURCE } from './reference/watch.ts';
 export { REFERENCE_MODEL_SOURCE, MINIMAL_MODEL_SOURCE } from './reference/turbofan.ts';
 
 // Pure math, exported both for the guest namespace and for host-side geometry work.

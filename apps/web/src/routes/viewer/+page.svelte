@@ -239,6 +239,11 @@
         case 'r':
           host?.resetTime();
           break;
+        case 's':
+          // Story Mode, as the shortcuts panel (line ~575) advertises — previously listed and
+          // never bound, reachable only from the toolbar button.
+          activeMode = activeMode === 'story' ? 'none' : 'story';
+          break;
         case 'v':
           host?.viewPreset('iso');
           break;
@@ -855,11 +860,7 @@
           >
           <span>Generate</span>
         </button>
-        <button
-          class="toolbar-btn"
-          title="Browse the gallery (Ctrl+G)"
-          onclick={() => (galleryOpen = true)}
-        >
+        <button class="toolbar-btn" title="Browse the gallery" onclick={() => (galleryOpen = true)}>
           <svg
             width="16"
             height="16"
@@ -876,7 +877,7 @@
           >
           <span>Gallery</span>
         </button>
-        <button class="toolbar-btn" title="Publish this model (Ctrl+P)" onclick={shareModel}>
+        <button class="toolbar-btn" title="Publish this model" onclick={shareModel}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
             ><path d="M8 2l4 4h-2.5v5h-3V6H4l4-4z" /><rect
               x="3"

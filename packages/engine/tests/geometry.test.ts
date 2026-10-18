@@ -21,6 +21,7 @@ import {
   vertexCount,
 } from '../src/geometry/mesh-data.ts';
 import { gearProfile, signedArea, airfoil, profile } from '../src/geometry/profiles.ts';
+import { polyhedron } from '../src/geometry/primitives.ts';
 import { triangulateProfile } from '../src/geometry/triangulate.ts';
 import { revolve, sweep } from '../src/geometry/solids.ts';
 import { twist, weld, clip, simplify } from '../src/geometry/modifiers.ts';
@@ -782,5 +783,34 @@ describe('per-builder cost — the number cost claims cite', () => {
     // Both entries exist with finite numbers — a stat that is NaN or absent is no stat at all.
     expect(Number.isFinite(once.get('sphere')!)).toBe(true);
     expect(Number.isFinite(once.get('box')!)).toBe(true);
+  });
+});
+
+describe('polyhedron — the shape the docstring promises', () => {
+  it('builds the dodecahedron: 12 pentagonal faces, 20 vertices, all triangles outward', () => {
+    const mesh = polyhedron('dodecahedron', 1);
+    expect(mesh.indices!.length / 3).toBe(36);
+    expect(mesh.positions.length / 3).toBe(20);
+    // Every triangle faces outward: the hull is not inside-out (the docstring-vs-code lie this
+    // closes — the old else-branch silently returned an icosahedron for 'dodecahedron').
+    const p = mesh.positions;
+    const idx = mesh.indices!;
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i]! * 3;
+      const b = idx[i + 1]! * 3;
+      const c = idx[i + 2]! * 3;
+      const crossX =
+        (p[b + 1]! - p[a + 1]!) * (p[c + 2]! - p[a + 2]!) -
+        (p[b + 2]! - p[a + 2]!) * (p[c + 1]! - p[a + 1]!);
+      const crossY =
+        (p[b + 2]! - p[a + 2]!) * (p[c]! - p[a]!) - (p[b]! - p[a]!) * (p[c + 2]! - p[a + 2]!);
+      const crossZ =
+        (p[b]! - p[a]!) * (p[c + 1]! - p[a + 1]!) - (p[b + 1]! - p[a + 1]!) * (p[c]! - p[a]!);
+      const dot =
+        crossX * (p[a]! + p[b]! + p[c]!) +
+        crossY * (p[a + 1]! + p[b + 1]! + p[c + 1]!) +
+        crossZ * (p[a + 2]! + p[b + 2]! + p[c + 2]!);
+      expect(dot).toBeGreaterThan(0);
+    }
   });
 });

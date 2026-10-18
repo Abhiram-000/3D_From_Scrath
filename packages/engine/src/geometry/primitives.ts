@@ -375,11 +375,11 @@ export function gear(
  * *positions* wrong — which is the difference between a correct diagram and a decorative one.
  */
 export function polyhedron(
-  kind: 'tetrahedron' | 'octahedron' | 'icosahedron' | 'cube',
+  kind: 'tetrahedron' | 'octahedron' | 'icosahedron' | 'dodecahedron' | 'cube',
   radius = 1,
 ): MeshData {
-  let vertices: number[];
-  let faces: number[];
+  let vertices: number[] = [];
+  let faces: number[] = [];
 
   if (kind === 'tetrahedron') {
     vertices = [1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1];
@@ -393,6 +393,109 @@ export function polyhedron(
       0, 3, 2, 0, 2, 1, 4, 5, 6, 4, 6, 7, 0, 4, 7, 0, 7, 3, 1, 2, 6, 1, 6, 5, 3, 7, 6, 3, 6, 2, 0,
       1, 5, 0, 5, 4,
     ];
+  } else if (kind === 'dodecahedron') {
+    // Constructed as the icosahedron's dual rather than transcribed: one vertex per icosahedron
+    // face (normalised to the unit circumsphere the other polyhedra share), one pentagon per
+    // icosahedron vertex with those five face-centres ordered angularly around the vertex's own
+    // axis. A derivation cannot get a face table's winding wrong the way a memorised one can —
+    // and the per-pentagon outward check below enforces it regardless.
+    const t = (1 + Math.sqrt(5)) / 2;
+    const icoV: number[][] = [
+      [-1, t, 0],
+      [1, t, 0],
+      [-1, -t, 0],
+      [1, -t, 0],
+      [0, -1, t],
+      [0, 1, t],
+      [0, -1, -t],
+      [0, 1, -t],
+      [t, 0, -1],
+      [t, 0, 1],
+      [-t, 0, -1],
+      [-t, 0, 1],
+    ];
+    const icoTri = [
+      0, 11, 5, 0, 5, 1, 0, 1, 7, 0, 7, 10, 0, 10, 11, 1, 5, 9, 5, 11, 4, 11, 10, 2, 10, 7, 6, 7, 1,
+      8, 3, 9, 4, 3, 4, 2, 3, 2, 6, 3, 6, 8, 3, 8, 9, 4, 9, 5, 2, 4, 11, 6, 2, 10, 8, 6, 7, 9, 8, 1,
+    ];
+    const unit = (v: number[]): number[] => {
+      const len = Math.hypot(v[0]!, v[1]!, v[2]!) || 1;
+      return [v[0]! / len, v[1]! / len, v[2]! / len];
+    };
+
+    const centers: number[][] = [];
+    for (let i = 0; i < icoTri.length; i += 3) {
+      const a = icoV[icoTri[i]!]!;
+      const b = icoV[icoTri[i + 1]!]!;
+      const c = icoV[icoTri[i + 2]!]!;
+      centers.push(
+        unit([
+          (a[0]! + b[0]! + c[0]!) / 3,
+          (a[1]! + b[1]! + c[1]!) / 3,
+          (a[2]! + b[2]! + c[2]!) / 3,
+        ]),
+      );
+    }
+    vertices = centers.flatMap((v) => [v[0]!, v[1]!, v[2]!]);
+
+    const incident: number[][] = centers.map(() => []);
+    for (let f = 0; f < centers.length; f += 1) {
+      incident[icoTri[f * 3]!]!.push(f);
+      incident[icoTri[f * 3 + 1]!]!.push(f);
+      incident[icoTri[f * 3 + 2]!]!.push(f);
+    }
+    for (let v = 0; v < icoV.length; v += 1) {
+      const axis = unit(icoV[v]!);
+      const tangent = Math.abs(axis[1]!) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+      const ordered = incident[v]!.map((f) => {
+        const c = centers[f]!;
+        // Radial-plane coordinate of each centre around the vertex axis.
+        const rel = unit([c[0]! - axis[0]!, c[1]! - axis[1]!, c[2]! - axis[2]!]);
+        return {
+          f,
+          angle: Math.atan2(
+            rel[0]! * tangent[1]! - rel[1]! * tangent[0]!,
+            rel[0]! * tangent[0]! + rel[1]! * tangent[1]!,
+          ),
+        };
+      })
+        .sort((p, q) => p.angle - q.angle)
+        .map((p) => p.f);
+      for (let k = 1; k + 1 < ordered.length; k += 1) {
+        // Pentagon fan: first centre pairs with each successive edge. 5 corners make 3 triangles.
+        faces.push(ordered[0]!, ordered[k]!, ordered[k + 1]!);
+      }
+    }
+
+    // Outward check per triangle: the dual's pentagons are convex and Radial, so flipping any
+    // triple whose normal disagrees with its own centroid direction makes the whole hull agree.
+    const radialDot = (i: number): { n: number[]; c: number[] } => {
+      const ax = vertices[faces[i]! * 3]!;
+      const ay = vertices[faces[i]! * 3 + 1]!;
+      const az = vertices[faces[i]! * 3 + 2]!;
+      const bx = vertices[faces[i + 1]! * 3]!;
+      const by = vertices[faces[i + 1]! * 3 + 1]!;
+      const bz = vertices[faces[i + 1]! * 3 + 2]!;
+      const cx = vertices[faces[i + 2]! * 3]!;
+      const cy = vertices[faces[i + 2]! * 3 + 1]!;
+      const cz = vertices[faces[i + 2]! * 3 + 2]!;
+      return {
+        n: [
+          (by - ay) * (cz - az) - (bz - az) * (cy - ay),
+          (bz - az) * (cx - ax) - (bx - ax) * (cz - az),
+          (bx - ax) * (cy - ay) - (by - ay) * (cx - ax),
+        ],
+        c: [(ax + bx + cx) / 3, (ay + by + cy) / 3, (az + bz + cz) / 3],
+      };
+    };
+    for (let i = 0; i < faces.length; i += 3) {
+      const { n, c } = radialDot(i);
+      if (n[0]! * c[0]! + n[1]! * c[1]! + n[2]! * c[2]! < 0) {
+        const tmp = faces[i + 1]!;
+        faces[i + 1] = faces[i + 2]!;
+        faces[i + 2] = tmp;
+      }
+    }
   } else {
     // Icosahedron from the golden-ratio rectangles.
     const t = (1 + Math.sqrt(5)) / 2;

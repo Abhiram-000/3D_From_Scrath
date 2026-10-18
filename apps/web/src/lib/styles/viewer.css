@@ -2232,13 +2232,16 @@ body {
     overflow-y: auto;
   }
 
-  /* Touch Targets */
-  .parameter-slider {
-    height: 12px;
-    /* Thicker for touch */
+  /* Touch Targets — the base `.parameter-slider` is already a 44px hit strip (08's floor);
+     overriding it to 12px here was the exact regression it supposedly guarded against. Only the
+     thumb grows on touch devices, re-centred on the 6px track. */
+  .parameter-slider::-webkit-slider-thumb {
+    width: 24px;
+    height: 24px;
+    margin-top: -9px;
   }
 
-  .parameter-slider::-webkit-slider-thumb {
+  .parameter-slider::-moz-range-thumb {
     width: 24px;
     height: 24px;
   }

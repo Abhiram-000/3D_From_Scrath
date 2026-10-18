@@ -19,6 +19,7 @@
  */
 import * as THREE from 'three';
 import type { InstancePlacement, MaterialRef, ModelManifest, PartNode } from '@edu3d/contracts';
+import { decimate } from '../geometry/decimate.ts';
 import type { MeshData } from '../geometry/mesh-data.ts';
 import type { RealizationDecisions } from './admission.ts';
 
@@ -55,33 +56,22 @@ function toColor(hex: string | undefined, fallback = '#cccccc'): THREE.Color {
 function toBufferGeometry(mesh: MeshData, decimateTo = 1): THREE.BufferGeometry {
   const geometry = new THREE.BufferGeometry();
 
-  geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
-  if (mesh.normals) geometry.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
-  if (mesh.uvs) geometry.setAttribute('uv', new THREE.BufferAttribute(mesh.uvs, 2));
-  if (mesh.colors) geometry.setAttribute('color', new THREE.BufferAttribute(mesh.colors, 3));
+  // The ladder's cut is real: quadric error metrics preserve the silhouette, where the old
+  // index-stride sampling produced shards whose normals disagreed with their positions. `decimate`
+  // is fail-soft by contract — a mesh it cannot improve comes back unchanged, and the caller's
+  // part stays whole at its authored cost.
+  const source = decimateTo < 1 ? decimate(mesh, { keep: decimateTo }) : mesh;
 
-  if (mesh.indices) {
-    if (decimateTo < 1) {
-      // Index-stride decimation: keep a fraction of the triangles, evenly spaced. Crude next to a quadric
-      // simplifier and chosen for the same reason `simplify` is — it never fails on arbitrary AI-generated
-      // topology, and the silhouette survives because the kept triangles are spread across the whole mesh.
-      const triangleCount = mesh.indices.length / 3;
-      const keep = Math.max(1, Math.floor(triangleCount * decimateTo));
-      const stride = triangleCount / keep;
-      const decimated = new Uint32Array(keep * 3);
-      for (let i = 0; i < keep; i += 1) {
-        const source = Math.min(triangleCount - 1, Math.floor(i * stride)) * 3;
-        decimated[i * 3] = mesh.indices[source] as number;
-        decimated[i * 3 + 1] = mesh.indices[source + 1] as number;
-        decimated[i * 3 + 2] = mesh.indices[source + 2] as number;
-      }
-      geometry.setIndex(new THREE.BufferAttribute(decimated, 1));
-    } else {
-      geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
-    }
+  geometry.setAttribute('position', new THREE.BufferAttribute(source.positions, 3));
+  if (source.normals) geometry.setAttribute('normal', new THREE.BufferAttribute(source.normals, 3));
+  if (source.uvs) geometry.setAttribute('uv', new THREE.BufferAttribute(source.uvs, 2));
+  if (source.colors) geometry.setAttribute('color', new THREE.BufferAttribute(source.colors, 3));
+
+  if (source.indices) {
+    geometry.setIndex(new THREE.BufferAttribute(source.indices, 1));
   }
 
-  if (!mesh.normals) geometry.computeVertexNormals();
+  if (!source.normals) geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   geometry.computeBoundingBox();
 
@@ -322,7 +312,13 @@ export function realize(options: RealizeOptions): RealizedModel {
         writeInstances(instanced, node.instances, cap);
         instanced.frustumCulled = true;
         object = instanced;
-        triangles += (node.geometry.triangles ?? 0) * instanced.count;
+        // Realized × instances: the same honesty the single-mesh branch owes, at multiplier —
+        // the index buffer on screen is `capacity × geometry`, so its triangles are counted from
+        // the geometry the learner sees, not the manifest's authored claim.
+        const instanceIndex = geometry.index;
+        triangles +=
+          (instanceIndex ? instanceIndex.count / 3 : mesh.positions.length / 3 / 3) *
+          instanced.count;
         drawCalls += 1;
       } else if (node.kind === 'points') {
         const cap = decisions.pointCaps.get(node.id);
@@ -347,7 +343,11 @@ export function realize(options: RealizeOptions): RealizedModel {
         meshObject.castShadow = !node.staticGeometry;
         meshObject.receiveShadow = true;
         object = meshObject;
-        triangles += node.geometry.triangles ?? 0;
+        // Realized, not authored: the geometry on screen may have been decimated, so its index
+        // count is what the status bar owes the learner (`Q5`). Instanced sets draw the same
+        // geometry once per draw call; the triangle budget counts it once too.
+        const index = geometry.index;
+        triangles += index ? index.count / 3 : mesh.positions.length / 3 / 3;
         drawCalls += 1;
       }
     }

@@ -103,6 +103,8 @@ export interface GalleryStore {
   getSnapshot(id: string): Promise<{ bytes: Uint8Array; mime: string } | null>;
   /** Flush any pending write-through. Part of the shutdown sequence (`06` step 4). */
   flush(): Promise<void>;
+  /** Idempotent resource release. Postgres ends its pool; the file store flushes. */
+  close(): Promise<void>;
   /** Index creation is idempotent, at startup, per `06`'s schema rules. */
   init(): Promise<void>;
   readonly announcement: StoreAnnouncement;
@@ -238,10 +240,14 @@ export class PostgresStore implements GalleryStore {
   }
 
   async delete(id: string): Promise<boolean> {
-    const result = await this.client.query('DELETE FROM blueprints WHERE id = $1', [id]);
-    // Delete of a model whose snapshot is already gone succeeds independently (`06` edge case).
+    // RETURNING is the truth: a delete of an unknown id must report false, not a crafted
+    // `|| true`. The snapshot delete stays fire-and-forget — an orphan snapshot is a cleanup
+    // matter, not a failed publish-removal (same edge case, `06`).
+    const result = await this.client.query('DELETE FROM blueprints WHERE id = $1 RETURNING id', [
+      id,
+    ]);
     await this.client.query('DELETE FROM snapshots WHERE id = $1', [id]).catch(() => undefined);
-    return (result.rows ?? []).length !== 0 || true;
+    return (result.rows ?? []).length > 0;
   }
 
   async putSnapshot(bytes: Uint8Array, mime: string): Promise<string> {
@@ -263,6 +269,16 @@ export class PostgresStore implements GalleryStore {
 
   async flush(): Promise<void> {
     /* Postgres rows are durable at commit; nothing to flush. */
+  }
+
+  /**
+   * End the pool. The client here IS the `pg.Pool` (it answers `query` directly), so `end` is the
+   * shutdown call; idempotent by the pool's own contract. Optional interface means hand-rolled
+   * fake clients in tests need no stub.
+   */
+  async close(): Promise<void> {
+    const end = (this.client as unknown as { end?: () => Promise<void> }).end;
+    if (end) await end.call(this.client).catch(() => undefined);
   }
 }
 
@@ -347,6 +363,11 @@ export class FileStore implements GalleryStore {
     const temp = `${this.filePath}.tmp`;
     await writeFile(temp, JSON.stringify({ rows: this.rows }), 'utf8');
     await rename(temp, this.filePath);
+  }
+
+  async close(): Promise<void> {
+    // Last flush before close: pending debounced writes must hit disk (`06` step 4's ordering).
+    await this.flush();
   }
 
   private evictIfNeeded(): void {

@@ -94,7 +94,17 @@ export function buildApp(state: AppState): Hono<AppContext> {
     const requestId = newRequestId();
     context.set('requestId', requestId);
     context.header('x-request-id', requestId);
-    await next();
+
+    // forceHttps, now honoured: the proxy declares the client's scheme via x-forwarded-proto
+    // (only meaningful with TRUST_PROXY set, which production requires), and an http request
+    // under `forceHttps` gets a 308 before anything runs. The health checks hit loopback
+    // directly and carry no proxy header, so they cannot redirect-loop; requests with no proxy
+    // header are loopback by construction on this deployment shape and pass through untouched.
+    if (config.security.forceHttps && context.req.header('x-forwarded-proto') === 'http') {
+      const url = new URL(context.req.url);
+      return context.redirect(`https://${url.host}${url.pathname}${url.search}`, 308);
+    }
+    return await next();
   });
 
   // ── Security headers (`06`) ───────────────────────────────────────────────
@@ -105,6 +115,22 @@ export function buildApp(state: AppState): Hono<AppContext> {
     context.header('x-frame-options', 'SAMEORIGIN');
     if (config.security.hsts)
       context.header('strict-transport-security', 'max-age=31536000; includeSubDomains');
+
+    // CSP, resolved in config and — before this middleware existed — printed in the startup
+    // banner and then dropped. `enforce` ships a locked-down default (the platform is fully
+    // self-contained: no external scripts, frames or forms); `report-only` observes without
+    // breaking anything so deployments can test before they flip. Guests render in a worker, so
+    // the policy never constrains model code — only the page chrome around it.
+    if (config.security.csp !== 'off') {
+      const policy =
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
+        "worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'";
+      // Violations surface in the browser console; no report sink means no report noise and no
+      // endpoint for a misconfigured client to spray.
+      context.header('content-security-policy-report-only', policy);
+      if (config.security.csp === 'enforce') context.header('content-security-policy', policy);
+    }
   });
 
   // ── CORS: allow-list, never * in production (`06`) ────────────────────────

@@ -118,9 +118,12 @@ async function main(): Promise<void> {
     // 3. Notify open streams. The generation streams are inside ReadableStream bodies; the drain flag
     //    makes the next pipeline phase check fail into a terminal error event, and the hard exit below
     //    bounds how long a wedged stream can hold the process.
-    // 4. Flush the store's pending write-through.
+    // 4. Flush the store's pending write-through, then release its resources — the Postgres pool
+    // ends (open clients would hold the process open past the hard-exit timer) and the file
+    // store's last debounced write hits disk.
     try {
       await store.flush();
+      await store.close();
     } catch (error) {
       logger.warn({ error: (error as Error).message }, 'store flush during shutdown');
     }

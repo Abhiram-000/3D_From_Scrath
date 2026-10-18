@@ -190,10 +190,6 @@ describe('decimate — the clean population', () => {
       positions: new Float32Array([0, 0, 3, 1, 0, 3, 0, 1, 3]),
       indices: new Uint32Array([0, 1, 2]),
     };
-    const bridge: MeshData = {
-      positions: new Float32Array([0, 0, 0, 0, 0, 3]),
-      indices: new Uint32Array([]),
-    };
     // Seam them into one index space: bridge is a degenerate quad (two duplicate vertices), so
     // the only live faces are the two sheets — but edges (0, b0) and (2, b2) exist as boundaries.
     const positions = new Float32Array([

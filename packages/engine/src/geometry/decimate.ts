@@ -216,10 +216,14 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
     heapA[i] = heapA[j]!;
     heapB[i] = heapB[j]!;
     heapTarget[i] = heapTarget[j]!;
+    heapVersionA[i] = heapVersionA[j]!;
+    heapVersionB[i] = heapVersionB[j]!;
     heapCost[j] = c;
     heapA[j] = va;
     heapB[j] = vb;
     heapTarget[j] = t;
+    heapVersionA[j] = sa;
+    heapVersionB[j] = sb;
   };
 
   const pushPair = (
@@ -302,26 +306,18 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
     a: number,
     b: number,
   ): { anyBoundary: boolean; aBoundary: boolean; bBoundary: boolean } => {
-    const trianglesWith = (v: number): Set<number> => {
-      const set = new Set<number>();
-      for (const idx of cornersOf.get(a === v ? a : v) ?? []) {
-        const tri = (idx / 3) | 0;
-        if (aliveTriangle[tri]) set.add(tri);
-      }
-      for (const idx of cornersOf.get(b === v ? b : v) ?? []) {
-        const tri = (idx / 3) | 0;
-        if (aliveTriangle[tri]) set.add(tri);
-      }
-      return set;
-    };
-    let shared = 0;
     const trisA = cornersTris(a);
-    for (const tri of cornersTris(b)) {
+    const trisB = cornersTris(b);
+    let shared = 0;
+    for (const tri of trisB) {
       if (trisA.has(tri)) shared += 1;
     }
-    const aBoundary = isBoundaryVertex(a);
-    const bBoundary = isBoundaryVertex(b);
-    return { anyBoundary: shared === 1 || aBoundary || bBoundary, aBoundary, bBoundary };
+    // An edge is a border itself when exactly one live triangle spans it; either endpoint being a
+    // rim vertex (some other edge of it has a single incident face) makes the fold rim-touching.
+    const sharedIsSingle = shared === 1;
+    const aBoundary = sharedIsSingle || isBoundaryVertex(a);
+    const bBoundary = sharedIsSingle || isBoundaryVertex(b);
+    return { anyBoundary: aBoundary || bBoundary, aBoundary, bBoundary };
   };
 
   /** A vertex is on the border when some live edge containing it has exactly one live triangle. */

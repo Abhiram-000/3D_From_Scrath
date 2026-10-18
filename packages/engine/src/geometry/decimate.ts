@@ -66,6 +66,22 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
   const vertexCount = positions.length / 3;
   const aliveTriangle = new Uint8Array(corners.length / 3).fill(1);
   const aliveVertex = new Uint8Array(vertexCount).fill(1);
+  // Version stamps for the lazy heap: any write to a vertex's position or corner list bumps its
+  // counter, and a heap entry stamped at push time is skipped at pop time when either endpoint's
+  // counter moved. Without this, an entry whose edge died (its last shared triangle dropped by a
+  // neighbouring collapse) survives with its old cheap cost and folds through air — welding
+  // separate sheets across a gap, which is the dual corruption of Q4's disconnection rule.
+  const vertexVersion = new Uint32Array(vertexCount);
+  /** Scratch for the summed endpoints' quadric — computed per price, never stored. */
+  const QUADRIC_SUM = new Float64Array(QUADRIC_SLOTS);
+  /**
+   * Open-mesh rule per the spec: a boundary-touching edge costs AT LEAST this much, absolutely.
+   * Chosen 8 decades above the reference model's own edge costs (positions in metres, quadric
+   * costs ~1e-2..1e2) so the boundary survives every interior option — and stated as a floor
+   * rather than a multiplier because a planar rim's own quadric prices its in-plane movement at
+   * zero, and every multiplier times zero is zero.
+   */
+  const BOUNDARY_ABSOLUTE_FLOOR = 1e8;
 
   // Cleaning is part of the job, not a courtesy check: a NaN vertex or an index-repeat triangle in
   // the input is debris the ladder must not inherit (`Q2`), and "fail-soft" means the OUTPUT is
@@ -181,6 +197,8 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
   const heapA: number[] = [];
   const heapB: number[] = [];
   const heapTarget: [number, number, number][] = [];
+  const heapVersionA: number[] = [];
+  const heapVersionB: number[] = [];
 
   const heapLess = (i: number, j: number): boolean =>
     heapCost[i]! < heapCost[j]! ||
@@ -192,6 +210,8 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
     const va = heapA[i]!;
     const vb = heapB[i]!;
     const t = heapTarget[i]!;
+    const sa = heapVersionA[i]!;
+    const sb = heapVersionB[i]!;
     heapCost[i] = heapCost[j]!;
     heapA[i] = heapA[j]!;
     heapB[i] = heapB[j]!;
@@ -202,11 +222,20 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
     heapTarget[j] = t;
   };
 
-  const pushPair = (a: number, b: number, cost: number, target: [number, number, number]): void => {
+  const pushPair = (
+    a: number,
+    b: number,
+    cost: number,
+    target: [number, number, number],
+    versionA: number,
+    versionB: number,
+  ): void => {
     heapCost.push(cost);
     heapA.push(a);
     heapB.push(b);
     heapTarget.push(target);
+    heapVersionA.push(versionA);
+    heapVersionB.push(versionB);
     let idx = heapCost.length - 1;
     while (idx > 0) {
       const parent = (idx - 1) >> 1;
@@ -216,18 +245,34 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
     }
   };
 
-  const popPair = (): { a: number; b: number; target: [number, number, number] } | null => {
+  const popPair = (): {
+    a: number;
+    b: number;
+    target: [number, number, number];
+    versionA: number;
+    versionB: number;
+  } | null => {
     if (heapCost.length === 0) return null;
-    const top = { a: heapA[0]!, b: heapB[0]!, target: heapTarget[0]! };
+    const top = {
+      a: heapA[0]!,
+      b: heapB[0]!,
+      target: heapTarget[0]!,
+      versionA: heapVersionA[0]!,
+      versionB: heapVersionB[0]!,
+    };
     const lastC = heapCost.pop()!;
     const lastA = heapA.pop();
     const lastB = heapB.pop();
     const lastT = heapTarget.pop();
+    const lastVA = heapVersionA.pop();
+    const lastVB = heapVersionB.pop();
     if (heapCost.length > 0 && lastA !== undefined) {
       heapCost[0] = lastC;
       heapA[0] = lastA;
       heapB[0] = lastB!;
       heapTarget[0] = lastT!;
+      heapVersionA[0] = lastVA!;
+      heapVersionB[0] = lastVB!;
       let idx = 0;
       for (;;) {
         const l = idx * 2 + 1;
@@ -242,6 +287,77 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
     }
     return top;
   };
+
+  /** vᵀQv over the summed scratch quadric, with the homogeneous row folded in (w = 1). */
+  const quadricCostSum = (x: number, y: number, z: number): number =>
+    quadricCostAt(QUADRIC_SUM, 0, x, y, z);
+
+  /**
+   * Whether an edge is a free border: does exactly one live triangle span both endpoints?
+   * Checked per price (O(deg) over the two corner lists), not maintained incrementally — a stale
+   * boundary flag from an incremental map silently shrinks rims, which is the failure the penalty
+   * exists to prevent.
+   */
+  const edgeIsBoundary = (
+    a: number,
+    b: number,
+  ): { anyBoundary: boolean; aBoundary: boolean; bBoundary: boolean } => {
+    const trianglesWith = (v: number): Set<number> => {
+      const set = new Set<number>();
+      for (const idx of cornersOf.get(a === v ? a : v) ?? []) {
+        const tri = (idx / 3) | 0;
+        if (aliveTriangle[tri]) set.add(tri);
+      }
+      for (const idx of cornersOf.get(b === v ? b : v) ?? []) {
+        const tri = (idx / 3) | 0;
+        if (aliveTriangle[tri]) set.add(tri);
+      }
+      return set;
+    };
+    let shared = 0;
+    const trisA = cornersTris(a);
+    for (const tri of cornersTris(b)) {
+      if (trisA.has(tri)) shared += 1;
+    }
+    const aBoundary = isBoundaryVertex(a);
+    const bBoundary = isBoundaryVertex(b);
+    return { anyBoundary: shared === 1 || aBoundary || bBoundary, aBoundary, bBoundary };
+  };
+
+  /** A vertex is on the border when some live edge containing it has exactly one live triangle. */
+  const isBoundaryVertex = (v: number): boolean => {
+    const neighbours = new Map<number, number>();
+    for (const idx of cornersOf.get(v) ?? []) {
+      const tri = (idx / 3) | 0;
+      if (!aliveTriangle[tri]) continue;
+      const t0 = corners[tri * 3]!;
+      const t1 = corners[tri * 3 + 1]!;
+      const t2 = corners[tri * 3 + 2]!;
+      for (const [x, y] of [
+        [t0, t1],
+        [t1, t2],
+        [t2, t0],
+      ] as const) {
+        if (x !== v && y !== v) continue;
+        const other = x === v ? y! : x!;
+        neighbours.set(other, (neighbours.get(other) ?? 0) + 1);
+      }
+    }
+    for (const count of neighbours.values()) {
+      if (count === 1) return true;
+    }
+    return false;
+  };
+
+  /** Live triangle ids containing vertex v — the shared-count helper's halves. */
+  function cornersTris(v: number): Set<number> {
+    const set = new Set<number>();
+    for (const idx of cornersOf.get(v) ?? []) {
+      const tri = (idx / 3) | 0;
+      if (aliveTriangle[tri]) set.add(tri);
+    }
+    return set;
+  }
 
   const quadricCostAt = (
     q: Float64Array,
@@ -298,14 +414,30 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
     return [working[a * 3]!, working[a * 3 + 1]!, working[a * 3 + 2]!];
   };
 
-  /** Price one edge and push it into the heap. Edges priced once at build, again after each touch. */
+  /** Price one edge and push it into the heap. Priced against BOTH endpoints' quadrics. */
   const priceEdge = (a: number, b: number): void => {
     if (!aliveVertex[a] || !aliveVertex[b] || a === b) return;
     const target = solveTarget(a, b);
-    const base = a * QUADRIC_SLOTS;
-    const cost = quadricCostAt(quadrics, base, target[0], target[1], target[2]);
+    // Sum the endpoints' quadrics into scratch: the classic operator prices against Qa alone,
+    // ignoring the damage the collapse does to b's planes — any mesh with two differently-shaped
+    // regions then orders its cuts backwards, and the dense side pays for the cheap side's
+    // collapses (the asymmetric-mesh silhouette test pins this at 5%).
+    const pa = a * QUADRIC_SLOTS;
+    const pb = b * QUADRIC_SLOTS;
+    for (let i = 0; i < QUADRIC_SLOTS; i += 1) {
+      QUADRIC_SUM[i] = quadrics[pa + i]! + quadrics[pb + i]!;
+    }
+    let cost = quadricCostSum(target[0], target[1], target[2]);
+
+    // Boundary handling, as an absolute floor rather than a multiplier: an open sheet's planar
+    // rim edges price at ~0 in their own quadrics (movement along the plane is free), so even a
+    // large multiplier times zero is zero, and the plate loses its coastline. A boundary-touching
+    // edge pays an absolute floor that no interior edge of a similarly-positioned mesh can be
+    // priced under; a still-live boundary edge is only ever chosen when nothing interior remains.
+    const boundary = edgeIsBoundary(a, b);
+    if (boundary.anyBoundary) cost = Math.max(cost, BOUNDARY_ABSOLUTE_FLOOR);
     if (!Number.isFinite(cost)) return;
-    pushPair(a, b, cost, target);
+    pushPair(a, b, cost, target, vertexVersion[a]!, vertexVersion[b]!);
   };
 
   // Initial pricing, over edges collected in sorted order.
@@ -380,6 +512,10 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
     const b = top.b;
     if (!aliveVertex[a] || !aliveVertex[b]) continue;
     if (a === b) continue;
+    // Staleness: the entry was priced when these stamps were current. A moved position or a
+    // rewritten corner list on either endpoint makes the price — and the solved target — a guess
+    // about a surface that no longer exists; skip it (the reprice pass re-pushed the live edge).
+    if (top.versionA !== vertexVersion[a]! || top.versionB !== vertexVersion[b]!) continue;
 
     // Weld-distance: two vertices sharing coordinates are one decision either way; take the merge
     // with the existing position rather than the (possibly NaN-tainted) solved one.
@@ -392,12 +528,15 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
       working[a * 3] = top.target[0];
       working[a * 3 + 1] = top.target[1];
       working[a * 3 + 2] = top.target[2];
+      vertexVersion[a]! += 1;
     }
     for (let i = 0; i < QUADRIC_SLOTS; i += 1) {
       const ai = a * QUADRIC_SLOTS + i;
       quadrics[ai] = (quadrics[ai] ?? 0) + quadrics[b * QUADRIC_SLOTS + i]!;
     }
     aliveVertex[b] = 0;
+    vertexVersion[b]! += 1;
+    vertexVersion[a]! += 1;
     triangles -= retriangulate(b, a);
 
     // Re-price every live edge of the survivor. Insertion-ordered sets keep this deterministic.

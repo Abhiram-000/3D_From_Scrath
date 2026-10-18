@@ -70,11 +70,9 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
   // Cleaning is part of the job, not a courtesy check: a NaN vertex or an index-repeat triangle in
   // the input is debris the ladder must not inherit (`Q2`), and "fail-soft" means the OUTPUT is
   // clean — not that the input's defects are returned verbatim.
-  let foundPoison = false;
   for (let i = 0; i < positions.length; i += 1) {
     if (!Number.isFinite(positions[i])) {
       aliveVertex[(i / 3) | 0] = 0;
-      foundPoison = true;
     }
   }
 

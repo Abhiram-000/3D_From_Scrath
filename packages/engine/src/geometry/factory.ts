@@ -1005,7 +1005,10 @@ export class GeometryFactory {
         caps?: boolean;
       }) => {
         const source = this.profileOf(spec?.profile, 'extrude profile');
-        const depth = requireFinite(spec?.depth, 'extrude depth');
+        // A zero or negative depth is an empty or inverted solid, not a shape — refused with the
+        // correction rather than quietly emitted (1e-5 floors the radii clocks for the same
+        // reason: coincident-vertex degeneracy).
+        const depth = requireFinite(spec?.depth, 'extrude depth', { min: 1e-5 });
         const direction = spec?.direction
           ? requireVec3(spec.direction, 'extrude direction')
           : ([0, 0, 1] as Vec3);

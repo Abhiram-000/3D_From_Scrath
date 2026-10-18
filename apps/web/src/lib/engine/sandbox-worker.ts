@@ -30,9 +30,17 @@ import {
   type QualityRung,
   type RuntimeStats,
 } from '@edu3d/contracts';
-import { compileGuest, createGuard, hardenRealm, type GuardHandle } from '@edu3d/sandbox';
+import {
+  compileGuest,
+  createGuard,
+  hardenRealm,
+  prepareProgram,
+  describeViolations,
+  type GuardHandle,
+} from '@edu3d/sandbox';
 import {
   applyMotions,
+  apiSurfaceSet,
   GeometryError,
   M,
   MaterialError,
@@ -51,6 +59,7 @@ import { PhysicsWorld } from './physics-world.ts';
 import { computeFrameRate } from './frame-rate.ts';
 import { devEnabled } from '../dev-console.ts';
 import {
+  renderGate,
   resetMotionDriven as resetMotionDrivenInto,
   syncTransforms as syncManifestTransforms,
 } from './frame-compose.ts';
@@ -246,10 +255,22 @@ interface WorkerState {
   partNodes: Map<string, ModelManifest['parts'][number]>;
   motionBases: Map<string, PartTransformLike>;
   runsWhilePausedParts: Set<string>;
+  /**
+   * Whether any declared motion carries `runsWhilePaused`. The render gate composes this with
+   * `paused`: a paused model whose glow keeps pulsing is never still, one whose every motion
+   * respects pause is still after the last invalidation.
+   */
+  hasRunsWhilePaused: boolean;
   /** Latest physics probe read-outs, so `{ probe: … }` scalar sources resolve per frame. */
   lastProbes: Readonly<Record<string, number>>;
   /** Per-frame flag bank: camera gestures coalesce to one `updateCamera` per tick. */
   cameraDirty: boolean;
+  /**
+   * An inspection invalidation: selection change, hover change, view mode, theme, resize, any
+   * notice that touched the scene. Cleared when the frame renders. Distinct from `cameraDirty`
+   * only in who sets it — the gate reads both the same way.
+   */
+  needsRender: boolean;
   /**
    * The numeric parameter record the applicator resolves against, `null` when invalidated.
    *
@@ -524,10 +545,12 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     partNodes: new Map(),
     motionBases: new Map(),
     runsWhilePausedParts: new Set(),
+    hasRunsWhilePaused: false,
     lastProbes: {},
     paramsRecord: null,
     needsFrame: false,
     cameraDirty: false,
+    needsRender: false,
 
     paused: false,
     timeScale: 1,
@@ -596,7 +619,36 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
     // Step 2 and 3: facades and compilation, while `new Function` still exists.
     const compileStart = performance.now();
     guard = createGuard();
-    compiled = compileGuest(request.runtime ?? request.code);
+    // A load without an instrumented twin is a RAW load — the e2e replay path, a gallery bundle
+    // whose `runtime` predates its `code`, any manual probe. Run the pipeline's own build contract
+    // here: gate the source and instrument its loops, so `while(true)` in a raw load trips the
+    // injected guard at the 20 s build deadline instead of relying on a watchdog that is honouring
+    // this machine's 60 s build grace. The generated path (server → `runtime`) skips this: it was
+    // gated and instrumented server-side, where the violations name the repair pass.
+    let source = request.runtime;
+    if (source === undefined) {
+      const prepared = prepareProgram(request.code, { apiSurface: apiSurfaceSet() });
+      if (!prepared.ok) {
+        post({
+          type: 'loadFailed',
+          message: describeViolations(prepared.gate).join('\n'),
+          timedOut: false,
+          logs: [...logs],
+        });
+        return;
+      }
+      if (prepared.truncated) {
+        post({
+          type: 'loadFailed',
+          message: 'This program appears to be cut off mid-statement.',
+          timedOut: false,
+          logs: [...logs],
+        });
+        return;
+      }
+      source = prepared.instrumented;
+    }
+    compiled = compileGuest(source);
     stageLog(
       `compile ok — ${request.code.length} bytes · ${Math.round(performance.now() - compileStart)}ms`,
     );
@@ -710,6 +762,7 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
   target.partNodes = new Map(manifest.parts.map((node) => [node.id, node]));
   target.motionBases = new Map();
   target.runsWhilePausedParts = new Set();
+  target.hasRunsWhilePaused = false;
   for (const motion of manifest.motions) {
     const node = target.partNodes.get(motion.partId);
     if (node && !target.motionBases.has(motion.partId)) {
@@ -721,7 +774,10 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
         scale: [...node.transform.scale] as [number, number, number],
       });
     }
-    if (motion.runsWhilePaused) target.runsWhilePausedParts.add(motion.partId);
+    if (motion.runsWhilePaused) {
+      target.runsWhilePausedParts.add(motion.partId);
+      target.hasRunsWhilePaused = true;
+    }
   }
   target.lastProbes = {};
 
@@ -885,9 +941,9 @@ function applyViewMode(target: WorkerState): void {
 }
 
 /** Raycast against the model and report what the pointer is over. */
-function updateHover(target: WorkerState): void {
+function updateHover(target: WorkerState): boolean {
   const model = target.model;
-  if (!model) return;
+  if (!model) return false;
 
   target.raycaster.setFromCamera(target.pointer, target.camera);
   const hits = target.raycaster.intersectObject(model.root, true);
@@ -907,10 +963,13 @@ function updateHover(target: WorkerState): void {
     if (partId) break;
   }
 
-  if (partId !== target.hoveredPart) {
+  const changed = partId !== target.hoveredPart;
+  if (changed) {
     target.hoveredPart = partId;
     post({ type: 'hover', partId });
   }
+  // The caller renders only on change: a cast is cheap, a presented frame is not.
+  return changed;
 }
 
 /**
@@ -977,108 +1036,133 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   const rawDelta = target.lastFrameAt === 0 ? 1 / 60 : (timestamp - target.lastFrameAt) / 1000;
   target.lastFrameAt = timestamp;
 
-  // Clamped so a backgrounded tab resumes rather than fast-forwards (`08`).
+  // The on-demand gate (`08`): a paused model with nothing marked dirty presents nothing — no
+  // physics step, no guest callback, no declared motion, no sync, no cast, no render. `paused`
+  // composes with `hasRunsWhilePaused`: a paused glow that pulses is never still, a paused fan
+  // is still after the last invalidation. The stats cadence below runs on both paths, and its
+  // `fps` reads 0 of itself while still (`computeFrameRate` reports a stall from the drained
+  // window) — which is the honest figure, because zero frames were presented.
+  const motionFrozen = target.paused && !target.hasRunsWhilePaused;
+  const still = !renderGate({
+    paused: motionFrozen,
+    autoRotate: target.autoRotate,
+    cameraDirty: target.cameraDirty,
+    needsRender: target.needsRender,
+  });
+
+  // Clamped so a backgrounded tab resumes rather than fast-forwards (`08`). Computed before the
+  // gate so a resume's first frame measures the real gap, then clamps it.
   const delta = Math.min(TIMING.maxDelta, Math.max(0, rawDelta)) * target.timeScale;
   if (!target.paused) target.elapsed += delta;
-  // Always advances, paused or not: the clock runsWhilePaused motions live on.
-  target.wallElapsed += delta;
 
-  const frameStart = now();
+  if (!still) {
+    // A still path freezes both clocks: advancing a wall clock nobody reads is bookkeeping for
+    // nothing, and a resume re-measures the gap through lastFrameAt above.
+    target.wallElapsed += delta;
+    const frameStart = now();
 
-  // The simulation steps on its own fixed clock, before guest logic so the last step's probes are
-  // already published to `ctx.probes` when the model's own code reads them (`02` R4, R6).
-  if (target.physics && !target.paused) {
-    const stepped = target.physics.step(delta, target.builder?.motorTargets ?? new Map());
-    target.physicsMillis = stepped.millis;
-    if (Object.keys(stepped.probes).length > 0 && target.builder) {
-      target.builder.publishProbes(stepped.probes);
-    }
-    // Kept for the motion applicator too: `{ probe: … }` scalar sources resolve from these,
-    // the same measurements the model's own frame code just saw.
-    if (Object.keys(stepped.probes).length > 0) target.lastProbes = stepped.probes;
-  }
-
-  // Guest frame logic, budgeted. A callback that overruns repeatedly gets the model paused with an explanation
-  // rather than being killed: `SANDBOX_LIMITS.frameOverrunLimit`.
-  // The loop still runs while paused at this phase — the guest holds its own clock via `ctx.paused`,
-  // and declared runsWhilePaused parts compose off the wall clock below — so `needsFrame` has no
-  // gate to fire here yet; it is the on-demand-rendering hook the next phase wires in. Parameter
-  // invalidation reaches the applicator through `paramsRecord` alone.
-  target.needsFrame = false;
-  if (target.builder && target.guard && !target.frameDisabled && !CONTEXT_LOST) {
-    target.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
-    const callbackStart = now();
-    // Declared motion composes with what the model writes, so the base reset happens first —
-    // the applicator's contract, not an optimisation.
-    resetMotionDrivenParts(target, target.paused);
-    try {
-      target.builder.runFrame(target.elapsed, delta, target.paused);
-      const cost = now() - callbackStart;
-      if (cost > SANDBOX_LIMITS.frameDeadlineMs) target.overruns += 1;
-      else target.overruns = Math.max(0, target.overruns - 1);
-
-      if (target.overruns > SANDBOX_LIMITS.frameOverrunLimit) {
-        target.frameDisabled = true;
-        post({
-          type: 'notice',
-          message:
-            'This model\u2019s animation was paused because it was too slow to keep up. The model is still explorable.',
-        });
+    // The simulation steps on its own fixed clock, before guest logic so the last step's probes are
+    // already published to `ctx.probes` when the model's own code reads them (`02` R4, R6).
+    if (target.physics && !target.paused) {
+      const stepped = target.physics.step(delta, target.builder?.motorTargets ?? new Map());
+      target.physicsMillis = stepped.millis;
+      if (Object.keys(stepped.probes).length > 0 && target.builder) {
+        target.builder.publishProbes(stepped.probes);
       }
-    } catch (error) {
-      // A throwing frame callback disables itself rather than killing the model: the geometry is still worth
-      // exploring even if the animation is broken.
-      target.frameDisabled = true;
-      const described = describeFailure(error);
-      post({ type: 'notice', message: `Animation stopped: ${described.message}` });
+      // Kept for the motion applicator too: `{ probe: … }` scalar sources resolve from these,
+      // the same measurements the model's own frame code just saw.
+      if (Object.keys(stepped.probes).length > 0) target.lastProbes = stepped.probes;
     }
 
-    // Declared motion, after the model's own writes and before the renderer copies the pose.
-    applyDeclaredMotions(target);
+    // Guest frame logic, budgeted. A callback that overruns repeatedly gets the model paused with an explanation
+    // rather than being killed: `SANDBOX_LIMITS.frameOverrunLimit`.
+    // `needsFrame` is a bare clear at this phase (see its field comment); the on-demand gate above
+    // is what spares the callback when nothing can have changed.
+    target.needsFrame = false;
+    if (target.builder && target.guard && !target.frameDisabled && !CONTEXT_LOST) {
+      target.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
+      const callbackStart = now();
+      // Declared motion composes with what the model writes, so the base reset happens first —
+      // the applicator's contract, not an optimisation.
+      resetMotionDrivenParts(target, target.paused);
+      try {
+        target.builder.runFrame(target.elapsed, delta, target.paused);
+        const cost = now() - callbackStart;
+        if (cost > SANDBOX_LIMITS.frameDeadlineMs) target.overruns += 1;
+        else target.overruns = Math.max(0, target.overruns - 1);
 
-    // Push the builder's authored transforms into the Three.js objects.
-    syncTransforms(target);
-  }
+        if (target.overruns > SANDBOX_LIMITS.frameOverrunLimit) {
+          target.frameDisabled = true;
+          post({
+            type: 'notice',
+            message:
+              'This model’s animation was paused because it was too slow to keep up. The model is still explorable.',
+          });
+        }
+      } catch (error) {
+        // A throwing frame callback disables itself rather than killing the model: the geometry is still worth
+        // exploring even if the animation is broken.
+        target.frameDisabled = true;
+        const described = describeFailure(error);
+        post({ type: 'notice', message: `Animation stopped: ${described.message}` });
+      }
 
-  // Gestured camera state (orbit/zoom/pan messages) applies once per frame — the messages carry
-  // deltas, so applying at message rate bought nothing but event-loop contention against the
-  // render tick. The consumer clears the flag so a quiet gesture costs nothing either.
-  if (target.cameraDirty) {
-    target.cameraDirty = false;
-    updateCamera(target);
-  }
+      // Declared motion, after the model's own writes and before the renderer copies the pose.
+      applyDeclaredMotions(target);
 
-  // Idle orbit, so the viewer is never inert (`00`).
-  if (target.autoRotate && !target.paused) {
-    target.orbit.theta += (target.manifest?.camera.limits.autoRotateSpeed ?? 0.35) * delta * 0.2;
-    updateCamera(target);
-  }
+      // Push the builder's authored transforms into the Three.js objects.
+      syncTransforms(target);
+    }
 
-  // One coalesced hover raycast per frame, after the camera settled so the cast uses the pose that renders.
-  if (target.hoverPending) {
+    // Gestured camera state (orbit/zoom/pan messages) applies once per frame — the messages carry
+    // deltas, so applying at message rate bought nothing but event-loop contention against the
+    // render tick. The consumer clears the flag so a quiet gesture costs nothing either.
+    if (target.cameraDirty) {
+      target.cameraDirty = false;
+      updateCamera(target);
+    }
+
+    // Idle orbit, so the viewer is never inert (`00`).
+    if (target.autoRotate && !target.paused) {
+      target.orbit.theta += (target.manifest?.camera.limits.autoRotateSpeed ?? 0.35) * delta * 0.2;
+      updateCamera(target);
+    }
+
+    // One coalesced hover raycast per frame, after the camera settled so the cast uses the pose that renders.
+    // The CHANGE it finds is what marks the frame dirty — a cast is one raycast, a render is a
+    // presented frame, and conflating them would put the pointer back in charge of the frame rate.
+    if (target.hoverPending) {
+      target.hoverPending = false;
+      if (updateHover(target)) target.needsRender = true;
+    }
+
+    target.renderer.render(target.scene, target.camera);
+
+    const frameTime = now() - frameStart;
+    target.frameTimes.push(frameTime);
+    if (target.frameTimes.length > TIMING.frameWindow) target.frameTimes.shift();
+
+    // The live monitor rides on the measured frame time, after the frame it judges (`08`).
+    monitorLadder(target, frameTime);
+
+    target.frame += 1;
+    if (target.frame === 1 && target.loadStartedAt > 0) {
+      stageLog(
+        `first frame — ${((performance.now() - target.loadStartedAt) / 1000).toFixed(1)}s end-to-end`,
+      );
+    }
+  } else if (target.hoverPending) {
+    // Still: the hover cast keeps its appointment (against the last presented pose — correct,
+    // because nothing has rendered since). The change it finds wakes the presenter next tick.
     target.hoverPending = false;
-    updateHover(target);
-  }
-
-  target.renderer.render(target.scene, target.camera);
-
-  const frameTime = now() - frameStart;
-  target.frameTimes.push(frameTime);
-  if (target.frameTimes.length > TIMING.frameWindow) target.frameTimes.shift();
-
-  // The live monitor rides on the measured frame time, after the frame it judges (`08`).
-  monitorLadder(target, frameTime);
-
-  target.frame += 1;
-  if (target.frame === 1 && target.loadStartedAt > 0) {
-    stageLog(
-      `first frame — ${((performance.now() - target.loadStartedAt) / 1000).toFixed(1)}s end-to-end`,
-    );
+    if (updateHover(target)) target.needsRender = true;
   }
 
   // No heartbeat message. It shared a 1,000ms interval and a start instant with the stats publish
   // below, so it posted in the same frame, every second, forever - and the host treats *any* message
-  // as proof the worker's event loop is turning, so it proved nothing the stats post did not.
+  // as proof the worker's event loop is turning, so it proved nothing the stats post did not. The
+  // cadence runs on both paths: a still model still tells the host it is alive, with an honest
+  // frame rate of zero.
   const clockMs = now();
   if (clockMs - target.lastStatsMs >= TIMING.statsIntervalMs) {
     target.lastStatsMs = clockMs;
@@ -1090,12 +1174,6 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   }
 }
 
-/**
- * Copy authored transforms onto the rendered objects.
- *
- * The builder is the source of truth for a part's transform, because guest code writes there. Copying rather than
- * sharing keeps the guest away from Three.js objects entirely — it never holds a reference to anything on the GPU.
- */
 function syncTransforms(target: WorkerState): void {
   const model = target.model;
   const manifest = target.manifest;
@@ -1372,6 +1450,8 @@ function loop(timestamp: number): void {
         state.renderer.setSize(request.width, request.height, false);
         state.camera.aspect = request.width / Math.max(1, request.height);
         state.camera.updateProjectionMatrix();
+        // A resize changes what every pixel shows; the frame that proves it must present.
+        state.needsRender = true;
         break;
       }
 
@@ -1425,6 +1505,8 @@ function loop(timestamp: number): void {
           post({ type: 'selected', partId: state.selectedPart });
           // A selection stops the idle orbit: the learner is looking at something specific (`00`).
           if (state.selectedPart) state.autoRotate = false;
+          // Selection feedback (the highlight, the info panel) is a presented-frame concern.
+          state.needsRender = true;
         }
         break;
       }
@@ -1517,12 +1599,16 @@ function loop(timestamp: number): void {
         if (!state) return;
         state.viewMode = request.mode;
         applyViewMode(state);
+        // A mode change rewrites materials across the scene: a frame must present it.
+        state.needsRender = true;
         break;
       }
 
       case 'setTheme': {
         if (!state) return;
         applyTheme(state, request.theme);
+        // The 3D backdrop follows the theme (`07`); the frame that shows it must be presented.
+        state.needsRender = true;
         break;
       }
 

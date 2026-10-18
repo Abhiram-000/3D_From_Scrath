@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { PartTransformLike } from '@edu3d/engine';
-import { resetMotionDriven, syncTransforms } from './frame-compose.ts';
+import { renderGate, resetMotionDriven, syncTransforms } from './frame-compose.ts';
 
 interface StubTransform {
   position: { x: number; y: number; z: number };
@@ -92,6 +92,29 @@ describe('resetMotionDriven — the pre-frame pose reset', () => {
     expect(flaggedTransform.position).toEqual([1, 1, 1]);
     // (the unflagged read-out is asserted through its own map entry below)
     expect(live.get('unflagged')!.transform!.position).toEqual([8, 8, 8]);
+  });
+});
+
+describe('renderGate — when a frame is allowed to be empty', () => {
+  const quiet = {
+    paused: true,
+    autoRotate: false,
+    cameraDirty: false,
+    needsRender: false,
+    hoverPending: false,
+  };
+
+  it('is still only when paused, un-rotating, and nothing is marked dirty', () => {
+    expect(renderGate(quiet)).toBe(false);
+    // Every invalidation path revives rendering — the "paused is not dead" contract made
+    // executable: parameter change, camera gesture, view mode all flip one of these flags.
+    expect(renderGate({ ...quiet, needsRender: true })).toBe(true);
+    expect(renderGate({ ...quiet, cameraDirty: true })).toBe(true);
+    expect(renderGate({ ...quiet, paused: false })).toBe(true);
+    expect(renderGate({ ...quiet, autoRotate: true })).toBe(true);
+    // A pending hover cast is NOT a frame: the cast runs even when the gate is still (it must, or
+    // a pointer entering a new part would go unseen), and only the CHANGE it detects sets
+    // needsRender and renders. Casting costs one raycast; rendering costs a presented frame.
   });
 });
 

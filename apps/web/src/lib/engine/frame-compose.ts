@@ -32,6 +32,26 @@ export interface SyncableObject {
 }
 
 /**
+ * Whether this frame is allowed to be empty.
+ *
+ * The on-demand rule (`08`, "a paused model renders a static image 60 times a second at full cost"
+ * is the disease): a frame does work only when something can have changed — the model runs, the
+ * idle orbit spins, a gesture landed, an inspection invalidation fired. Everything else is a
+ * presented frame that costs nothing. The flags are cold facts about the state at the top of the
+ * tick; the caller still publishes stats so the watchdog sees the liveness it keys on.
+ */
+export interface RenderGateInput {
+  paused: boolean;
+  autoRotate: boolean;
+  cameraDirty: boolean;
+  needsRender: boolean;
+}
+
+export function renderGate(s: RenderGateInput): boolean {
+  return !s.paused || s.autoRotate || s.cameraDirty || s.needsRender;
+}
+
+/**
  * Copy each motion-driven part's authored base into the live transform it already holds — in place.
  *
  * The array-identity contract is deliberate: assigning `live.position = [...base.position]` read

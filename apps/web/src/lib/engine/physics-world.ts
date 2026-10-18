@@ -20,6 +20,7 @@
  * NaN quarantine (`02` Runtime): a body whose simulation explodes is frozen at its last good pose and
  * flagged, so one poisoned body cannot write garbage into the whole scene graph.
  */
+import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
 import type { BodyDecl, JointDecl, ModelManifest } from '@edu3d/contracts';
 import { DEVICE_BUDGETS, type DeviceTier } from '@edu3d/contracts';
@@ -388,9 +389,18 @@ export class PhysicsWorld {
 
         // Kinematic bodies follow their parts (the bridge); dynamic bodies drive them.
         if (link.decl.kind !== 'dynamic') continue;
+        // Quaternion → Euler via THREE's own XYZ conversion — the hand-rolled atan2 here
+        // produced an X-only, degrees-measured triple whose Y and Z were zeroed, so a tumbling
+        // body presented a fraction of its rotation. `eulerFromQuatXyz` lives in the engine's
+        // motions module, but the converter that already ships with the renderer's own math is
+        // the one that provably matches the renderer's convention.
+        const euler = new THREE.Euler().setFromQuaternion(
+          new THREE.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
+          'XYZ',
+        );
         this.simulatedParts.set(link.decl.partId, {
           position: [translation.x, translation.y, translation.z],
-          rotation: [(2 * Math.atan2(rotation.y, rotation.w) * 180) / Math.PI / 1, 0, 0],
+          rotation: [euler.x, euler.y, euler.z],
         });
         // Measured values the UI and the model's formulas read (`02` R6).
         probes[`${id}.speed`] = Math.hypot(linvel.x, linvel.y, linvel.z);

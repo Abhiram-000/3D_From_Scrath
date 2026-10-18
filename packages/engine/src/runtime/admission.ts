@@ -90,6 +90,7 @@ const permissiveDecisions = (budget: DeviceBudget): RealizationDecisions => ({
  */
 function decimationOrder(
   manifest: ModelManifest,
+  instanceCaps: ReadonlyMap<string, number>,
 ): Array<{ id: string; triangles: number; hero: boolean }> {
   const candidates = manifest.parts
     .filter((part) => part.geometry && part.kind !== 'points')
@@ -97,7 +98,14 @@ function decimationOrder(
       id: part.id,
       triangles:
         part.kind === 'instances'
-          ? (part.geometry?.triangles ?? 0) * (part.instances?.length ?? 0)
+          ? // Post-cap pricing: a set the instance rung already thinned to 5% of its placements
+            // does not owe the ladder its original count (the over-claim made the geometry rung
+            // cut the wrong parts first — the spec's finding at :98-101).
+            (part.geometry?.triangles ?? 0) *
+            Math.min(
+              instanceCaps.get(part.id) ?? part.instances?.length ?? 0,
+              part.instances?.length ?? 0,
+            )
           : (part.geometry?.triangles ?? 0),
       hero: part.hero,
     }));
@@ -195,17 +203,34 @@ export function priceModel(manifest: ModelManifest, tier: DeviceTier): Admission
   }
 
   if (instances > budget.maxInstances) {
-    const scale = budget.maxInstances / instances;
+    let excess = instances - budget.maxInstances;
+    // The cap follows `decimationOrder` (non-hero first, largest-first), not a uniform scale — a
+    // uniform scale cut the hero fan and the background rivet row by the same fraction, breaching
+    // the hero's 0.55 floor at exactly the tier where the hero is the whole lesson (a 22-blade fan
+    // capped to 3 kept 13.6%: the spec's named lie). Floors here are placement floors: a count,
+    // with a minimum of 3 so a radial array still reads as an array.
+    const order = manifest.parts
+      .filter((part) => part.kind === 'instances' && part.instances)
+      .sort((a, b) => {
+        if (a.hero !== b.hero) return a.hero ? 1 : -1;
+        return (b.instances?.length ?? 0) - (a.instances?.length ?? 0);
+      });
     let capped = 0;
-    for (const part of manifest.parts) {
-      if (part.kind !== 'instances' || !part.instances) continue;
-      // A minimum of 3 keeps a radial array reading as an array rather than a lone object.
-      const cap = Math.max(3, Math.floor(part.instances.length * scale));
+    for (const part of order) {
+      if (excess <= 0) break;
+      const placements = part.instances!.length;
+      const floorFraction = part.hero ? HERO_FLOOR : RECOGNIZABILITY_FLOOR;
+      const floorCount = Math.max(3, Math.ceil(placements * floorFraction));
+      const removable = Math.max(0, placements - floorCount);
+      if (removable <= 0) continue;
+      const take = Math.min(removable, excess);
+      const cap = placements - take;
       decisions.instanceCaps.set(part.id, cap);
-      capped += part.instances.length - cap;
-      triangles -= (part.geometry?.triangles ?? 0) * (part.instances.length - cap);
+      excess -= take;
+      capped += take;
+      triangles -= (part.geometry?.triangles ?? 0) * take;
     }
-    instances = budget.maxInstances;
+    instances = budget.maxInstances - Math.max(0, excess);
     adjustments.push({
       rung: 'particles',
       message: 'Repeated parts thinned on this device to keep the frame rate up.',
@@ -215,7 +240,7 @@ export function priceModel(manifest: ModelManifest, tier: DeviceTier): Admission
 
   // ── Rung: geometry detail ─────────────────────────────────────────────────
   if (triangles > budget.maxTriangles) {
-    const order = decimationOrder(manifest);
+    const order = decimationOrder(manifest, decisions.instanceCaps);
     let remaining = triangles - budget.maxTriangles;
     let reducedParts = 0;
 

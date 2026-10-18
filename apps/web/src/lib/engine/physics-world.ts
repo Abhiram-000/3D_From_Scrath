@@ -160,7 +160,7 @@ export class PhysicsWorld {
       const body = this.world.createRigidBody(bodyDesc);
 
       // The collider: `auto` derives from the render geometry's bounds — the fidelity rule (`02` R3).
-      const colliderDesc = this.describeCollider(decl, part.transform.scale[0]);
+      const colliderDesc = this.describeCollider(decl, part.transform.scale[0], part);
       colliderDesc.setDensity(
         decl.mass ? decl.mass / Math.max(1e-9, this.estimateVolume(decl)) : density,
       );
@@ -214,7 +214,11 @@ export class PhysicsWorld {
     }
   }
 
-  private describeCollider(decl: BodyDecl, partScale: number): RAPIER.ColliderDesc {
+  private describeCollider(
+    decl: BodyDecl,
+    partScale: number,
+    node?: ModelManifest['parts'][number],
+  ): RAPIER.ColliderDesc {
     const scale = Math.max(1e-6, partScale);
     switch (decl.collider.shape) {
       case 'sphere':
@@ -240,11 +244,30 @@ export class PhysicsWorld {
           (decl.collider.halfHeight ?? 0.5) * scale,
           (decl.collider.radius ?? 0.5) * scale,
         );
-      default:
-        // `auto`: the bounding-radius sphere of the rendered geometry. A convex hull from arbitrary
-        // AI-generated topology is not safe to compute here; the sphere is always faithful enough to
-        // start, and the author can declare a precise shape when the lesson needs it.
-        return RAPIER.ColliderDesc.ball((decl.collider.radius ?? 0.5) * scale);
+      case 'auto':
+      default: {
+        // The 2026-10-12 plan's load-bearing fix: `auto` infers from the geometry the builder
+        // actually made — the measured bounding radius is real data (every handle ships it), and
+        // the builder name says what shape wraps it. A model that never declared a collider used
+        // to get a hardcoded 0.5 m sphere whatever it was: a 3 m turbine nacelle fell like a
+        // marble. Shape-matched factors stay conservative (inscribed, not circumscribed) so
+        // inferred colliders err on the side of visible gaps over interpenetration.
+        const builder = node?.geometry?.builder ?? '';
+        const br = Math.max(1e-6, (node?.geometry?.boundingRadius ?? 0.5) * scale);
+        const mm = inferColliderShape(builder, br);
+        switch (mm.kind) {
+          case 'ball':
+            return RAPIER.ColliderDesc.ball(mm.r);
+          case 'cylinder':
+            return RAPIER.ColliderDesc.cylinder(mm.r2!, mm.r!);
+          case 'cone':
+            return RAPIER.ColliderDesc.cone(mm.r2!, mm.r!);
+          case 'capsule':
+            return RAPIER.ColliderDesc.capsule(mm.r2!, mm.r!);
+          default:
+            return RAPIER.ColliderDesc.cuboid(mm.r2 ?? mm.r, mm.r2 ?? mm.r, mm.r2 ?? mm.r);
+        }
+      }
     }
   }
 
@@ -435,5 +458,43 @@ export class PhysicsWorld {
       // A world that is already gone is the state we wanted anyway; failing loudly here would
       // turn a clean teardown into a learner-facing error.
     }
+  }
+}
+
+/**
+ * Infer collider shape + dimensions from the geometry builder's name and its measured bounding
+ * radius — the pure half of describeCollider's 'auto' path, unit-testable without Rapier.
+ *
+ * Factors are proportions of the bound radius, chosen inscribed: a sphere of bound radius R is a
+ * ball R; a cube bound R (half-diagonal √3·h) gets a cuboid of half h = R/√3 ≈ 0.577R; a cylinder
+ * is modelled r = 0.7R, half = 0.8R. Unknown builders — new operators, guest mesh output — fall
+ * back to the ball, the one shape that is always faithful enough to start.
+ */
+export function inferColliderShape(
+  builder: string,
+  boundRadius: number,
+): { kind: 'ball' | 'cuboid' | 'cylinder' | 'cone' | 'capsule'; r: number; r2?: number } {
+  const r = Math.max(1e-6, boundRadius);
+  switch (builder) {
+    case 'sphere':
+    case 'ball':
+    case 'gear':
+    case 'torus':
+      return { kind: 'ball', r };
+    case 'box':
+    case 'cube':
+    case 'prism':
+    case 'beam':
+      return { kind: 'cuboid', r: (r / Math.sqrt(3)) * 0.95 };
+    case 'cylinder':
+    case 'pipe':
+    case 'disc':
+      return { kind: 'cylinder', r: r * 0.7, r2: r * 0.8 };
+    case 'cone':
+      return { kind: 'cone', r: r * 0.7, r2: r * 0.8 };
+    case 'capsule':
+      return { kind: 'capsule', r: r * 0.5, r2: r * 0.5 };
+    default:
+      return { kind: 'ball', r };
   }
 }

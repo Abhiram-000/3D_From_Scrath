@@ -16,7 +16,7 @@ import { describe, expect, it, beforeAll } from 'vitest';
 import RAPIER from '@dimforge/rapier3d-compat';
 import { prepareProgram, describeViolations } from '@edu3d/sandbox';
 import { authorModel, apiSurfaceSet } from '@edu3d/engine';
-import { PhysicsWorld, type PhysicsProbes } from './physics-world.ts';
+import { PhysicsWorld, inferColliderShape, type PhysicsProbes } from './physics-world.ts';
 
 beforeAll(async () => {
   await RAPIER.init();
@@ -201,5 +201,24 @@ describe('lifecycle', () => {
     expect(world).not.toBeUndefined();
     expect(world?.simulatedParts.size ?? 0).toBe(0);
     world?.dispose();
+  });
+});
+
+describe('inferColliderShape — the auto-collider inference', () => {
+  it('keys the collider shape to the geometry builder, scaled off the bound radius', () => {
+    expect(inferColliderShape('sphere', 2).kind).toBe('ball');
+    expect(inferColliderShape('sphere', 2).r).toBe(2);
+    expect(inferColliderShape('cube', Math.sqrt(3)).r).toBeCloseTo(
+      (Math.sqrt(3) / Math.sqrt(3)) * 0.95,
+      6,
+    );
+    expect(inferColliderShape('cylinder', 1).kind).toBe('cylinder');
+  });
+
+  it('falls back to the ball for unknown builders, and never returns a zero dimension', () => {
+    const unknown = inferColliderShape('guestMesh', 3);
+    expect(unknown.kind).toBe('ball');
+    expect(unknown.r).toBeGreaterThan(0);
+    expect(inferColliderShape('sphere', 0).r).toBeGreaterThan(0);
   });
 });

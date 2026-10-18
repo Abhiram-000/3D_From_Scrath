@@ -1044,8 +1044,12 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   // window) — which is the honest figure, because zero frames were presented.
   const motionFrozen = target.paused && !target.hasRunsWhilePaused;
   const still = !renderGate({
+    // autoRotate admits a frame only while the model runs: the orbit advance below is gated on
+    // `!paused` anyway, so a paused + auto-rotate model presents a frozen frame at full rate —
+    // the reviewer's default-state hole (the manifest defaults autoRotate on, so this was the
+    // common case, not the edge).
     paused: motionFrozen,
-    autoRotate: target.autoRotate,
+    autoRotate: target.autoRotate && !target.paused,
     cameraDirty: target.cameraDirty,
     needsRender: target.needsRender,
   });
@@ -1463,10 +1467,14 @@ function loop(timestamp: number): void {
         // The change is honoured by the next frame — which this request lands within, since the
         // rAF loop is already scheduled and a parameter's visible effect is measured against the
         // presented frame, not the message tick. The old synchronous extra frame here doubled the
-        // worker's per-frame work for the whole drag; `needsFrame` below carries the same promise
-        // (visible within a frame, `03` R4) at one frame's cost.
+        // worker's per-frame work for the whole drag; the invalidations below carry the same
+        // promise (visible within a frame, `03` R4) at one frame's cost: the parameter record is
+        // what the applicator reads, the render flag is what marks the frame worth presenting —
+        // including while paused, where the guest still computes metrics and re-poses declared
+        // parts from the new value (`00`: paused is not dead).
         state.paramsRecord = null;
         state.needsFrame = true;
+        state.needsRender = true;
         break;
       }
 
@@ -1489,6 +1497,7 @@ function loop(timestamp: number): void {
         // mid-breath.
         state.wallElapsed = 0;
         if (state.manifest) state.physics?.reset(state.manifest);
+        state.needsRender = true;
         break;
       }
 
@@ -1564,10 +1573,14 @@ function loop(timestamp: number): void {
         if (!state?.model) return;
         if (!request.partId) {
           frameObject(state, state.model.root, 1.3);
+          state.cameraDirty = true;
           break;
         }
         const object = state.model.parts.get(request.partId);
-        if (object) frameObject(state, object, 1.6);
+        if (object) {
+          frameObject(state, object, 1.6);
+          state.cameraDirty = true;
+        }
         break;
       }
 
@@ -1591,7 +1604,9 @@ function loop(timestamp: number): void {
         state.orbit.theta = theta;
         state.orbit.phi = phi;
         state.orbit.distance = distance;
-        updateCamera(state);
+        // Coalesced like a gesture: one `updateCamera` at the next gate-open tick, not a render
+        // forced from the message handler.
+        state.cameraDirty = true;
         break;
       }
 

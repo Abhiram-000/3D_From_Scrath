@@ -101,7 +101,6 @@ describe('renderGate — when a frame is allowed to be empty', () => {
     autoRotate: false,
     cameraDirty: false,
     needsRender: false,
-    hoverPending: false,
   };
 
   it('is still only when paused, un-rotating, and nothing is marked dirty', () => {

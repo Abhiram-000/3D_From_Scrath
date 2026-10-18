@@ -198,6 +198,29 @@ test.describe('the viewer', () => {
     expect(await statValue(page, 'time').textContent()).not.toBe(paused);
   });
 
+  test('a paused model still answers parameters (paused is not dead)', async ({ page }) => {
+    // `00`: "pause does not mean dead — parameter changes, selection … all keep working." The
+    // render gate's first draft missed the parameter invalidation: on a paused model whose
+    // autoRotate had stopped (any prior camera gesture) the slider changed the read-out but no
+    // frame ever re-posed the model. The probe: pause, stay still, drag — the model's own metric,
+    // published only when a guest frame runs, must move with the slider.
+    await page.goto('/viewer');
+    await waitForModel(page);
+    await page.getByRole('button', { name: 'Pause' }).click();
+    await page.waitForTimeout(1200);
+
+    const fuel = page.locator('#param-fuelFlow');
+    const thrust = page.locator('.metric-item', { hasText: 'Thrust' }).locator('.metric-value');
+    const before = await thrust.textContent();
+    // 0.7 is on the slider's step (0.007 × 100) — an off-step fill reads as "Malformed value" and
+    // the app rejects it, which is the app being right and the test being wrong.
+    await fuel.fill('0.7');
+    await page.waitForTimeout(1200);
+    const after = await thrust.textContent();
+    expect(after).toBeDefined();
+    expect(after).not.toBe(before);
+  });
+
   test('orbits the camera on drag without losing the model', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);

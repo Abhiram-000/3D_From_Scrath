@@ -76,7 +76,9 @@ describe('the realizer decimation contract', () => {
       const node = result.manifest.parts.find((p) => p.id === partId);
       expect(part, partId).toBeDefined();
       expect(node, partId).toBeDefined();
-      const authoredRadius = node!.geometry.boundingRadius;
+      // A measured bounding radius is part of the manifest contract (`factory.ts` computes it for
+      // every handle); a missing one fails the test rather than the arithmetic.
+      const authoredRadius = node!.geometry!.boundingRadius!;
       const realizedRadius = part!.geometry!.boundingSphere!.radius;
       expect(realizedRadius, `${partId} keep ${fraction}`).toBeGreaterThanOrEqual(
         authoredRadius * 0.85,

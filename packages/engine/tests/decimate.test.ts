@@ -92,10 +92,11 @@ describe('decimate — the clean population', () => {
   it('never produces a degenerate triangle', () => {
     const out = decimate(sphere(1, 20, 14), { keep: 0.4 });
     const p = out.positions;
-    for (let i = 0; i < out.indices!.length; i += 3) {
-      const a = out.indices[i]! * 3;
-      const b = out.indices[i + 1]! * 3;
-      const c = out.indices[i + 2]! * 3;
+    const idx = out.indices!;
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i]! * 3;
+      const b = idx[i + 1]! * 3;
+      const c = idx[i + 2]! * 3;
       const abx = p[b]! - p[a]!;
       const aby = p[b + 1]! - p[a + 1]!;
       const abz = p[b + 2]! - p[a + 2]!;

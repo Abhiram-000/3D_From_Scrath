@@ -180,7 +180,7 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
   const heapCost: number[] = [];
   const heapA: number[] = [];
   const heapB: number[] = [];
-  const heapTarget: number[][] = [];
+  const heapTarget: [number, number, number][] = [];
 
   const heapLess = (i: number, j: number): boolean =>
     heapCost[i]! < heapCost[j]! ||
@@ -394,7 +394,8 @@ function decimateInner(mesh: MeshData, keep: number): MeshData {
       working[a * 3 + 2] = top.target[2];
     }
     for (let i = 0; i < QUADRIC_SLOTS; i += 1) {
-      quadrics[a * QUADRIC_SLOTS + i] += quadrics[b * QUADRIC_SLOTS + i]!;
+      const ai = a * QUADRIC_SLOTS + i;
+      quadrics[ai] = (quadrics[ai] ?? 0) + quadrics[b * QUADRIC_SLOTS + i]!;
     }
     aliveVertex[b] = 0;
     triangles -= retriangulate(b, a);

@@ -16,10 +16,15 @@
     1. Outcome, never architecture. "Real code, not a template" is a differentiator to engineers and
        noise to everyone else; high-converting AI pages (Copy.ai, Descript, Gamma, Lumen5) name no
        model architecture at all. Say what the learner gets.
-    2. Only claims the platform honours *today*. The physics defects tracked in the universal-physics
-       plan (a degrees-for-radians rotation at physics-world.ts:393, colliders still keyed to
-       scale[0] with a hardcoded 0.5m sphere) mean a "real physics" badge would be a lie until that
-       plan lands. Every proof line below is backed by a passing test or a shipped behavior.
+    2. Only claims the platform honours *today*, and the two physics defects this rule was written
+       around are fixed: the rotation is reported through THREE's own quaternion conversion
+       (3aa908e) and colliders are derived from the geometry the builder actually made, measured
+       from its bounding radius (f2774fd). Both are pinned by regression tests in
+       physics-world.test.ts ("gives a large body a large collider, not a fixed 0.5 m ball" and
+       "rotation is reported in radians"), so the claim holds by test rather than by memory. The
+       rule still stands: every proof line below is backed by a passing test or a shipped behavior.
+       (It was originally written against a plan that has since landed — a rule that outlives the
+       defect it was written for stops being caution and starts being a stale claim of its own.)
 
   The page ships no engine code (`08`): the one indulgence is the wireframe background, which
   degrades to nothing on weak devices.

@@ -31,7 +31,11 @@ function statValue(page: Page, stat: string) {
  * Skip a test that cannot be trusted when the renderer is a software rasterizer.
  *
  * CI runs headless Chromium with SwiftShader (`playwright.config.ts`), which renders the reference
- * model's 334k triangles at 1-3 fps on this machine. Playwright's click actionability checks require
+ * model's 177,530 triangles at 1-3 fps on this machine. (It was described here as 334k, a figure
+ * that came from a design note and never matched the model: building the reference through the real
+ * pipeline measures 52 parts, 30 geometries and 177,530 realized triangles — the authored count
+ * already multiplies the instances. The qualitative point stands; the number was wrong.)
+ * Playwright's click actionability checks require
  * the element to be stable across consecutive animation frames, so at 1 fps a single click can spend
  * seconds proving the page is not moving — and the test then fails on its timeout, having asserted
  * nothing.
@@ -87,7 +91,7 @@ test.describe('the viewer', () => {
   test('draws frames rather than a single static image', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
-    // The time read-out is formatted MM:SS, and a software rasterizer can run this 334k-triangle
+    // The time read-out is formatted MM:SS, and a software rasterizer can run this 177,530-triangle
     // model at 1-3 fps — a 1.5s window then advances under one second of model time and the bucket
     // may not move. Same doctrine as the suite's other interaction assertions: below a real 10 fps
     // the assertion measures the renderer, not the platform, so it is skipped rather than flaky.

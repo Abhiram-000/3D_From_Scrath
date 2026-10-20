@@ -180,6 +180,14 @@ Phase gate: allocation near-zero per frame; no functional test regresses.
 Targets the reported zoom lag. The number: hover raycast cost on the reference turbofan
 (334k triangles), measured in the new `raycast-cost` Node benchmark, before/after.
 
+> **Correction (2026-10-20).** The figure above is wrong and the benchmark it names is not in the
+> repository. Building the reference model through the real pipeline measures 52 parts, 30
+> geometries and **177,530** realized triangles — the authored count already multiplies the
+> instances, so 334k never described this model. The plan's targets still hold (hover raycasting is
+> the same work, against a smaller scene); the number is left here corrected rather than rewritten,
+> because a design record that quietly changes its own measurements is worth less than one that
+> says what it got wrong.
+
 - install `three-mesh-bvh`; adopt `acceleratedRaycast` + `firstHitOnly`
 - **lazy BVH build**: on first raycast against a mesh whose `geometry.index.count/3 ≥
 BVH_MIN_TRIANGLES = 2000`; `dispose()` on model unload, tracked per geometry in a `WeakMap`

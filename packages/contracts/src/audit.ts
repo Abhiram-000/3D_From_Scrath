@@ -106,8 +106,14 @@ export type AuditReport = z.infer<typeof AuditReport>;
  *
  * One pass only, per `04`: "the revision is accepted only if it is *genuinely better* (fewer errors,
  * score not worse) — a degenerate second attempt must never replace a decent first one."
+ *
+ * There is deliberately no companion *rejection* threshold. One existed (35) and was never
+ * enforced; measuring why is more useful than enforcing it would have been. A model that builds at
+ * all scores about 36 or more — a single box with no parameters, no motion and nothing to teach
+ * measures 36, because the raw proxies for the dimensions start from non-zero bases (completeness
+ * at 0.4, fidelity at 0.7). A rejection threshold of 35 therefore cannot fire. A rule that cannot
+ * fire is worse than no rule: it reads as a policy while enforcing nothing. If a rejection rule is
+ * wanted, its threshold has to be calibrated against that floor, which is a product decision and
+ * not one to make by writing a number in a constant.
  */
 export const REFINEMENT_THRESHOLD = 72;
-
-/** Below this, even a refined model is treated as a failed generation rather than shipped. */
-export const REJECTION_THRESHOLD = 35;

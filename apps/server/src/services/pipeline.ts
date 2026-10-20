@@ -13,6 +13,7 @@
  */
 import {
   HEARTBEAT_INTERVAL_MS,
+  REFINEMENT_THRESHOLD,
   type GenerationEvent,
   type GenerationPhase,
   type ModelBundle,
@@ -327,7 +328,7 @@ export async function runPipeline(
     let finalAudit = audit;
     let refinementPasses = 0;
     const majorDeficiencies = audit.report.deficiencies.filter((d) => d.severity === 'major');
-    if (audit.report.score < 72 && majorDeficiencies.length > 0) {
+    if (audit.report.score < REFINEMENT_THRESHOLD && majorDeficiencies.length > 0) {
       refinementPasses = 1;
       enter('refine', 'Improving the model where it fell short…');
       deps.sink({

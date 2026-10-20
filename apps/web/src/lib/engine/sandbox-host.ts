@@ -29,6 +29,7 @@ import {
   formatModelSummary,
   formatStats,
 } from '../dev-console.ts';
+import { buildGraceMs, heartbeatTimeoutMs } from './watchdog.ts';
 
 /** What the viewer subscribes to. Each callback is optional so a caller takes only what it needs. */
 export interface HostCallbacks {
@@ -46,48 +47,11 @@ export interface HostCallbacks {
   onKilled?: (reason: string) => void;
 }
 
-/** Watchdog thresholds. Each is a number with a reason, not a guess. */
-const WATCHDOG = {
-  /**
-   * Minimum milliseconds without proof of life before the worker is considered hung.
-   *
-   * The worker beats every second, and *any* message from it proves the event loop is turning. Four seconds is
-   * four missed beats — comfortably beyond a slow frame or a GC pause on an ordinary device, and short enough that
-   * a learner has not yet decided the page is broken. On a slow device the effective timeout rises with the
-   * measured frame time (see `frameSlackMultiplier`), because the alternative was observed in CI: a healthy model
-   * rendering long frames under a software rasterizer was killed for "not responding".
-   */
-  heartbeatTimeoutMs: 4_000,
-  /**
-   * How many average frames of slack the adaptive timeout grants.
-   *
-   * A device whose frames genuinely take a second needs a longer silence than one whose frames take 16 ms, or
-   * every slow-but-alive model is executed. Six frames past the average is far enough that only a truly wedged
-   * loop (which sends nothing, ever) can cross it, and near enough that a real hang is still caught in seconds.
-   */
-  frameSlackMultiplier: 6,
-  /** The adaptive timeout is capped so a pathological stats value cannot disable the watchdog entirely. */
-  maxHeartbeatTimeoutMs: 30_000,
-  /**
-   * Grace period after a load request before heartbeat monitoring resumes, per device tier.
-   *
-   * A build legitimately blocks the worker's event loop for seconds — marching cubes on a complex SDF is the usual
-   * case — and killing a model for successfully building would be absurd. The build deadline inside the worker is
-   * the mechanism that bounds this phase.
-   *
-   * It is tier-scaled for the same reason `heartbeatTimeoutMs` scales with measured frame time: the worker cannot
-   * beat while it is compiling shaders, so the grace has to cover realization AND first-frame shader compilation,
-   * and that cost is several times higher on a weak device. A single flat number made a software rasterizer flaky
-   * — the same build finished in 16 s or was killed at 25 s depending on the run — so the suite that is supposed to
-   * catch regressions could not be trusted to. The kill still happens; it just stops firing on work that was going
-   * to finish.
-   */
-  buildGraceMsByTier: {
-    low: 60_000,
-    mid: 40_000,
-    high: 25_000,
-  },
-} as const;
+/**
+ * The watchdog's thresholds live in `watchdog.ts`, as tested arithmetic: the patience this host
+ * shows a slow-but-alive worker is a policy decision, and a policy decision that cannot be tested
+ * is a policy decision that drifts.
+ */
 
 /** Device detection, run once. `08`: detect cheaply at startup, then trust *measured behaviour* over strings. */
 export function detectTier(): { tier: DeviceTier; pixelRatio: number; reasons: string[] } {
@@ -182,6 +146,13 @@ export class SandboxHost {
   private lastHeartbeatAt = 0;
   /** Rolling average frame cost the worker last reported, so the timeout can follow measured reality. */
   private lastFrameMillis = 0;
+  /**
+   * Whether the worker has presented a frame and reported what it cost.
+   *
+   * Until it has, there is no measurement to scale the silence by, and the frame in question is
+   * the most expensive one the worker will ever present — the one that compiles every shader.
+   */
+  private hasMeasuredFrame = false;
   private watchdogTimer: number | null = null;
   private buildingUntil = 0;
   private disposed = false;
@@ -313,6 +284,9 @@ export class SandboxHost {
         // The build phase is over, so heartbeat monitoring resumes at normal sensitivity.
         this.buildingUntil = 0;
         this.lastHeartbeatAt = performance.now();
+        // A new model has presented no frame yet, so the first frame — the one that compiles every
+        // shader — gets the patience the policy gives an unmeasured worker.
+        this.hasMeasuredFrame = false;
         if (devEnabled) {
           const { manifest, verdict } = message;
           devLog(
@@ -348,6 +322,7 @@ export class SandboxHost {
         // The timeout follows measured frame cost: a device whose frames take a second needs more slack than
         // the fixed floor, per `08`'s "the live frame-time monitor is the truth; trust behavior over strings".
         this.lastFrameMillis = message.stats.frameMillis;
+        this.hasMeasuredFrame = true;
         if (devEnabled) {
           this.statsPublished += 1;
           if (this.statsPublished % 5 === 1) {
@@ -441,15 +416,14 @@ export class SandboxHost {
    *
    * A fixed timeout judged slow devices by fast-device rules; the adaptive form keeps the same guarantee
    * (a wedged loop sends *nothing*, so it crosses any threshold) while granting a genuinely slow GPU the
-   * seconds its own frames prove it needs.
+   * seconds its own frames prove it needs. Before the first frame there is nothing to adapt to, and the
+   * policy in `watchdog.ts` says so explicitly.
    */
   private currentHeartbeatTimeoutMs(): number {
-    const adaptive =
-      WATCHDOG.heartbeatTimeoutMs + this.lastFrameMillis * WATCHDOG.frameSlackMultiplier;
-    return Math.min(
-      WATCHDOG.maxHeartbeatTimeoutMs,
-      Math.max(WATCHDOG.heartbeatTimeoutMs, adaptive),
-    );
+    return heartbeatTimeoutMs({
+      hasMeasuredFrame: this.hasMeasuredFrame,
+      frameMillis: this.lastFrameMillis,
+    });
   }
 
   /**
@@ -495,7 +469,9 @@ export class SandboxHost {
     this.recreateCanvas();
     this.spawnWorker();
 
-    this.buildingUntil = performance.now() + WATCHDOG.buildGraceMsByTier[this.tier];
+    this.buildingUntil = performance.now() + buildGraceMs(this.tier);
+    // A new model has measured nothing yet.
+    this.hasMeasuredFrame = false;
     this.send({ type: 'load', code, seed, ...(runtime ? { runtime } : {}) });
   }
 

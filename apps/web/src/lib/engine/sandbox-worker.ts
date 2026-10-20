@@ -63,6 +63,17 @@ import {
   resetMotionDriven as resetMotionDrivenInto,
   syncTransforms as syncManifestTransforms,
 } from './frame-compose.ts';
+import {
+  createGlide,
+  fitDistance,
+  isTapRelease,
+  isUsablePose,
+  retargetGlide,
+  stepGlide,
+  type Glide,
+  type GlideLimits,
+  type OrbitPose,
+} from './camera-glide.ts';
 
 /** Messages the page sends into the worker. */
 export type WorkerRequest =
@@ -332,6 +343,34 @@ interface WorkerState {
   orbit: { theta: number; phi: number; distance: number; target: THREE.Vector3 };
   autoRotate: boolean;
 
+  /**
+   * A camera move in flight, or null.
+   *
+   * The camera travels to whatever the learner selects instead of snapping to it: a snap reads as
+   * a teleport, and a teleport teaches nothing about where the part is. The move lives here
+   * because the camera's state lives here.
+   */
+  glide: Glide | null;
+
+  /**
+   * The press in progress: where it began, and how many fingers were part of it.
+   *
+   * A press that stayed put is a choice, and the camera travels to it. A press that travelled is
+   * the learner steering, and the camera stays exactly where they put it.
+   */
+  pointerPress: { x: number; y: number; pointers: number } | null;
+  /** How many pointers are down right now. */
+  pointersDown: number;
+
+  /**
+   * What a camera move is travelling to, re-measured every frame.
+   *
+   * A part that is itself moving — a spinning blade, a reciprocating piston — is somewhere else
+   * by the time the camera arrives, so the destination is measured again while the camera
+   * travels. A window resized mid-move changes what fits on screen for the same reason.
+   */
+  glideFocus: { object: THREE.Object3D; margin: number } | null;
+
   hoveredPart: string | null;
   selectedPart: string | null;
   viewMode: 'normal' | 'xray' | 'wireframe' | 'explode';
@@ -439,16 +478,81 @@ function updateCamera(target: WorkerState): void {
   target.camera.lookAt(focus);
 }
 
-/** Frame an object so it fills the view with breathing room. */
-function frameObject(target: WorkerState, object: THREE.Object3D, margin = 1.4): void {
+/** The camera's current pose, in the rig's terms. */
+function currentPose(target: WorkerState): OrbitPose {
+  return {
+    theta: target.orbit.theta,
+    phi: target.orbit.phi,
+    distance: target.orbit.distance,
+    target: { x: target.orbit.target.x, y: target.orbit.target.y, z: target.orbit.target.z },
+  };
+}
+
+/** Write a pose back into the rig. */
+function applyPose(target: WorkerState, pose: OrbitPose): void {
+  target.orbit.theta = pose.theta;
+  target.orbit.phi = pose.phi;
+  target.orbit.distance = pose.distance;
+  target.orbit.target.set(pose.target.x, pose.target.y, pose.target.z);
+}
+
+/** The rig's own limits, so a camera move can never end somewhere the rig refuses to be. */
+function glideLimits(target: WorkerState): GlideLimits {
+  const limits = target.manifest?.camera.limits;
+  return {
+    minPhi: limits?.minPolarAngle ?? 0.08,
+    maxPhi: limits?.maxPolarAngle ?? Math.PI - 0.08,
+    minDistance: limits?.minDistance ?? 0.1,
+    maxDistance: limits?.maxDistance ?? 500,
+  };
+}
+
+/**
+ * The pose that frames an object: its centre as the pivot, at a distance that fits it.
+ *
+ * The distance considers both axes of the view. Fitting the vertical field of view alone — which
+ * is what the earlier version of this platform did — crops a wide object on a portrait phone,
+ * because a phone's narrow axis is the horizontal one.
+ */
+function framingPose(
+  target: WorkerState,
+  object: THREE.Object3D,
+  margin: number,
+): OrbitPose | null {
   const box = new THREE.Box3().setFromObject(object);
-  if (box.isEmpty()) return;
+  if (box.isEmpty()) return null;
   const sphere = box.getBoundingSphere(new THREE.Sphere());
-  target.orbit.target.copy(sphere.center);
-  // Distance that puts the bounding sphere inside the vertical FOV, times a margin so the part is not cropped.
-  const fov = (target.camera.fov * Math.PI) / 180;
-  target.orbit.distance = (sphere.radius / Math.sin(fov / 2)) * margin;
-  updateCamera(target);
+  const pose = currentPose(target);
+  // The pivot moves to the object, so orbiting afterwards pivots around what the learner chose.
+  pose.target = { x: sphere.center.x, y: sphere.center.y, z: sphere.center.z };
+  pose.distance = fitDistance(sphere.radius, target.camera.fov, target.camera.aspect, margin);
+  // A broken mesh can produce a radius that is not a number, and a camera at a position that is
+  // not a number takes the renderer down with it. The move is simply not started.
+  return isUsablePose(pose) ? pose : null;
+}
+
+/**
+ * Start a camera move.
+ *
+ * The origin is wherever the camera is now, so a move started while another is in flight continues
+ * from there rather than snapping back to a stale origin. The direction the camera already had is
+ * kept: the camera pushes in towards the object rather than swinging to a new angle, which is what
+ * makes the move read as "moving closer to look" rather than "jumping somewhere else".
+ *
+ * `focus` is what the move is travelling to, and it is measured again every frame — see
+ * `glideFocus`. A preset has no focus: it moves the camera without arriving anywhere in
+ * particular.
+ */
+function startGlide(
+  target: WorkerState,
+  to: OrbitPose,
+  focus?: { object: THREE.Object3D; margin: number },
+): void {
+  target.glide = createGlide(currentPose(target), to);
+  target.glideFocus = focus ?? null;
+  // A move is motion; the idle orbit would fight it.
+  target.autoRotate = false;
+  target.cameraDirty = true;
 }
 
 /** Set up the renderer. Called once per worker; the worker is replaced rather than reconfigured. */
@@ -577,6 +681,11 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
 
     orbit: { theta: Math.PI * 0.25, phi: Math.PI * 0.4, distance: 5, target: new THREE.Vector3() },
     autoRotate: true,
+
+    glide: null,
+    pointerPress: null,
+    pointersDown: 0,
+    glideFocus: null,
 
     hoveredPart: null,
     selectedPart: null,
@@ -780,6 +889,12 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
     }
   }
   target.lastProbes = {};
+
+  // A new model starts with a clean camera: a move in flight belonged to the old one.
+  target.glide = null;
+  target.glideFocus = null;
+  target.pointerPress = null;
+  target.pointersDown = 0;
 
   target.elapsed = 0;
   target.frame = 0;
@@ -1035,6 +1150,27 @@ function applyDeclaredMotions(target: WorkerState): void {
 function renderFrame(target: WorkerState, timestamp: number): void {
   const rawDelta = target.lastFrameAt === 0 ? 1 / 60 : (timestamp - target.lastFrameAt) / 1000;
   target.lastFrameAt = timestamp;
+
+  // A camera move advances here, above the gate, because the gate would otherwise close on a
+  // paused or idle model and the move would never start. The camera is an instrument, not
+  // simulation: it travels on wall-clock time, so a slow-motion model does not slow the camera
+  // down, and a model paused for inspection can still be looked at properly.
+  if (target.glide) {
+    // The destination is measured again while the camera travels: a spinning blade is somewhere
+    // else by the time the camera arrives, and a window resized mid-move changes what fits on
+    // screen for the same reason.
+    if (target.glideFocus) {
+      const live = framingPose(target, target.glideFocus.object, target.glideFocus.margin);
+      if (live) target.glide = retargetGlide(target.glide, live.target, live.distance);
+    }
+    const cameraDelta = Math.min(TIMING.maxDelta, Math.max(0, rawDelta));
+    const stepped = stepGlide(target.glide, cameraDelta, glideLimits(target));
+    applyPose(target, stepped.pose);
+    target.glide = stepped.done ? null : stepped.glide;
+    // The rig moved, so the camera must be recomputed — and the frame presented, because
+    // `cameraDirty` is what keeps the on-demand gate open for the length of the move.
+    target.cameraDirty = true;
+  }
 
   // The on-demand gate (`08`): a paused model with nothing marked dirty presents nothing — no
   // physics step, no guest callback, no declared motion, no sync, no cast, no render. `paused`
@@ -1509,6 +1645,15 @@ function loop(timestamp: number): void {
           // Coalesced: the frame loop runs the cast once for however many moves arrived this frame.
           state.hoverPending = true;
         } else if (request.kind === 'down') {
+          // A gesture cancels a camera move in flight: the camera never fights the learner.
+          state.glide = null;
+          state.pointersDown += 1;
+          if (state.pointerPress) {
+            // A second finger joined the press: this is a pinch, not a choice.
+            state.pointerPress.pointers = state.pointersDown;
+          } else {
+            state.pointerPress = { x: request.x, y: request.y, pointers: 1 };
+          }
           updateHover(state);
           state.selectedPart = state.hoveredPart;
           post({ type: 'selected', partId: state.selectedPart });
@@ -1516,6 +1661,22 @@ function loop(timestamp: number): void {
           if (state.selectedPart) state.autoRotate = false;
           // Selection feedback (the highlight, the info panel) is a presented-frame concern.
           state.needsRender = true;
+        } else if (request.kind === 'up') {
+          // A press that did not travel is a choice, and the camera travels to it. A press that
+          // travelled is the learner steering, and the camera stays exactly where they put it.
+          state.pointersDown = Math.max(0, state.pointersDown - 1);
+          if (state.pointersDown > 0) break;
+          const press = state.pointerPress;
+          state.pointerPress = null;
+          if (!press || !isTapRelease(press, request.x, request.y)) break;
+          updateHover(state);
+          const partId = state.hoveredPart;
+          if (!partId || !state.model) break;
+          const object = state.model.parts.get(partId);
+          if (!object) break;
+          const pose = framingPose(state, object, 1.6);
+          if (!pose) break;
+          startGlide(state, pose, { object, margin: 1.6 });
         }
         break;
       }
@@ -1523,6 +1684,8 @@ function loop(timestamp: number): void {
       case 'orbit': {
         if (!state) return;
         state.autoRotate = false;
+        // The learner is steering: a camera move in flight yields to them.
+        state.glide = null;
         state.orbit.theta -= request.deltaX * 0.005;
         // Polar angle clamped so the camera never passes through the poles, where orbit control degenerates.
         const limits = state.manifest?.camera.limits;
@@ -1541,6 +1704,8 @@ function loop(timestamp: number): void {
       case 'zoom': {
         if (!state) return;
         state.autoRotate = false;
+        // The learner is steering: a camera move in flight yields to them.
+        state.glide = null;
         const limits = state.manifest?.camera.limits;
         const min = limits?.minDistance ?? 0.1;
         const max = limits?.maxDistance ?? 500;
@@ -1556,6 +1721,8 @@ function loop(timestamp: number): void {
       case 'pan': {
         if (!state) return;
         state.autoRotate = false;
+        // The learner is steering: a camera move in flight yields to them.
+        state.glide = null;
         // Pan in the camera's own plane, scaled by distance so the gesture tracks the cursor at any zoom.
         // `matrixWorld` (the composed world matrix), not `matrix` (its local one) — the camera is a
         // root object so they coincide today, and reading the wrong one is the kind of bug that
@@ -1571,24 +1738,22 @@ function loop(timestamp: number): void {
 
       case 'focusPart': {
         if (!state?.model) return;
-        if (!request.partId) {
-          frameObject(state, state.model.root, 1.3);
-          state.cameraDirty = true;
-          break;
-        }
-        const object = state.model.parts.get(request.partId);
-        if (object) {
-          frameObject(state, object, 1.6);
-          state.cameraDirty = true;
-        }
+        // A part id focuses that part; no id frames the whole model again.
+        const object = request.partId ? state.model.parts.get(request.partId) : state.model.root;
+        if (!object) return;
+        const margin = request.partId ? 1.6 : 1.3;
+        const pose = framingPose(state, object, margin);
+        if (!pose) return;
+        // The focus is passed along so the camera keeps aiming at the part while it travels: a
+        // part that is moving is somewhere else by the time the camera gets there.
+        startGlide(state, pose, { object, margin });
         break;
       }
 
       case 'viewPreset': {
         if (!state) return;
-        // Presets keep the current distance and target, so the framing holds while the angle snaps.
+        // Presets keep the current distance and target, so the framing holds while the angle moves.
         state.autoRotate = false;
-        const distance = state.orbit.distance;
         const presets = {
           front: [Math.PI / 2, Math.PI / 2],
           back: [-Math.PI / 2, Math.PI / 2],
@@ -1601,12 +1766,10 @@ function loop(timestamp: number): void {
         const pair = presets[request.preset] ?? presets.iso;
         const theta = pair[0];
         const phi = pair[1];
-        state.orbit.theta = theta;
-        state.orbit.phi = phi;
-        state.orbit.distance = distance;
-        // Coalesced like a gesture: one `updateCamera` at the next gate-open tick, not a render
-        // forced from the message handler.
-        state.cameraDirty = true;
+        const pose = currentPose(state);
+        pose.theta = theta;
+        pose.phi = phi;
+        startGlide(state, pose);
         break;
       }
 

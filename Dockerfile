@@ -23,6 +23,9 @@ RUN pnpm install --frozen-lockfile --filter @edu3d/web... --filter @edu3d/contra
 # Source, then build. `NODE_ENV=production` keeps dev-only vite plugins out.
 COPY packages packages
 COPY apps/web apps/web
+# The build's last step writes a precompressed copy of every asset, so the server never spends CPU
+# compressing on the fly. It lives in `scripts/`, so that is part of the build context.
+COPY scripts scripts
 RUN pnpm --filter @edu3d/web build
 
 FROM node:25-slim AS server

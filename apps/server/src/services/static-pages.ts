@@ -17,6 +17,7 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { Context, Next } from 'hono';
+import { preferredEncoding } from './static-encoding.ts';
 
 /** Where the built site lives, overridable for unusual container layouts. */
 const STATIC_ROOT = process.env.STATIC_ROOT
@@ -56,12 +57,34 @@ const MIME: Record<string, string> = {
 /**
  * Serve one file as a Response. Streamed (a snapshot or large chunk never buffers in memory) with
  * the immutable cache header applied by the caller.
+ *
+ * `typePath` is the file the *type* is taken from, which is not the file being read when that is a
+ * precompressed copy: a `.br` file is still JavaScript.
  */
-function fileResponse(filePath: string, context: Context): Response {
+function fileResponse(filePath: string, context: Context, typePath: string = filePath): Response {
   const stream = Readable.toWeb(createReadStream(filePath)) as ReadableStream<Uint8Array>;
-  const type = MIME[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
+  const type = MIME[path.extname(typePath).toLowerCase()] ?? 'application/octet-stream';
   context.header('content-type', type);
   return context.body(stream);
+}
+
+/**
+ * The precompressed copy of a file, if the client can read one.
+ *
+ * The build writes a compressed copy beside every compressible file, so this costs one `exists`
+ * check and no CPU. A missing copy is not a failure: the original bytes are always a correct
+ * answer, and a file that was not worth compressing has none.
+ */
+function encodedVariant(
+  filePath: string,
+  acceptEncoding: string | undefined,
+): { file: string; encoding: 'br' | 'gzip' } | null {
+  const encoding = preferredEncoding(acceptEncoding);
+  if (!encoding) return null;
+  const suffix = encoding === 'br' ? '.br' : '.gz';
+  const candidate = `${filePath}${suffix}`;
+  if (!existsSync(candidate)) return null;
+  return { file: candidate, encoding };
 }
 
 /**
@@ -99,5 +122,17 @@ export async function staticSiteMiddleware(context: Context, next: Next): Promis
   if (IMMUTABLE_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
     context.header('cache-control', 'public, max-age=31536000, immutable');
   }
+
+  // The precompressed copy, when the client can read one. `Vary` is set either way: a cache that
+  // saw an uncompressed response must not hand it to a client that only speaks brotli.
+  const variant = encodedVariant(filePath, context.req.header('accept-encoding'));
+  // Appended, not replaced: `Vary` is a list, and a cache that saw an uncompressed response must
+  // not hand it to a client that only speaks brotli.
+  context.header('vary', 'Accept-Encoding', { append: true });
+  if (variant) {
+    context.header('content-encoding', variant.encoding);
+    return fileResponse(variant.file, context, filePath);
+  }
+
   return fileResponse(filePath, context);
 }

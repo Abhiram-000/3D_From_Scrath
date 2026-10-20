@@ -6,7 +6,7 @@
   "description": "The three-page frontend: landing, loading, viewer. Owns the DOM; the engine owns the canvas.",
   "scripts": {
     "dev": "vite dev --port 5173",
-    "build": "vite build",
+    "build": "vite build && node ../../scripts/precompress.mjs",
     "preview": "vite preview",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --threshold warning"
   },

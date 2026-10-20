@@ -215,10 +215,12 @@ test.describe('the viewer', () => {
     // 0.7 is on the slider's step (0.007 × 100) — an off-step fill reads as "Malformed value" and
     // the app rejects it, which is the app being right and the test being wrong.
     await fuel.fill('0.7');
-    await page.waitForTimeout(1200);
-    const after = await thrust.textContent();
-    expect(after).toBeDefined();
-    expect(after).not.toBe(before);
+    // The metric is published by the model's own frame code, and one frame on a software
+    // rasterizer can take a second. What this test claims is "the metric moves when the
+    // parameter changes" — not "it moves within 1200 ms" — so the assertion waits for the change
+    // instead of racing it. A fixed sleep made this test a measurement of the renderer rather
+    // than of the platform, and it failed under load while passing every time it ran alone.
+    await expect(thrust).not.toHaveText(before ?? '', { timeout: 15_000 });
   });
 
   test('orbits the camera on drag without losing the model', async ({ page }) => {

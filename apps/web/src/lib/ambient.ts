@@ -14,6 +14,8 @@
  * rather than effects that would follow a cursor they do not have.
  */
 
+import { THEME_STORAGE_KEY } from '@edu3d/contracts';
+
 const lerp = (from: number, to: number, amount: number): number => from + (to - from) * amount;
 
 interface Magnet {
@@ -279,8 +281,15 @@ export class Ambient {
   }
 }
 
-/** Theme get/set/toggle matching V1's storage key and flash-free swap. */
-const THEME_KEY = 'edu3d-theme';
+/**
+ * Theme get/set/toggle matching V1's storage key and flash-free swap.
+ *
+ * The key comes from the contract, not from a literal here. It was a literal, and it was a
+ * *different* literal from the one the inline head script reads — so a learner's theme was written
+ * under one key and looked for under another, and every visit after the first one flashed the
+ * theme they had chosen away. A key read by two files is a key that belongs to neither of them.
+ */
+const THEME_KEY = THEME_STORAGE_KEY;
 
 export function getTheme(): 'dark' | 'light' {
   return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';

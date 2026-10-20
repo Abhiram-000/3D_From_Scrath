@@ -18,6 +18,11 @@
       correct when the first pixel is painted. It is inline rather than imported for the same reason:
       a module request would land after paint. Storage access is wrapped because private browsing
       throws on read, and a theme script that throws would leave the page unstyled.
+
+      The key below is a mirror of `THEME_STORAGE_KEY` in `@edu3d/contracts`, written out because
+      this script cannot import. It used to be a *different* string from the one the app wrote, so
+      the learner's choice was saved where nothing would look for it. `theme-key.test.ts` reads this
+      file and asserts the mirror still matches, because a mirror nobody checks is a bug waiting.
     -->
     <script>
       (function () {

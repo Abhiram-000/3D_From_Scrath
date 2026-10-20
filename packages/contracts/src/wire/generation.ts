@@ -22,7 +22,14 @@ import { ModelBundle } from '../manifest/model.ts';
  * Ready); keeping the wire vocabulary finer-grained than the UI's means the UI can regroup without a
  * protocol change.
  */
-export const GenerationPhase = z.enum([
+/**
+ * The wire vocabulary of generation phases, in the order they happen.
+ *
+ * Exported as an array as well as a type because the *order* is part of the contract: a client
+ * that has no milestone for one of these phases still needs to know where it falls, so it can land
+ * on the last milestone before it instead of ignoring it.
+ */
+export const GENERATION_PHASES = [
   'queued',
   'prompt',
   'model',
@@ -34,7 +41,9 @@ export const GenerationPhase = z.enum([
   'refine',
   'persist',
   'ready',
-]);
+] as const;
+
+export const GenerationPhase = z.enum(GENERATION_PHASES);
 export type GenerationPhase = z.infer<typeof GenerationPhase>;
 
 /** Fraction of the whole run each phase is *nominally* worth, used only to ease within a stage. */

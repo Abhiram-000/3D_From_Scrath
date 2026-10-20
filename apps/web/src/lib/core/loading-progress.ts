@@ -9,10 +9,14 @@
  *      "still working", a jump means "a step really completed".
  *   3. It never moves backwards: the refinement pass re-runs earlier phases and those events must
  *      read as progress, not rewind.
+ *   4. The sentence on screen is the server's. This file keeps the phase *vocabulary* — which
+ *      stage a phase belongs to, and where the bar's milestones fall — but not the wording: a
+ *      client-side copy of what the server says is a claim about somebody else's behaviour, and
+ *      it drifts. (It had drifted: the copy described an audit phase the server never announces.)
  *
  * Order guarantees monotonicity: an event mapping to an earlier index updates wording only.
  */
-import type { GenerationEvent, GenerationPhase } from '@edu3d/contracts';
+import { GENERATION_PHASES, type GenerationEvent, type GenerationPhase } from '@edu3d/contracts';
 
 export interface PhaseSpec {
   key: GenerationPhase | 'done';
@@ -21,6 +25,7 @@ export interface PhaseSpec {
   /** Roughly how long the phase takes, seconds — shapes easing inside the slice only. */
   tau: number;
   stage: 'thinking' | 'generating' | 'compiling' | 'ready';
+  /** The sentence shown until the server says its own. */
   status: string;
 }
 
@@ -28,6 +33,14 @@ export interface PhaseSpec {
 export const STAGES = ['thinking', 'generating', 'compiling', 'ready'] as const;
 export type StageName = (typeof STAGES)[number];
 
+/**
+ * The milestones, one per phase the server announces.
+ *
+ * The slices are contiguous in the order the phases actually happen, so the bar's journey matches
+ * the run. A phase that is never announced — the gate, the audit, the persist — owns no slice at
+ * all: no time is spent on work that did not happen, and a server that does announce one lands on
+ * the last milestone before it (see `milestoneIndex`).
+ */
 export const PHASES: readonly PhaseSpec[] = [
   {
     key: 'queued',
@@ -56,18 +69,10 @@ export const PHASES: readonly PhaseSpec[] = [
   {
     key: 'extract',
     from: 55,
-    to: 63,
+    to: 66,
     tau: 2,
     stage: 'generating',
     status: 'Reading the program the model wrote…',
-  },
-  {
-    key: 'gate',
-    from: 63,
-    to: 66,
-    tau: 1,
-    stage: 'generating',
-    status: 'Checking the program against the sandbox rules…',
   },
   {
     key: 'repair',
@@ -80,35 +85,26 @@ export const PHASES: readonly PhaseSpec[] = [
   {
     key: 'build',
     from: 74,
-    to: 80,
+    to: 86,
     tau: 4,
     stage: 'generating',
-    status: 'Building the model to measure it…',
-  },
-  {
-    key: 'audit',
-    from: 80,
-    to: 86,
-    tau: 3,
-    stage: 'generating',
-    status: 'Auditing what the model teaches…',
+    status: 'Building the model and checking what it teaches…',
   },
   {
     key: 'refine',
     from: 86,
-    to: 95,
+    to: 96,
     tau: 12,
     stage: 'generating',
     status: 'Improving the model where it fell short…',
   },
-  { key: 'persist', from: 95, to: 98, tau: 2, stage: 'compiling', status: 'Saving your model…' },
   {
     key: 'ready',
-    from: 98,
+    from: 96,
     to: 100,
     tau: 1,
     stage: 'compiling',
-    status: 'Building the final experience…',
+    status: 'Your 3D model is ready!',
   },
   {
     key: 'done',
@@ -120,8 +116,6 @@ export const PHASES: readonly PhaseSpec[] = [
   },
 ] as const;
 
-const PHASE_INDEX = new Map(PHASES.map((phase, index) => [phase.key, index]));
-
 /** Map a server event onto a phase key. Notices carry no phase; heartbeats confirm the current one. */
 export function phaseOf(event: GenerationEvent): GenerationPhase | 'done' | null {
   if (event.type === 'phase') return event.phase;
@@ -129,9 +123,42 @@ export function phaseOf(event: GenerationEvent): GenerationPhase | 'done' | null
   return null;
 }
 
+/**
+ * The milestone a phase lands on.
+ *
+ * Its own, when the client has one. Otherwise — the wire vocabulary is deliberately finer-grained
+ * than the UI's — the last milestone *before* it: the work that phase implies has been done, and
+ * the work it announces has only just started, so claiming more than that would be a lie.
+ */
+function milestoneIndex(key: GenerationPhase | 'done'): number {
+  const exact = PHASES.findIndex((phase) => phase.key === key);
+  if (exact !== -1) return exact;
+
+  const wirePosition = GENERATION_PHASES.indexOf(key as GenerationPhase);
+  if (wirePosition === -1) return 0;
+
+  let best = 0;
+  for (const [index, phase] of PHASES.entries()) {
+    if (phase.key === 'done') continue;
+    const position = GENERATION_PHASES.indexOf(phase.key);
+    if (position !== -1 && position <= wirePosition) best = index;
+  }
+  return best;
+}
+
+/** What the page renders: plain values, not a model. */
+export interface ProgressView {
+  value: number;
+  status: string;
+  stage: StageName;
+  completedStages: number;
+}
+
 export class ProgressModel {
   index = 0;
   value = 0;
+  /** The server's own sentence for the current phase, when it has sent one. */
+  private message: string | null = null;
   private phaseStartedAt: number;
 
   constructor(now = Date.now()) {
@@ -142,8 +169,8 @@ export class ProgressModel {
   apply(event: GenerationEvent, now = Date.now()): void {
     const key = phaseOf(event);
     if (key === null) return;
-    const next = PHASE_INDEX.get(key);
-    if (next === undefined) return;
+    if (event.type === 'phase') this.message = event.message;
+    const next = milestoneIndex(key);
     if (next > this.index) {
       // Jump to the new milestone: a step really completed.
       this.index = next;
@@ -172,13 +199,30 @@ export class ProgressModel {
     return PHASES[this.index]?.stage ?? 'thinking';
   }
 
+  /** The server's sentence, or the local fallback before the first one arrives. */
   get status(): string {
-    return PHASES[this.index]?.status ?? '';
+    return this.message ?? PHASES[this.index]?.status ?? '';
   }
 
   /** The stage chips: everything before the current one is completed. */
   get completedStages(): number {
     return STAGES.indexOf(this.stage);
+  }
+
+  /**
+   * The values the page renders.
+   *
+   * A plain object, on purpose: a class instance is not reactive in Svelte, so a page that reads
+   * a getter straight from the model reads a value that never invalidates. The page copies this
+   * snapshot into its own state, and the copy is what updates.
+   */
+  view(): ProgressView {
+    return {
+      value: this.value,
+      status: this.status,
+      stage: this.stage,
+      completedStages: this.completedStages,
+    };
   }
 }
 

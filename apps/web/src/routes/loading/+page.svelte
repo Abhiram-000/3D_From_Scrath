@@ -13,7 +13,7 @@
   import { Ambient } from '$lib/ambient.ts';
   import { LoadingBackground, initParticles } from '$lib/loading-background.ts';
   import { generateStream, storeBundle, takeComplexity } from '$lib/core/api.ts';
-  import { FactQueue, ProgressModel, STAGES } from '$lib/core/loading-progress.ts';
+  import { FactQueue, ProgressModel, STAGES, type StageName } from '$lib/core/loading-progress.ts';
   import { detectTier } from '$lib/engine/sandbox-host.ts';
   // V1's loading stylesheet, verbatim.
   import '$lib/styles/loading.css';
@@ -21,7 +21,18 @@
   let topic = $state('');
   let progress = $state(new ProgressModel());
   let barWidth = $state(0);
-  let statusText = $state('Analyzing your topic and planning the 3D model...');
+  let statusText = $state('');
+  /**
+   * The stage chips, as plain values.
+   *
+   * A class instance is not reactive in Svelte — the runtime does not proxy one — so a page that
+   * reads a getter straight from the model reads a value that never invalidates. The bar and the
+   * status line updated because they were copied into their own state; the chips were not, and
+   * they sat on "Thinking" for the whole run. Copying the whole view is the fix, and it is the
+   * same mechanism the bar already used.
+   */
+  let currentStage = $state<StageName>('thinking');
+  let completedStageCount = $state(0);
   let fact = $state('Loading amazing facts...');
   let factLeaving = $state(false);
   let failed = $state(false);
@@ -113,9 +124,18 @@
     }, 400);
   }
 
+  /**
+   * Copy the model's view into the page's own state.
+   *
+   * One place, so the bar, the status line and the stage chips can never disagree about what the
+   * server is doing — they are all read at the same moment, from the same snapshot.
+   */
   function renderProgress() {
-    barWidth = progress.value;
-    statusText = progress.status;
+    const view = progress.view();
+    barWidth = view.value;
+    statusText = view.status;
+    currentStage = view.stage;
+    completedStageCount = view.completedStages;
   }
 
   async function startGeneration() {
@@ -261,8 +281,8 @@
         {#each STAGES as stage, index (stage)}
           <div
             class="stage"
-            class:active={progress.stage === stage}
-            class:completed={progress.completedStages > index}
+            class:active={currentStage === stage}
+            class:completed={completedStageCount > index}
             id={`stage-${stage}`}
             role="listitem"
           >

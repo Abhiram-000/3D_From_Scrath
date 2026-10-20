@@ -159,7 +159,9 @@ export async function runPipeline(
     }
 
     // ── Stage 3: extract + gate ──────────────────────────────────────────────
-    enter('extract', 'Reading the program the model wrote…');
+    // One call, two jobs: the program is read out of the reply *and* checked against the
+    // sandbox rules. The sentence says both, because the learner is waiting through both.
+    enter('extract', 'Reading the program the model wrote and checking it against the rules…');
     let prepared = prepareProgram(first.text, {
       apiSurface: apiSurface().qualified,
       finishReason: first.finishReason ?? undefined,
@@ -259,7 +261,9 @@ export async function runPipeline(
     }
 
     // ── Stage 5: audit (the headless dry run) ────────────────────────────────
-    enter('build', 'Building the model to measure it…');
+    // One call again: the model is built *and* measured, and the measurement is what the
+    // twelve-dimension audit is made of. The sentence says both.
+    enter('build', 'Building the model and checking what it teaches…');
     let audit = auditModel({ code: prepared.instrumented, tier: deps.tier, seed: 0x5eed });
     if (!audit.ok) {
       // The program passed the gate but died at build time. One repair round is worth the money: the

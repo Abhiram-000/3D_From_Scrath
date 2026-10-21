@@ -7,6 +7,10 @@ playwright-report
 test-results
 # Plan-workspace scratch (git-ignored probe scripts written during an implementation session).
 .superpowers
+# Live-verification evidence: Playwright MCP page snapshots and screenshots of a running app.
+# These are session artifacts, not source; formatting them would be busywork at best.
+.playwright-mcp
+live
 pnpm-lock.yaml
 .data
 artifacts

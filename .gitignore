@@ -26,6 +26,10 @@ playwright-report/
 test-results/
 blob-report/
 .playwright/
+# Playwright MCP session artifacts: page snapshots written by the browser tool.
+.playwright-mcp/
+# Live-verification evidence (screenshots taken while exercising the running app).
+/live
 
 # Editors and OS
 .DS_Store

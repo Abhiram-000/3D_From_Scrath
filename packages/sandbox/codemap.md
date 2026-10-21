@@ -1,0 +1,23 @@
+# packages/sandbox/
+
+## Responsibility
+
+The execution boundary for AI-written Three.js programs (`@edu3d/sandbox`): statically gates untrusted source, instruments loops with a deadline guard, compiles it with lexical shadowing, hardens the guest realm, and audits the seal. Hosts — browser Worker and `node:vm` audit — assemble these pieces themselves.
+
+## Design
+
+- Five independent layers; any one failing leaves the others standing (`forbidden.ts` header). Pure-data layer shared by all: `forbidden.ts:FORBIDDEN_GLOBALS` (union of `NETWORK`/`STORAGE`/`REALM`/`DYNAMIC_CODE`/`SCHEDULING`/`DEVICE_GLOBALS`), `forbidden.ts:FORBIDDEN_MEMBERS` (`__proto__`, `constructor`, `prototype`…), `forbidden.ts:FROZEN_INTRINSICS`, `forbidden.ts:GUEST_BINDINGS` (exactly `scene geom mat M console random` — only names hosts actually bind).
+- `forbidden.ts:HOST_RETAINED_GLOBALS` vs `REALM_DELETIONS`: schedulers/`performance` are deleted from the guest's _names_ (gate + compiler shadowing) but not from the worker realm, which is itself the render-loop host — deleting `requestAnimationFrame` stopped the engine after one frame.
+- Gate is AST-based, not regex (`static-gate.ts:runStaticGate`): resolved-binding checks via `scope.ts:analyzeScopes`, never throws, enumerates `GateViolation`s by kind for the repair pass. Browsers-safe byte accounting via `TextEncoder` (`utf8ByteLength`), not `Buffer`.
+- `instrument.ts:instrumentLoops` is a source-level splice (offset-sorted edits) preserving line numbers; injects `GUARD_IDENTIFIER = '__edu3d_tick'`; `RESERVED_PREFIX = '__edu3d_'` is gate-rejected so the guard cannot be shadowed.
+- `compile.ts:compileGuest` — the one legitimate `new Function`, called _before_ hardening: every shadowable forbidden global becomes a parameter receiving `undefined` (`UNSHADOWABLE`: `eval`, `arguments`); `'use strict'` + `.call(undefined)` keeps `this` off the global. `createGuard` builds the `GuardHandle` (tick/reset/iterations) throwing `GuestTimeoutError`/`GuestBudgetError`, time check every 2048 ticks against `SANDBOX_LIMITS.maxLoopIterations` (20M).
+- `harden.ts:hardenRealm` ordering is the security design: delete capabilities → poison `Function.prototype.constructor`/`Function`/`eval`/async+generator ctors → freeze intrinsics LAST (freezing `Object` first would block deletions). Throwers branded with `Symbol.for('edu3d.sandbox.poisoned')`. `hardeningScript()` embeds the same lists as a self-contained script (single source of truth for both realms; uses `this`, since `globalThis` is forbidden). `auditRealm(scope)` verifies the result, not the procedure.
+- All lists are `Object.freeze`d; hosts differ by design, hence `index.ts` exports pieces rather than one `runUntrustedCode()`.
+
+## Flow
+
+Untrusted source enters as raw provider prose. `prepare.ts:prepareProgram(raw, options)`: `extractProgram` (largest fenced block → unterminated-fence tail → whole reply) → `looksTruncated` (brace-depth scan; finish reason `length`) → `runStaticGate` (bytes → parse as `script` → reserved prefix → module/`with`/member/string/depth forms → scope-aware free-reference + API-surface checks) → `instrumentLoops` only on gated, untruncated code (instrumenting unparseable source would turn a reportable failure into a crash). Leaves as `PreparedProgram {code, instrumented, gate, truncated, ok}`. If `ok`, the host compiles → `compileGuest(instrumented)` → `createGuard().reset(deadline)` → `hardenRealm`/`hardeningScript()` → `run({scene, geom, mat, M, console, random})`. Violations leave via `describeViolations(result)` as the grouped enumerated instruction list the server sends to the repair prompt. Nothing but a `ModelManifest` via the engine facades and console messages crosses back out.
+
+## Integration
+
+Depends only on `@edu3d/contracts` (`GateResult`, `GateViolation` kinds, `SANDBOX_LIMITS` from `packages/contracts/src/wire/sandbox.ts`) and `acorn`/`acorn-walk`; no DOM, no app/server imports. Consumed by: `apps/web/src/lib/engine/sandbox-worker.ts:24-41` (`compileGuest`, `createGuard`, `hardenRealm`, `prepareProgram`, `describeViolations`) — the browser worker host; `packages/engine/src/hosts/node-host.ts:22` (`FORBIDDEN_GLOBALS`, `GUARD_IDENTIFIER`, `createGuard`, `hardeningScript`) — the `node:vm` headless audit host; `packages/engine/src/authoring/guest.ts:19-26` (`compileGuest`, `createGuard`, `hardenRealm`, `GuestBudgetError`, `GuestTimeoutError`, `GuardHandle`) — the shared compile-then-harden-then-run sequence both hosts reuse; `apps/server/src/services/pipeline.ts:21` (`prepareProgram`, `describeViolations`) — server-side gate so bad programs never reach the browser. Engine tests bind two hosts to the same capability set to prove approval parity.

@@ -1,0 +1,147 @@
+# Live verification and v1 parity
+
+**Started:** 2026-10-22
+**Driver:** orchestrator session, autonomous run against a live browser (Playwright MCP, real
+Chromium) plus the v1 reference implementation at `/home/abhiram/Project/3D_Platform/EDU_3d_V1`.
+
+## What this run is for
+
+Two questions the test suites cannot answer on their own:
+
+1. Does the platform work when a real person uses it — browser, console, network, a real paid
+   generation, every viewer control?
+2. v1 was a working product. What did it do better that v2 should carry forward?
+
+Method: exercise the deployed and dev builds in a real Chromium, read the console and the network,
+compare against `Build_Docs`, and fix what is found — committing each fix so a mistake is one
+`git revert` away.
+
+## Environment facts established
+
+- **8787 is the Docker container** `3d_from_scrath-edu3d-1`, image built **2026-10-13**. It serves a
+  build eight days old (`entry/start.UTWoTGlF.js`). It is _not_ the current source.
+- **8788 is the current source** (`node --env-file=apps/server/.env src/main.ts`, no `--watch`),
+  serving `apps/web/build` from `main` (`entry/start.DWbaCoDw.js`). All current-code verification
+  runs against 8788.
+- The container's stale build is why two "bugs" found in the first pass (theme key `edu3d-theme`,
+  Reset leaving parameters) had to be re-checked against current source before being believed.
+- `pnpm verify` failed on **formatting** for 61 files: `.playwright-mcp/*.yml` (60, browser session
+  artifacts) + `opencode.json`. Fixed in `7f772f4` by ignoring the artifacts for formatting and git.
+
+## Live findings (real browser, current source unless noted)
+
+Confirmed working (no console errors or warnings anywhere):
+
+- Landing → streamed `/api/generate` → audit → viewer, one generation, ~2 min, NDJSON progress
+  honest and monotonic (49% → 53% → ready during the model phase).
+- Sandbox worker spawns, model realises, 30–35 parts, 58–88 draw calls, 20k–389k triangles,
+  105–240 FPS on the desktop profile, tier `mid`, quality `Adapted`.
+- Play/pause freezes every live metric and the clock; slider change updates derived metrics live
+  (spool 4800→12000 rpm moved thrust 19.5→19.9 kN, fan tip speed 754→1885 m/s); undo/redo restore
+  both the slider value and the metrics.
+- Part selection (fan blades) shows info text + properties; x-ray, wireframe and explode each change
+  the render and are mutually exclusive; view presets dropdown offers front/back/left/right/top/
+  bottom/iso.
+- Reloading `/viewer` falls back to the reference turbofan — the generated bundle lives in a module
+  singleton, so F5 loses it. Intended (the bundle is big) but undocumented for the learner.
+
+### Live-confirmed, with measurements
+
+**Phone panels (B1).** At 390×844 the panels measure `left: -390` and `left: 390` with
+`transform: translateX(∓100%)`; pressing "Left Panel" adds only `.collapsed`, which sets `width: 0`
+on top of the same transform — the panel is squeezed to nothing off-screen. A phone learner has no
+parameters, no chat and no information panel, and the existing phone E2E only measures the canvas
+width, so it passes while the surface is unreachable. Evidence: `live/12-phone-initial.png`,
+`live/13-phone-left-panel-open.png`.
+
+**Reset (M1).** On the reference turbofan, dragging spool speed to 12 000 rpm and pressing Reset left
+it at 12 000 rpm while the clock did return to 00:00. `03` R5 and `00-GOAL.md:298` both define Reset
+as time zero + parameter defaults + the authored camera pose.
+
+**Console is clean, with one benign exception.** The only console output across landing, loading,
+viewer and a phone viewport is a CSP _report-only_ violation from `zod`'s feature probe
+(`Function('')` inside `zod/v4/core/util.js`, bundled into `BuQFvmqT.js`). Zod catches the EvalError,
+the platform is unaffected, and `WORKER_POLICY` already grants `'unsafe-eval'` to the worker chunks
+that genuinely need it (`packages/sandbox/src/compile.ts`). Recorded rather than "fixed": silencing it
+would mean loosening the document policy for a probe that is designed to fail closed.
+
+**E2E honesty.** Two viewer tests (`draws frames rather than a single static image`,
+`selects a part from the keyboard-reachable list and describes it`) skip themselves via
+`requireRealFrameRate()` because the suite's headless software rasterizer cannot hit 10 fps. The skip
+is documented and honest, but it means **motion over time and part selection are not covered by the
+suite** — the live browser run (real GPU, 105–240 fps) is what verifies them here.
+
+### E2E honesty (found live)
+
+Two viewer tests skip themselves via `requireRealFrameRate()` because the suite's headless software
+rasterizer cannot hit 10 fps (`tests/e2e/viewer.spec.ts:47-55`). The skip is documented and honest,
+but it means **motion over time, part selection, view-mode toggling and pause/resume are not
+covered by the suite at all** — the live browser run (real GPU, 105–240 fps) is what verifies them
+here. Queued improvement: make those assertions renderer-independent (dispatch events directly
+instead of relying on Playwright's frame-stability actionability checks; widen time windows
+proportionally to the measured frame rate) so the suite keeps its teeth on a GPU-less CI box.
+
+## Findings to fix
+
+Graded from the live run, from the code audit against `Build_Docs`, and from the v1 comparison.
+
+### Blockers
+
+| #   | Finding                                                                                                                                | Evidence                                                     |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| B1  | Phone: both side panels are unreachable — CSS slides them off-screen expecting `.active`, the page only ever toggles `.collapsed`      | `viewer.css:2168-2196` vs `viewer/+page.svelte:1253,1506`    |
+| B2  | No Settings surface at all, while `settings.ts` and the routes codemap claim one; the quality pin can never be set, so the ladder wins | `viewer/+page.svelte:816-1246`, `settings.ts:15`, codemap:11 |
+| B3  | `pnpm verify` red on formatting (fixed in `7f772f4`)                                                                                   | verify log                                                   |
+
+### Major
+
+| #   | Finding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Evidence                                                         |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| M1  | Reset resets time only, not parameter defaults or the authored camera (`00` :298, `03` R5) — confirmed live: Reset left spool at 12000 rpm                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `viewer/+page.svelte:842`, worker `resetTime`                    |
+| M2  | Annotations missing entirely (contract + CSS exist unused); v1 had world-pinned notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `contracts/settings.ts:78-95`, `viewer.css:3320`                 |
+| M3  | Share has no QR code (`00` :274) although the CSS exists; v1 shipped a real ISO-18004 encoder                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `share-modal.svelte:162-274`                                     |
+| M4  | No video clip recording, no multi-resolution screenshot — one 1200×675 snapshot only (`00` :279-280)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `sandbox-host.ts:646`, `viewer:865`                              |
+| M5  | Physics is implemented (Rapier, SI, tested) but no model ever declares it: the prompt contract never mentions `scene.physics`; status bar says Off                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `prompts.ts:352-370`, `audit.ts:434`                             |
+| M6  | Status bar omits `quality`, `effectiveTier`, `physicsMillis`, `cacheHitRate` even though the worker reports them                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `budgets.ts:138-161`, `viewer:1606-1652`                         |
+| M7  | Chat never streams (`stream:false` hardcoded) and the server's "stream" re-chunks a finished completion                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `chat-panel-v1.svelte:145`, `app.ts:585-608`                     |
+| M8  | Story narration speaks regardless of the narration setting; no "read it to me" on part selection                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `story-mode.svelte:47-116`, `settings.ts:44`                     |
+| M9  | Gallery entries publish with no thumbnail (`00` :273)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `share-modal.svelte:115-117`                                     |
+| M10 | No touch parity: no pinch-zoom, two-finger pan, double-tap focus (`00` :72)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `viewer:741-778`                                                 |
+| M11 | Several toolbar controls have no shortcut and Generate's tooltip claims `G` (which opens AI Output)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `viewer:922` vs `viewer:322-324`                                 |
+| M12 | Selecting a part replaced the whole information panel, so the parts list — the only mouse-free selection path (`panel-branch.ts:11`) — disappeared; a learner was stuck on the first part they touched, and the E2E test that selects two parts in a row fails for this reason (`travels the camera to the part the learner selects`)                                                                                                                                                                                                                                                                                                             | `viewer:1665` / `1725-1744`                                      |
+| M13 | **Story mode froze the whole viewer.** Opening it on the reference model throws `effect_update_depth_exceeded` within seconds: the story component's beat effect tracked its callback props, and the page passed them as inline arrows — so a beat's parameter write re-rendered the page, which handed down fresh callbacks, which re-ran the effect, forever. Svelte then stops applying state: clicks are ignored and the model clock stops. The suite never saw it because its only story assertion sits behind `requireRealFrameRate`                                                                                                        | `story-mode.svelte:58-62`, `viewer:1753-1759`                    |
+| M14 | **The engine validated nothing at the authoring boundary where zod parsing runs inside the guest realm.** Two halves: (a) `scene.motion` copied `rate`/`amplitude` verbatim, so `rate: 2` survived the gate, both repair passes and the audit, then died as `motions.rate: Invalid input` after a **55-minute** run; (b) the obvious remedy — parse the contract schema at the boundary — throws `Function is not available inside the model sandbox`, because the sandbox poisons `Function` and zod's fast path touches it. `PhysicsDeclSchema.safeParse` was already there from before, latent only because no model had ever declared physics | `scene.ts` (17 `as never` casts), `scene.ts:1526` (pre-existing) |
+| M15 | `api-reference.ts` documented `scene.light kind?: 'area'` — a kind `LightKind` has never had — while omitting `ambient`, `hemisphere` and `rect`. The table travels verbatim in the generation prompt, so the documentation taught an illegal call                                                                                                                                                                                                                                                                                                                                                                                                | `api-reference.ts:1257`                                          |
+
+### Live-verified fixes (same day)
+
+- **B1** — at 390×844 both panels now measure `left: 0, width: 390` with the `active` class, and the toolbar toggle collapses and restores them (`live/18-phone-panel-open.png`).
+- **B2** — the Settings dialog opens from the toolbar and from `,`; quality presets render `Auto*/Low/Mid/High` with the detected tier shown; picking **High** toasts "Quality pinned to high. The ladder will not step down on its own.", persists `quality: "high"` in `edu3d.settings.v1`, and the status bar immediately reports the live preset `high`. Controls the engine cannot honour (shadows, post-processing, physics preference, reduced motion, camera sensitivity) render disabled with the reason.
+- **M6** — the status bar now reports `Cache 100%` and the live `Quality medium` instead of the admission verdict's "Adapted".
+- **M12** — the parts list is hoisted out of the info panel's branch, so it survives a selection.
+- **M13** — the beat effect tracks only `index` (`untrack`) and the page passes stable named callbacks; a new E2E asserts no `effect_update_depth_exceeded`, that Next advances the beat, and that Cancel closes the overlay.
+- **M14** — boundary validation is being rewritten structurally (no zod at guest-realm runtime) with a hardened-realm regression test.
+- **M15** — the light-kind union is rendered from `LightKind.options` and welded by a new test.
+
+### Baseline suite state (before this run's fixes)
+
+`pnpm verify` on the committed tree: secret scan, config, compositor, formatting, lint, typecheck, unit (714 tests) and build all **pass**; **E2E fails** with 3 failures and 14 skips of 50. The failures are `travels the camera to the part the learner selects` (desktop + phone — M12, where the fix removes the need for a frame-rate skip) and `a paused model still answers parameters` (phone — B1). The 14 skips are all `requireRealFrameRate`, which is why the story freeze shipped.
+
+### v1 parity worth porting (format-free)
+
+- Real QR encoder; annotations; multi-resolution export; audio SFX; honest client watchdog wording.
+- Prompt rules: **mathematics/graphing** (explicit axes, graph dominant, helix forbidden for a sine),
+  domain-archetype selection and **causal completeness** (a source with no edge to its mechanism is
+  rejected — the "floating battery" failure).
+- Auto subject + auto tags on publish; non-repeating topic-aware facts on the loading screen.
+- "No link is better than a link that cannot work": publish before showing a share link.
+
+## Order of work
+
+1. B1 + M1 + M6 + M11 in one pass over `viewer/+page.svelte` (the integration file; one writer only).
+2. B2 Settings modal + quality pin wiring.
+3. M2 annotations, M3 QR, M4 export, M9 thumbnail (v1 parity surface).
+4. M5 physics contract + audit + status truth; M7 real streaming chat; M8 narration gating.
+5. M10 touch parity.
+6. Prompt rules from v1.
+7. `pnpm verify` green, then rebuild the Docker image so the deployed artifact matches `main`.

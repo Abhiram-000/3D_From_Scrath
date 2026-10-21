@@ -5,6 +5,12 @@
   where published, and loads any entry into the viewer through the same atomic-swap path as every
   other model load (`03` R2). Loading a gallery model from inside the viewer must never leave the
   learner staring at a broken scene.
+
+  THUMBNAILS ARE HONEST: an entry either has a real snapshot or it does not, and a snapshot that
+  fails to load is treated exactly like one that was never published — an initial-letter placeholder.
+  That is why the thumbnail is an `<img>` with an `error` handler rather than a CSS background: a
+  background has no way to report a failed load, so a dead URL would render as a blank tile that
+  looks like it loaded.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -34,8 +40,20 @@
   let loading = $state(true);
   let loadingModel = $state<string | null>(null);
   let error = $state<string | null>(null);
+  /** Entries whose snapshot URL failed to load; they get the same placeholder as a missing one. */
+  const failedThumbs = $state<Set<string>>(new Set());
   let offset = 0;
   const PAGE = 24;
+
+  /** The placeholder for an entry with no usable snapshot: its first letter, or a dot when unnamed. */
+  function initial(name: string): string {
+    const first = name.trim().match(/[a-z0-9]/i)?.[0];
+    return first ? first.toUpperCase() : '·';
+  }
+
+  function markThumbFailed(id: string): void {
+    failedThumbs.add(id);
+  }
 
   onMount(() => void refresh(true));
 
@@ -146,22 +164,19 @@
               onclick={() => void load(entry)}
             >
               <div class="gallery-thumb">
-                {#if entry.snapshotUrl}
-                  <img src={entry.snapshotUrl} alt={entry.name} loading="lazy" />
+                {#if entry.snapshotUrl && !failedThumbs.has(entry.id)}
+                  <img
+                    src={entry.snapshotUrl}
+                    alt={entry.name}
+                    loading="lazy"
+                    decoding="async"
+                    onerror={() => markThumbFailed(entry.id)}
+                  />
                 {:else}
-                  <svg
-                    width="40"
-                    height="40"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="1.2"
-                    aria-hidden="true"
-                  >
-                    <path d="M12 2L2 7L12 12L22 7L12 2Z" /><path d="M2 17L12 22L22 17" /><path
-                      d="M2 12L12 17L22 12"
-                    />
-                  </svg>
+                  <!-- No snapshot, or one that failed to load: an honest initial-letter tile. -->
+                  <span class="gallery-thumb-fallback" aria-hidden="true">
+                    {initial(entry.name)}
+                  </span>
                 {/if}
               </div>
               <div class="gallery-card-body">
@@ -256,6 +271,13 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }
+
+  .gallery-thumb-fallback {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
   }
 
   .gallery-card-body {

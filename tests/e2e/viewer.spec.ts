@@ -249,6 +249,48 @@ test.describe('the viewer', () => {
     await expect(distance).not.toHaveText(framedOnBlades ?? '', { timeout: 20_000 });
   });
 
+  test('opens story mode without wedging the viewer', async ({ page }) => {
+    // Live verification found this one, and the suite could not: the story component's beat effect
+    // tracked its callback props, so a beat's parameter write re-rendered the page, the page handed
+    // down fresh inline callbacks, and the effect re-ran — an unbounded Svelte update loop that
+    // reported `effect_update_depth_exceeded` and left the viewer frozen (clicks ignored, the model
+    // clock stopped). The only story assertion in this file sat behind `requireRealFrameRate`, which
+    // is why it never ran here. This test deliberately does not skip: the failure has nothing to do
+    // with frame rate, and what it asserts is what a learner would notice.
+    const consoleErrors: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
+
+    await page.goto('/viewer');
+    await waitForModel(page);
+
+    await page.getByTitle('Story Mode (S)').click();
+    const overlay = page.locator('.story-overlay');
+    await expect(overlay).toBeVisible();
+
+    const counter = overlay.locator('.counter');
+    await expect(counter).toHaveText(/^1 \/ \d+$/);
+
+    // Next is a real control, not decoration. The assertion is "the beat moved", not "it moved to
+    // exactly 2": the beat's own reading-time timer may advance it too, and asserting the exact
+    // number would make the test measure the timer rather than the button.
+    await overlay.getByRole('button', { name: 'Next' }).click();
+    await expect(counter).not.toHaveText(/^1 \/ \d+$/);
+
+    // Cancel is the one way out that never depends on the model (`05`: the story must never trap).
+    await overlay.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.locator('.story-overlay')).toHaveCount(0);
+
+    // The page is still alive: the loop's signature error is gone and Reactivity is still applying
+    // state (the toolbar answers).
+    expect(consoleErrors.filter((text) => text.includes('effect_update_depth_exceeded'))).toEqual(
+      [],
+    );
+    await page.getByTitle('Story Mode (S)').click();
+    await expect(page.locator('.story-overlay')).toBeVisible();
+  });
+
   test('orbits the camera on drag without losing the model', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);

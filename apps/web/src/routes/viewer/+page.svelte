@@ -15,12 +15,27 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
-  import type { ModelManifest, QualityPreset, QuizQuestion, RuntimeStats } from '@edu3d/contracts';
+  import type {
+    Annotation,
+    DeviceTier,
+    ModelManifest,
+    ProjectedAnnotation,
+    QualityPreset,
+    QuizQuestion,
+    RuntimeStats,
+    ShotDecl,
+    VideoRecordingCapability,
+  } from '@edu3d/contracts';
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
-  import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
+  import {
+    SandboxHost,
+    sandboxSupported,
+    type HostCallbacks,
+    type SnapshotPreset,
+  } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
   import { apiFetch, takeBundle, storedRuntime } from '$lib/core/api.ts';
-  import { SettingsStore } from '$lib/core/settings.ts';
+  import { SettingsStore, narratePart } from '$lib/core/settings.ts';
   import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   import { shouldSendPointerNow, toCanvasPoint, type RectLike } from '$lib/core/pointer.ts';
   import { anyOverlayOpen, shouldPauseRender } from '$lib/core/render-pause.ts';
@@ -36,6 +51,10 @@
   import CodeViewModal from '$lib/components/code-view-modal.svelte';
   import GalleryModal from '$lib/components/gallery-modal.svelte';
   import GenerateDialog from '$lib/components/generate-dialog.svelte';
+  import SettingsModal from '$lib/components/settings-modal.svelte';
+  import AnnotationLayer from '$lib/components/annotation-layer.svelte';
+  import ExportMenu from '$lib/components/export-menu.svelte';
+  import { AnnotationStore, annotationId, toAnnotationPins } from '$lib/annotations/annotations.ts';
 
   // ── View state ────────────────────────────────────────────────────────────
   let canvasHolder = $state<HTMLElement | null>(null);
@@ -91,7 +110,7 @@
   let activeTab = $state<'parameters' | 'aichat'>('parameters');
   let activeMode = $state<'none' | 'story' | 'quiz'>('none');
   let topicName = $state('Loading...');
-  let deviceTier = $state('');
+  let deviceTier = $state<DeviceTier | ''>('');
   let theme = $state<'dark' | 'light'>('dark');
 
   /**
@@ -122,6 +141,7 @@
   let galleryOpen = $state(false);
   let generateOpen = $state(false);
   let codeViewModalOpen = $state(false);
+  let settingsOpen = $state(false);
   let codeViewTab = $state<'raw' | 'spec'>('raw');
   let quizQuestions = $state<QuizQuestion[]>([]);
   let quizSource = $state<'authored' | 'generated'>('authored');
@@ -168,6 +188,14 @@
       const defaults: Record<string, number | boolean | string> = {};
       for (const parameter of loadedManifest.parameters) defaults[parameter.id] = parameter.default;
       parameterValues = defaults;
+      // Notes are per model (`03` R7): a new model brings its own set, and the worker is told about
+      // it before the first frame so a returning learner sees their pins immediately.
+      annotationStore = new AnnotationStore(loadedManifest.name);
+      draftAnnotation = null;
+      syncNotes();
+      if (!annotationStore.persisted) {
+        toast('Notes will last this session only — this browser refused to store them.');
+      }
       // A model swap unloads the previous model's modes (`05`).
       unloadModes();
     },
@@ -198,14 +226,37 @@
       loadError = reason;
       toast(reason);
     },
-    onSnapshot: (blob) => {
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${manifest?.name ?? 'model'}.png`;
-      link.click();
-      URL.revokeObjectURL(url);
-      toast('Screenshot saved.');
+    onSnapshot: (blob, info) => {
+      // A caller waiting on a one-shot capture (the share dialog publishing a thumbnail) takes
+      // precedence over the download path: it asked for exactly this snapshot.
+      if (pendingSnapshot) {
+        const { resolve, timeout } = pendingSnapshot;
+        pendingSnapshot = null;
+        clearTimeout(timeout);
+        resolve(blob);
+        return;
+      }
+      // The worker reports the pixels it actually rendered, so the file names itself honestly
+      // rather than claiming a resolution the device could not afford.
+      downloadBlob(blob, `${manifest?.name ?? 'model'} ${info.width}×${info.height}.png`);
+      toast(`Screenshot saved (${info.width}×${info.height}).`);
+    },
+    onAnnotationPositions: (positions) => {
+      projectedAnnotations = positions;
+    },
+    onRecordingCapability: (capability) => {
+      recordingCapability = capability;
+    },
+    onVideoClip: (blob, info) => {
+      stopRecordingTimer();
+      downloadBlob(blob, `${manifest?.name ?? 'model'} clip ${Math.round(info.seconds)}s.webm`);
+      toast(
+        `Clip saved — ${Math.round(info.seconds)}s, ${(info.bytes / 1024 / 1024).toFixed(1)} MB.`,
+      );
+    },
+    onRecordingFailed: (message) => {
+      stopRecordingTimer();
+      toast(message);
     },
   };
 
@@ -279,7 +330,7 @@
           togglePaused();
           break;
         case 'r':
-          host?.resetTime();
+          resetModel();
           break;
         case 's':
           // Story Mode, as the shortcuts panel (line ~575) advertises — previously listed and
@@ -322,11 +373,38 @@
         case 'g':
           codeViewModalOpen = true;
           break;
+        case 'q':
+          void enterQuiz();
+          break;
+        case 'n':
+          generateOpen = true;
+          break;
+        case 'l':
+          galleryOpen = true;
+          break;
+        case 'p':
+          shareModalOpen = true;
+          break;
+        case 'c':
+          host?.requestSnapshot('hd');
+          break;
+        case 'a':
+          toggleNotePlacing();
+          break;
+        case '[':
+          leftOpen = !leftOpen;
+          break;
+        case ']':
+          rightOpen = !rightOpen;
+          break;
         case 't':
           toggleTheme();
           break;
         case '?':
           shortcutsModalOpen = !shortcutsModalOpen;
+          break;
+        case ',':
+          settingsOpen = !settingsOpen;
           break;
         case 'z':
           if (event.ctrlKey || event.metaKey) {
@@ -347,10 +425,11 @@
             shareModalOpen ||
             codeViewModalOpen ||
             galleryOpen ||
-            generateOpen
+            generateOpen ||
+            settingsOpen
           ) {
             quizModalOpen = shortcutsModalOpen = shareModalOpen = codeViewModalOpen = false;
-            galleryOpen = generateOpen = false;
+            galleryOpen = generateOpen = settingsOpen = false;
           } else if (activeMode !== 'none') {
             activeMode = 'none';
           } else {
@@ -413,9 +492,170 @@
     host?.setViewMode(mode);
   }
 
+  /**
+   * Capture one frame as a promise, for callers that need the bytes rather than a download.
+   *
+   * The worker's snapshot arrives on the `onSnapshot` callback, which the Download button uses for a
+   * fire-and-forget save; publishing a gallery thumbnail needs the bytes back, so this brackets the
+   * same message with a one-shot resolver. The timeout matters: a viewer whose worker was killed
+   * mid-capture must not leave the share dialog waiting forever on a snapshot that is never coming.
+   */
+  const SNAPSHOT_TIMEOUT_MS = 5_000;
+  let pendingSnapshot: {
+    resolve: (blob: Blob | null) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  } | null = null;
+
+  function captureSnapshot(preset: SnapshotPreset = 'hd'): Promise<Blob | null> {
+    if (!host) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      // A second request while one is in flight replaces the first: the newer capture is the one the
+      // learner is looking at, and the older promise resolves null rather than hanging.
+      if (pendingSnapshot) {
+        clearTimeout(pendingSnapshot.timeout);
+        pendingSnapshot.resolve(null);
+        pendingSnapshot = null;
+      }
+      const timeout = setTimeout(() => {
+        pendingSnapshot = null;
+        resolve(null);
+      }, SNAPSHOT_TIMEOUT_MS);
+      pendingSnapshot = { resolve, timeout };
+      host?.requestSnapshot(preset);
+    });
+  }
+
   function toggleTheme() {
     theme = setTheme(theme === 'dark' ? 'light' : 'dark');
     host?.setTheme(readThemeColors());
+  }
+
+  /**
+   * Pin (or unpin) the quality preset — `08`: "the user's explicit quality choice beats the
+   * optimizer's". This is the function the viewer's codemap has been claiming exists since the page
+   * was written; until the Settings dialog arrived there was no control to call it, so a learner
+   * could not actually make the choice the contract said they could.
+   *
+   * The toast says what the pin means rather than congratulating the click: a pinned quality stops
+   * the ladder from stepping down, so the frame rate is the learner's to own.
+   */
+  function setPinnedQuality(quality: QualityPreset | null) {
+    settings.update({ quality });
+    pinnedQuality = quality;
+    host?.setQuality(quality);
+    toast(
+      quality === null
+        ? 'Quality set to Auto — the platform will adapt to this device.'
+        : `Quality pinned to ${quality}. The ladder will not step down on its own.`,
+    );
+  }
+
+  // ── Notes (`03` R7) ───────────────────────────────────────────────────────
+  /**
+   * The learner's pinned notes, and the one place the pin set reaches the worker.
+   *
+   * Storage and validation belong to `lib/annotations/annotations.ts`; the page owns *when* to write
+   * and what the worker is told. `draftAnnotation` is the note being written: a pin exists the moment
+   * its point is picked, but `Annotation.text` has a minimum length of one, so an unwritten note is
+   * deliberately not in the store and is appended to the pin set only for projection — a textless
+   * pin that the learner abandons therefore never reaches storage at all.
+   */
+  let annotationStore: AnnotationStore | null = null;
+  let notes = $state.raw<Annotation[]>([]);
+  let projectedAnnotations = $state.raw<ProjectedAnnotation[]>([]);
+  let placingNote = $state(false);
+  let draftAnnotation = $state.raw<Annotation | null>(null);
+
+  function syncNotes(): void {
+    const stored = annotationStore ? [...annotationStore.current] : [];
+    const shown = draftAnnotation ? [...stored, draftAnnotation] : stored;
+    notes = shown;
+    host?.setAnnotations(toAnnotationPins(shown));
+  }
+
+  function toggleNotePlacing(): void {
+    if (!manifest) {
+      toast('A note needs a model to pin it to.');
+      return;
+    }
+    placingNote = !placingNote;
+    if (placingNote) toast('Tap the model to pin a note.');
+  }
+
+  /** Pick a world point under the click and open a fresh note there. The raycast runs in the worker. */
+  async function placeNote(clientX: number, clientY: number): Promise<void> {
+    if (!canvasRect || !host) return;
+    const point = toCanvasPoint(clientX, clientY, canvasRect);
+    const picked = await host.pickPoint(point.x, point.y);
+    placingNote = false;
+    if (!picked.point) {
+      toast('That was empty space — pin the note on the model itself.');
+      return;
+    }
+    draftAnnotation = {
+      id: annotationId(),
+      point: picked.point,
+      ...(picked.partId ? { partId: picked.partId } : {}),
+      text: '',
+      createdAt: Date.now(),
+    };
+    syncNotes();
+  }
+
+  /** Commit the draft (or an edit) into the per-model store, then republish the pins. */
+  function saveNote(id: string, text: string): void {
+    if (draftAnnotation && draftAnnotation.id === id) {
+      annotationStore?.add({
+        point: draftAnnotation.point,
+        ...(draftAnnotation.partId ? { partId: draftAnnotation.partId } : {}),
+        text,
+      });
+      draftAnnotation = null;
+    } else {
+      annotationStore?.update(id, text);
+    }
+    syncNotes();
+  }
+
+  function deleteNote(id: string): void {
+    if (draftAnnotation?.id === id) draftAnnotation = null;
+    annotationStore?.remove(id);
+    syncNotes();
+  }
+
+  // ── Export and recording (`03` R8) ────────────────────────────────────────
+  let recordingCapability = $state.raw<VideoRecordingCapability | null>(null);
+  let recording = $state(false);
+  let recordingSeconds = $state(0);
+  let recordingTimer: ReturnType<typeof setInterval> | null = null;
+
+  function stopRecordingTimer(): void {
+    if (recordingTimer) clearInterval(recordingTimer);
+    recordingTimer = null;
+    recording = false;
+  }
+
+  function startRecording(): void {
+    recording = true;
+    recordingSeconds = 0;
+    if (recordingTimer) clearInterval(recordingTimer);
+    recordingTimer = setInterval(() => (recordingSeconds += 1), 1000);
+    host?.startRecording();
+  }
+
+  function stopRecording(): void {
+    host?.stopRecording();
+    stopRecordingTimer();
+  }
+
+  /** Save a blob the worker produced (a snapshot or a clip) as a file the learner keeps. */
+  function downloadBlob(blob: Blob, filename: string): void {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   function toggleFullscreen() {
@@ -483,6 +723,35 @@
     for (const [id, value] of Object.entries(snapshot)) host?.setParameter(id, value);
   }
 
+  /**
+   * Reset: the authored initial state, not just a clock.
+   *
+   * `00-GOAL.md:298` is explicit — "time back to zero, **parameters back to defaults**, motion back
+   * to its starting pose" — and `03` R5 adds the authored camera. This button used to call
+   * `resetTime()` alone, so a learner who had dragged every slider ended up with a model that no
+   * longer matched the pose it was authored to open in, and no way back except a reload. Live
+   * verification caught it: Reset left the turbofan's spool at 12 000 rpm.
+   *
+   * The gesture history is dropped rather than pushed: a reset is not an edit to walk back from, and
+   * `Undo` after a Reset must not restore the state the learner just deliberately left.
+   */
+  function resetModel() {
+    if (manifest) {
+      const defaults: ParamSnapshot = {};
+      for (const parameter of manifest.parameters) defaults[parameter.id] = parameter.default;
+      applySnapshot(defaults);
+    }
+    undoStack = [];
+    redoStack = [];
+    gestureOpen = false;
+    if (gestureTimer) {
+      clearTimeout(gestureTimer);
+      gestureTimer = null;
+    }
+    host?.resetTime();
+    host?.resetCamera();
+  }
+
   // ── Modes ─────────────────────────────────────────────────────────────────
   function unloadModes() {
     activeMode = 'none';
@@ -534,6 +803,28 @@
     host?.setParameter(id, value);
   }
 
+  /**
+   * Story callbacks as named functions, not inline arrows in the markup.
+   *
+   * An arrow in the markup is a new function on every render, and the story component's beat effect
+   * used to track those identities — so a beat writing a parameter re-rendered this page, which
+   * handed down fresh callbacks, which re-ran the effect. The loop froze the viewer (Svelte:
+   * `effect_update_depth_exceeded`). The component now untracks them as well; stable identities are
+   * the other half of the same fix, and they keep the story subtree from being re-created per frame.
+   */
+  function focusStoryPart(partId: string | null) {
+    host?.focusPart(partId);
+  }
+
+  function playStoryShot(shot: ShotDecl) {
+    host?.playShot(shot);
+  }
+
+  function closeStory() {
+    activeMode = 'none';
+    host?.focusPart(null);
+  }
+
   async function shareModel() {
     if (!manifest) return;
     shareModalOpen = true;
@@ -567,6 +858,73 @@
   const listedParts = $derived(
     manifest?.parts.filter((part) => part.selectable && part.kind !== 'group').slice(0, 200) ?? [],
   );
+
+  /**
+   * The quality line reports what is running, not what was asked for.
+   *
+   * It used to print "Adapted" whenever the *admission verdict* carried any adjustment — a verdict
+   * computed once when the model loaded — while the live ladder could have stepped down (or back up)
+   * several rungs since. `08`'s rule is that the platform never lies to the learner about what it is
+   * doing: the value here is the effective preset the worker is actually running, and the ladder's
+   * own rungs are what mark it as adapted.
+   */
+  const qualityDegraded = $derived((stats?.degradedRungs.length ?? 0) > 0);
+  const qualityLabel = $derived(
+    stats ? `${stats.quality}${qualityDegraded ? ' (adapted)' : ''}` : '—',
+  );
+  const qualityTitle = $derived(
+    [
+      `Effective preset: ${stats?.quality ?? 'unknown'} on a ${stats?.effectiveTier ?? deviceTier ?? '?'}-tier device.`,
+      qualityDegraded ? `Stepped down from: ${stats?.degradedRungs.join(', ')}.` : '',
+      ...(verdict?.adjustments.map((adjustment) => adjustment.message) ?? []),
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
+
+  /**
+   * The Physics line tells the truth about the solver, not about the declaration.
+   *
+   * It used to read "On" whenever `manifest.physics` existed — a device where Rapier failed to load
+   * therefore showed a running simulation while only a toast admitted otherwise (`03` R9: runtime
+   * trust indicators). The worker publishes whether the world is actually stepping, and the reason
+   * when it is not, so the three real states are distinguishable: no simulation declared (Off), a
+   * solver that is stepping (its per-frame cost), and one that should be but is not (Unavailable).
+   */
+  const physicsUnavailable = $derived(Boolean(manifest?.physics) && stats?.physicsActive === false);
+  const physicsLabel = $derived(
+    !manifest?.physics
+      ? 'Off'
+      : stats?.physicsActive
+        ? `${stats.physicsMillis.toFixed(1)} ms`
+        : 'Unavailable',
+  );
+  const physicsTitle = $derived(
+    !manifest?.physics
+      ? 'This model declares no simulation, so nothing is solved. Animation is not physics.'
+      : stats?.physicsActive
+        ? 'Solver time per frame for the model’s declared physics world.'
+        : `The model declares physics but the solver is not running: ${stats?.physicsUnavailableReason ?? 'this device could not start it'}.`,
+  );
+
+  /**
+   * Read a part's description aloud when it is selected — `05`'s narration, extended to the part the
+   * learner pointed at.
+   *
+   * Gated entirely inside `narratePart`: narration off (the default) makes this effect cost one
+   * boolean check, and a browser with no `speechSynthesis` is silence rather than an error. The last
+   * announced id is remembered so re-selecting the same part does not restart the sentence.
+   */
+  let announcedPart = $state<string | null>(null);
+  $effect(() => {
+    const partId = selectedPart;
+    if (!partId || partId === announcedPart) return;
+    const part = partsById.get(partId);
+    if (!part) return;
+    announcedPart = partId;
+    const text = [part.name, part.info?.title, part.info?.summary].filter(Boolean).join('. ');
+    narratePart(text, settings.current);
+  });
 
   const selectedPartInfo = $derived(
     activePart
@@ -654,6 +1012,24 @@
       items: [
         ['G', 'AI Output'],
         ['S', 'Story Mode'],
+        ['Q', 'Quiz'],
+      ],
+    },
+    {
+      title: 'Model',
+      items: [
+        ['N', 'Generate a new model'],
+        ['L', 'Gallery'],
+        ['P', 'Share / Publish'],
+        ['C', 'Screenshot (HD)'],
+        ['A', 'Add a note'],
+      ],
+    },
+    {
+      title: 'Panels',
+      items: [
+        ['[', 'Toggle Parameters / Chat'],
+        [']', 'Toggle Information'],
       ],
     },
     {
@@ -667,6 +1043,7 @@
       title: 'General',
       items: [
         ['T', 'Toggle Theme'],
+        [',', 'Settings'],
         ['?', 'Show Shortcuts'],
         ['Esc', 'Close Modal'],
       ],
@@ -694,6 +1071,7 @@
       generateOpen,
       codeViewModalOpen,
       viewPresetsOpen,
+      settingsOpen,
     });
     // Read both before acting, so the dependency set includes them.
     const requestedPause = shouldPauseRender(overlayOpen, paused);
@@ -701,7 +1079,45 @@
     host?.setPaused(requestedPause);
   });
 
-  // ── Pointer handlers (V1: primary orbits, middle/shift pans) ──────────────
+  // ── Pointer handlers (V1: primary orbits, middle/shift pans; touch is new) ─
+  /**
+   * Touch parity (`00`: "one-finger orbit, two-finger pan and pinch zoom, matching every mouse
+   * capability").
+   *
+   * Every pointer used to be the same pointer: a second finger simply replaced `lastPointer`, so a
+   * pinch read as a violent orbit and the model slewed off screen while zooming. Pointers are now
+   * tracked by id and the gesture follows from how many are down — one finger orbits, two pinch and
+   * pan, a second tap inside the double-tap window focuses the part the first tap selected.
+   */
+  const activePointers = new SvelteMap<number, { x: number; y: number }>();
+  /** While two fingers are down: the separation and midpoint the next frame's deltas are measured against. */
+  let pinch: { distance: number; midpoint: { x: number; y: number } } | null = null;
+  /** A second tap inside this window, and within this slop, is a double tap. */
+  const DOUBLE_TAP_MS = 300;
+  const TAP_SLOP_PX = 12;
+  let lastTap = { at: 0, x: 0, y: 0 };
+
+  const midpointOf = (a: { x: number; y: number }, b: { x: number; y: number }) => ({
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+  });
+  const distanceBetween = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot(a.x - b.x, a.y - b.y);
+
+  /**
+   * The first two live pointers, or null when fewer than two are down.
+   *
+   * A guard rather than a destructure of `[...values()]`: the map is keyed by pointer id and an entry
+   * is removed on `pointerup`, so "two are down" and "two entries are readable" are only the same
+   * statement by luck.
+   */
+  function pinchPair(): [{ x: number; y: number }, { x: number; y: number }] | null {
+    const points = [...activePointers.values()];
+    const first = points[0];
+    const second = points[1];
+    return first && second ? [first, second] : null;
+  }
+
   /**
    * One place that decides whether a pointer sample goes out now or waits for the next frame.
    *
@@ -740,15 +1156,58 @@
 
   function onPointerDown(event: PointerEvent) {
     if (!canvasHolder) return;
+    // A note being placed owns the click: an orbit or a selection underneath it would fight the pin
+    // the learner is trying to drop. The gesture handlers below never see this press.
+    if (placingNote) {
+      void placeNote(event.clientX, event.clientY);
+      return;
+    }
     cancelPendingHover();
-    lastPointer = { x: event.clientX, y: event.clientY };
-    dragging = event.button === 1 || event.shiftKey ? 'pan' : 'orbit';
+    activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (activePointers.size === 2) {
+      // A second finger turns the gesture into a pinch. `dragging` is cleared so the two-finger
+      // move below cannot also orbit — the model would slew sideways while zooming.
+      const pair = pinchPair();
+      if (pair) {
+        pinch = {
+          distance: distanceBetween(pair[0], pair[1]),
+          midpoint: midpointOf(pair[0], pair[1]),
+        };
+      }
+      dragging = null;
+    } else if (activePointers.size === 1) {
+      lastPointer = { x: event.clientX, y: event.clientY };
+      dragging = event.button === 1 || event.shiftKey ? 'pan' : 'orbit';
+    }
+    // Every finger sends its own `down`, including the second one: the worker counts presses to tell
+    // a pinch from a choice (`pointersDown`), and a pinch it never heard about would select the part
+    // under the fingers when they lift.
     dispatchPointer('down', event.clientX, event.clientY);
     (event.target as HTMLElement).setPointerCapture(event.pointerId);
   }
 
   function onPointerMove(event: PointerEvent) {
     if (!canvasHolder) return;
+    const tracked = activePointers.get(event.pointerId);
+    if (tracked) {
+      tracked.x = event.clientX;
+      tracked.y = event.clientY;
+    }
+    if (activePointers.size >= 2) {
+      const pair = pinchPair();
+      if (!pair) return;
+      const [first, second] = pair;
+      const distance = distanceBetween(first, second);
+      const midpoint = midpointOf(first, second);
+      if (pinch && pinch.distance > 0 && distance > 0) {
+        // `zoom` takes a multiplicative delta (`distance * (1 + delta / 1000)`), so the separation
+        // ratio maps straight onto it: fingers apart closes the distance, exactly like a scroll notch.
+        host?.zoom((distance / pinch.distance - 1) * 1000);
+        host?.pan(midpoint.x - pinch.midpoint.x, midpoint.y - pinch.midpoint.y);
+      }
+      pinch = { distance, midpoint };
+      return;
+    }
     if (!dragging) {
       dispatchPointer('move', event.clientX, event.clientY);
       return;
@@ -764,12 +1223,41 @@
    * Release. Bound to `pointercancel` as well as `pointerup`: a cancelled pointer capture never
    * delivers an `up`, so without this the drag flag would stay set and the camera would keep
    * orbiting for the rest of the session.
+   *
+   * Also the one place a double tap can be recognised: the worker answers a travelling press with
+   * nothing and a still press with a selection, so a tap that selected something and was followed by
+   * a second tap inside the double-tap window is a request to *look* at it — the touch spelling of
+   * "Focus this part" in the information panel.
    */
   function onPointerUp(event: PointerEvent) {
-    dragging = null;
+    const wasTracked = activePointers.delete(event.pointerId);
     cancelPendingHover();
-    if (!canvasHolder) return;
+    if (!canvasHolder || !wasTracked) return;
     dispatchPointer('up', event.clientX, event.clientY);
+
+    if (activePointers.size === 1) {
+      // One finger is still down: it becomes the drag origin, so lifting the other finger does not
+      // jump the camera by the distance between them.
+      pinch = null;
+      const remaining = [...activePointers.values()][0];
+      if (remaining) {
+        lastPointer = { x: remaining.x, y: remaining.y };
+        dragging = 'orbit';
+      }
+      return;
+    }
+
+    pinch = null;
+    dragging = null;
+
+    if (event.pointerType !== 'touch') return;
+    const now = event.timeStamp;
+    const isDoubleTap =
+      now - lastTap.at <= DOUBLE_TAP_MS &&
+      Math.abs(event.clientX - lastTap.x) <= TAP_SLOP_PX &&
+      Math.abs(event.clientY - lastTap.y) <= TAP_SLOP_PX;
+    lastTap = { at: now, x: event.clientX, y: event.clientY };
+    if (isDoubleTap && selectedPart) host?.focusPart(selectedPart);
   }
 
   function onWheel(event: WheelEvent) {
@@ -839,7 +1327,7 @@
           </div>
           <span>{paused ? 'Play' : 'Pause'}</span>
         </button>
-        <button class="toolbar-btn" title="Reset (R)" onclick={() => host?.resetTime()}>
+        <button class="toolbar-btn" title="Reset (R)" onclick={resetModel}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
             ><path
               d="M8 2C4.7 2 2 4.7 2 8s2.7 6 6 6 6-2.7 6-6h-2c0 2.2-1.8 4-4 4s-4-1.8-4-4 1.8-4 4-4V2z"
@@ -862,21 +1350,33 @@
           >
           <span>Reset View</span>
         </button>
-        <button class="toolbar-btn" title="Take Screenshot" onclick={() => host?.requestSnapshot()}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
-            ><rect
-              x="2"
-              y="4"
-              width="12"
-              height="9"
-              rx="1"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.5"
-            /><circle cx="8" cy="9" r="2" /><rect x="6" y="2" width="4" height="2" rx="0.5" /></svg
+        <button
+          class="toolbar-btn toggle-btn"
+          title="Add a note (A)"
+          class:active={placingNote}
+          onclick={toggleNotePlacing}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
           >
-          <span>Screenshot</span>
+            <path d="M2 12.5V14h1.5l7.2-7.2-1.5-1.5L2 12.5z" fill="currentColor" stroke="none" />
+            <path d="M11.6 2.9l1.5 1.5" />
+          </svg>
+          <span>Note</span>
         </button>
+        <ExportMenu
+          capability={recordingCapability}
+          {recording}
+          seconds={recordingSeconds}
+          onscreenshot={(preset) => host?.requestSnapshot(preset)}
+          onstartrecording={startRecording}
+          onstoprecording={stopRecording}
+        />
       </div>
 
       <!-- View Presets dropdown -->
@@ -919,7 +1419,7 @@
       <div class="control-group">
         <button
           class="toolbar-btn primary-action"
-          title="Generate a model with AI (G)"
+          title="Generate a model with AI (N)"
           onclick={() => (generateOpen = true)}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
@@ -931,7 +1431,7 @@
           >
           <span>Generate</span>
         </button>
-        <button class="toolbar-btn" title="Browse the gallery" onclick={() => (galleryOpen = true)}>
+        <button class="toolbar-btn" title="Gallery (L)" onclick={() => (galleryOpen = true)}>
           <svg
             width="16"
             height="16"
@@ -948,7 +1448,7 @@
           >
           <span>Gallery</span>
         </button>
-        <button class="toolbar-btn" title="Publish this model" onclick={shareModel}>
+        <button class="toolbar-btn" title="Share / Publish (P)" onclick={shareModel}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
             ><path d="M8 2l4 4h-2.5v5h-3V6H4l4-4z" /><rect
               x="3"
@@ -983,7 +1483,7 @@
         <button
           class="toolbar-btn mode-btn"
           class:active={activeMode === 'quiz'}
-          title="Quiz Mode"
+          title="Quiz Mode (Q)"
           onclick={() => void enterQuiz()}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
@@ -1118,7 +1618,7 @@
         <button
           class="toolbar-btn toggle-btn"
           class:active={leftOpen}
-          title="Toggle Left Panel"
+          title="Toggle Left Panel ([)"
           onclick={() => (leftOpen = !leftOpen)}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
@@ -1136,7 +1636,7 @@
         <button
           class="toolbar-btn toggle-btn"
           class:active={rightOpen}
-          title="Toggle Right Panel"
+          title="Toggle Right Panel (])"
           onclick={() => (rightOpen = !rightOpen)}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
@@ -1180,6 +1680,17 @@
 
       <!-- Additional -->
       <div class="control-group">
+        <button class="toolbar-btn" title="Settings (,)" onclick={() => (settingsOpen = true)}>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
+            ><path
+              d="M8 5.5A2.5 2.5 0 1 0 8 10.5 2.5 2.5 0 0 0 8 5.5zm0 3.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"
+            /><path
+              d="M13.3 9.2l1.2-.9-1.2-2.1-1.4.5a4.6 4.6 0 0 0-.9-.5l-.2-1.5H8.2L8 6.2a4.6 4.6 0 0 0-.9.5l-1.4-.5-1.2 2.1 1.2.9a4.5 4.5 0 0 0 0 1l-1.2.9 1.2 2.1 1.4-.5c.3.2.6.4.9.5l.2 1.5h2.6l.2-1.5c.3-.1.6-.3.9-.5l1.4.5 1.2-2.1-1.2-.9a4.5 4.5 0 0 0 0-1z"
+              opacity="0.75"
+            /></svg
+          >
+          <span>Settings</span>
+        </button>
         <button class="toolbar-btn" title="Toggle Theme (T)" onclick={toggleTheme}>
           <svg class="icon-sun" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"
             ><circle cx="8" cy="8" r="3" /><path
@@ -1250,7 +1761,7 @@
   <!-- ── Main Content Area ────────────────────────────────────────────────── -->
   <main class="content-area">
     <!-- Left Panel -->
-    <aside class="left-panel panel glass-panel" class:collapsed={!leftOpen}>
+    <aside class="left-panel panel glass-panel" class:collapsed={!leftOpen} class:active={leftOpen}>
       <div class="panel-tabs">
         <button
           class="tab-btn"
@@ -1428,6 +1939,30 @@
         aria-label="3D model view. Use the part list to select parts with a keyboard."
       ></div>
 
+      <!--
+        Learner notes (`03` R7). Inside the canvas holder so a pin's canvas-space coordinates are its
+        own: the overlay is `pointer-events: none` except on the pins themselves, so orbit never
+        notices it.
+      -->
+      <AnnotationLayer
+        pins={notes}
+        projected={projectedAnnotations}
+        placing={placingNote}
+        onplace={(point, partId) => {
+          draftAnnotation = {
+            id: annotationId(),
+            point,
+            ...(partId ? { partId } : {}),
+            text: '',
+            createdAt: Date.now(),
+          };
+          syncNotes();
+        }}
+        onremove={deleteNote}
+        onedit={saveNote}
+        onrequesttext={() => {}}
+      />
+
       <!-- Tooltip -->
       {#if hoveredPart && !selectedPart}
         <div class="tooltip-3d">
@@ -1450,12 +1985,10 @@
           <StoryMode
             story={manifest.story}
             onsetParameter={beatSetParameter}
-            onfocus={(partId) => host?.focusPart(partId)}
-            onshot={(shot) => host?.playShot(shot)}
-            onclose={() => {
-              activeMode = 'none';
-              host?.focusPart(null);
-            }}
+            onfocus={focusStoryPart}
+            onshot={playStoryShot}
+            onclose={closeStory}
+            narration={settings.current}
           />
         </div>
       {/if}
@@ -1503,7 +2036,11 @@
     </section>
 
     <!-- Right Panel -->
-    <aside class="right-panel panel glass-panel" class:collapsed={!rightOpen}>
+    <aside
+      class="right-panel panel glass-panel"
+      class:collapsed={!rightOpen}
+      class:active={rightOpen}
+    >
       <div class="panel-header">
         <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
           <circle cx="10" cy="10" r="8" fill="none" stroke="currentColor" stroke-width="2" />
@@ -1573,29 +2110,37 @@
                 </ul>
               </div>
             {/if}
-
-            <!-- Parts list — the keyboard-reachable selection path -->
-            {#if listedParts.length > 0}
-              <div class="info-section">
-                <h4 class="info-heading">Parts</h4>
-                <div class="part-list">
-                  {#each listedParts as part (part.id)}
-                    <button
-                      class="part-button"
-                      class:active={selectedPart === part.id}
-                      onclick={() => {
-                        selectedPart = part.id;
-                        host?.focusPart(part.id);
-                      }}
-                    >
-                      {part.name}
-                    </button>
-                  {/each}
-                </div>
-              </div>
-            {/if}
           {:else}
             <p class="loading-state">Loading topic information...</p>
+          {/if}
+
+          <!--
+            Parts list — the keyboard-reachable selection path.
+
+            It lives outside the branch above on purpose. Every arm used to replace the whole panel,
+            so selecting one part removed the list that selecting another part needs: the canvas
+            became the only way to change the selection, and a learner without a mouse (or on a
+            phone, where the canvas is a thumb) was stuck on the first part they touched. The list is
+            the one selection surface that does not depend on hitting geometry, so it stays.
+          -->
+          {#if listedParts.length > 0}
+            <div class="info-section">
+              <h4 class="info-heading">Parts</h4>
+              <div class="part-list">
+                {#each listedParts as part (part.id)}
+                  <button
+                    class="part-button"
+                    class:active={selectedPart === part.id}
+                    onclick={() => {
+                      selectedPart = part.id;
+                      host?.focusPart(part.id);
+                    }}
+                  >
+                    {part.name}
+                  </button>
+                {/each}
+              </div>
+            </div>
           {/if}
         </div>
       </div>
@@ -1635,20 +2180,24 @@
         <span class="stat-label">Distance</span>
         <span class="stat-value">{stats ? formatDistance(stats.cameraDistance) : '—'}</span>
       </div>
-      <div class="stat-item">
+      <div class="stat-item" data-stat="physics" title={physicsTitle}>
         <span class="stat-label">Physics</span>
-        <span class="stat-value">{manifest?.physics ? 'On' : 'Off'}</span>
+        <span class="stat-value" class:warning={physicsUnavailable}>{physicsLabel}</span>
       </div>
-      {#if verdict && verdict.adjustments.length > 0}
-        <div
-          class="stat-item"
-          data-stat="quality"
-          title={verdict.adjustments.map((a) => a.message).join(' ')}
-        >
-          <span class="stat-label">Quality</span>
-          <span class="stat-value warning">Adapted</span>
-        </div>
-      {/if}
+      <div
+        class="stat-item"
+        data-stat="cache"
+        title="Geometry and material cache hit rate, as a share of authoring lookups"
+      >
+        <span class="stat-label">Cache</span>
+        <span class="stat-value">
+          {stats ? `${Math.round(stats.cacheHitRate * 100)}%` : '—'}
+        </span>
+      </div>
+      <div class="stat-item" data-stat="quality" title={qualityTitle}>
+        <span class="stat-label">Quality</span>
+        <span class="stat-value" class:warning={qualityDegraded}>{qualityLabel}</span>
+      </div>
     </div>
   </footer>
 
@@ -1704,8 +2253,24 @@
     <GenerateDialog onclose={() => (generateOpen = false)} ongenerated={swapInModel} />
   {/if}
 
+  {#if settingsOpen}
+    <SettingsModal
+      open={settingsOpen}
+      settings={settings.current}
+      tier={deviceTier || stats?.effectiveTier || 'mid'}
+      onchange={(next) => settings.update(next)}
+      onquality={setPinnedQuality}
+      onclose={() => (settingsOpen = false)}
+    />
+  {/if}
+
   {#if shareModalOpen}
-    <ShareModal {manifest} program={currentProgram} onclose={() => (shareModalOpen = false)} />
+    <ShareModal
+      {manifest}
+      program={currentProgram}
+      requestSnapshot={captureSnapshot}
+      onclose={() => (shareModalOpen = false)}
+    />
   {/if}
 
   <!-- ── AI Output viewer ─────────────────────────────────────────────────── -->

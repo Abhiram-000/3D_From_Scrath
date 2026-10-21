@@ -20,6 +20,15 @@ export function anyOverlayOpen(state: {
   generateOpen: boolean;
   codeViewModalOpen: boolean;
   viewPresetsOpen: boolean;
+  /**
+   * Settings joined the set late, and optional so the existing callers and tests keep compiling:
+   * a missing flag reads as "no settings dialog", which is the only meaning it can have.
+   *
+   * Story mode is deliberately NOT here. Its beats move the camera from inside the worker's frame
+   * loop, so pausing the engine while the story teller is talking would freeze the very choreography
+   * the mode exists to show.
+   */
+  settingsOpen?: boolean;
 }): boolean {
   return (
     state.quizModalOpen ||
@@ -28,7 +37,8 @@ export function anyOverlayOpen(state: {
     state.galleryOpen ||
     state.generateOpen ||
     state.codeViewModalOpen ||
-    state.viewPresetsOpen
+    state.viewPresetsOpen ||
+    Boolean(state.settingsOpen)
   );
 }
 

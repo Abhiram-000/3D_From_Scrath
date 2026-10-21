@@ -49,6 +49,7 @@ scene.describe({
   simplifications: [
     'Blade counts are reduced from production values so individual blades stay visible',
     'The combustor flame is shown as a single emissive volume rather than a resolved flame front',
+    'Part motion is animated on a driven schedule, not simulated - the airflow, spool and flame are depicted accurately, but the learner does not push or perturb them',
   ],
   relationships: [
     { from: 'fan', to: 'bypassDuct', kind: 'drives airflow', note: 'most thrust comes from here' },

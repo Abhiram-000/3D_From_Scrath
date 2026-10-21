@@ -61,13 +61,25 @@
  * shape is reached for first (SDF is the most expensive and is reserved for genuinely blended
  * forms), and forbids geometry construction inside the frame callback outright.
  *
+ * v8 closes three gaps the battery kept measuring. Physics was unreachable: the platform ships a
+ * real Rapier/SI solver, but no generated model ever declared `scene.physics` because no rule
+ * mentioned it, so every model read "Physics off" and animated its mechanism instead of simulating
+ * it — a hard-contract clause now tells the model to simulate when the learner must feel or predict
+ * the motion, and to declare an honest depiction in `simplifications` when the mechanism itself is
+ * the lesson (`02`: physics is "a progressive enhancement", and a correct depiction is accepted),
+ * with a worked solver form to copy. And three v1 rules that measurably caught live failures return
+ * in this repo's voice: the mathematics-and-graphing rule (a plain sine drawn as a helix was v1's
+ * most-repeated defect), causal completeness (the floating-battery failure — a source with no edge
+ * to its mechanism), and the domain-archetype classification step that must name its choice before
+ * building.
+ *
  * Versioned, because a prompt change is a code change; battery-history.jsonl holds the numbers
  * this version must beat.
  */
 import { describeApiSurface, REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
 import type { ComplexityPreference } from '@edu3d/contracts';
 
-export const PROMPT_VERSION = '2026-10-v7-build-discipline';
+export const PROMPT_VERSION = '2026-10-v8-physics-and-graphing';
 
 /** The domain grammar table from `00`, compressed to the rows the model can act on. */
 const DOMAIN_GRAMMARS: ReadonlyArray<{ domain: string; entities: string; motion: string }> = [
@@ -152,9 +164,12 @@ const COMPLEXITY_GUIDANCE: Readonly<Record<ComplexityPreference, string>> = {
  * The mandated mechanisms, as short worked forms.
  *
  * These demonstrate the mechanisms the hard contract mandates (instances, components, patterns,
- * param-bound motion) that the reference table alone cannot show in use. They are verified
- * executable — the same snippets run through the authoring builder in CI via the api-reference
- * tests' scaffold — and each is deliberately 2–4 lines: dense patterns to copy, not a model.
+ * param-bound motion, and the physics solver) that the reference table alone cannot show in use.
+ * They are verified executable — the same snippets run through the authoring builder in CI via the
+ * api-reference tests' scaffold — and each is deliberately a few lines: dense patterns to copy, not
+ * a model. The physics form is here rather than in prose because a solver declaration has argument
+ * shapes (`world`, `bodies`, `joints`, `probes`) that are easy to invent wrong; the battery showed
+ * every generated mechanics model animating its mechanism because nothing showed it how to simulate.
  */
 const WORKED_MECHANISMS = `// Repetition as instances: one geometry, N placements, ONE draw call.
 var blade = geom.box({ size: [0.02, 0.004, 0.12] });
@@ -177,7 +192,16 @@ for (var i = 0; i < 6; i++) {
 }
 // Declared motion with the rate BOUND to a parameter — auditable, and the slider provably drives it.
 scene.param({ id: 'rpm', label: 'Rotor speed', kind: 'number', min: 0, max: 300, default: 60, unit: 'rpm' });
-scene.motion({ id: 'spin', partId: 'blades', kind: 'spin', axis: [0, 1, 0], rate: { param: 'rpm' }, reason: 'The rotor turns at the learner-chosen speed.' });`;
+scene.motion({ id: 'spin', partId: 'blades', kind: 'spin', axis: [0, 1, 0], rate: { param: 'rpm' }, reason: 'The rotor turns at the learner-chosen speed.' });
+// Real simulation, not an animation: declare the world and its bodies in SI units, then bind a
+// parameter to the solver, so the slider provably drives the motion rather than merely a playback.
+scene.physics({
+  world: { gravity: [0, -M.GRAVITY, 0] },              // m/s²; M.GRAVITY is the solver's own default
+  bodies: [{ id: 'weightBody', partId: 'weight', kind: 'dynamic', material: { name: 'steel' } }],
+  joints: [{ id: 'arm', kind: 'revolute', bodyA: 'weightBody', bodyB: null, axis: [0, 0, 1] }],
+  probes: [{ id: 'weightSpeed', bodyId: 'weightBody', quantity: 'speed', label: 'Weight speed' }],
+});
+scene.onFrame(function (ctx) { ctx.motor('arm', ctx.params.rpm * 0.01); }); // 'rpm' drives the joint`;
 
 /**
  * Assemble the generation system prompt.
@@ -209,6 +233,12 @@ PASS 1 — DOMAIN SCIENTIST (what is true). Before any code, establish the facts
     a resting heart 60–100 bpm — whatever this topic actually involves).
   - State the governing relationships as formulas, and the direction of every causal arrow
     (voltage drives current; the turbine does not "create energy from nothing").
+  - Classify the topic into ONE domain and name the archetype you will build for it (a gear train,
+    a circuit, an orbit, a plotted curve, a cell cross-section). Naming the archetype before you
+    build is what stops a topic being forced into another domain's arrangement.
+  - Sketch the causal map before any code: source → mechanism → intermediate state → output →
+    return path. Every source must have an edge to the mechanism it drives — a source with none is
+    the floating-battery failure, a battery glowing alone that powers nothing.
   - Name the one misconception a learner most likely holds about this topic — your quiz will
     target it.
 PASS 2 — INSTRUCTIONAL DESIGNER (what teaches). Choose the 3–6 parameters that let the learner
@@ -325,6 +355,8 @@ NEVER (each of these broke a real generated model):
   50 ms and a frame that breaks it gets the model paused)
 - shipping the reference model's subject in any disguise — never imitate its subject; the topic
   decides the subject, and the reference is a craftsmanship bar, not a template to resize
+- a source with no edge to the mechanism it drives — the floating-battery failure; a source that
+  powers nothing teaches nothing
 
 TEXTBOOK FIDELITY — the bar your model is audited against:
 - Correct entities: every part the textbook names exists, named as the textbook names it.
@@ -335,9 +367,11 @@ TEXTBOOK FIDELITY — the bar your model is audited against:
 - The quiz's tempting wrong answer is the real misconception from Pass 1, and the explanation
   says why it is tempting AND why it is wrong.
 
-AUTHORING METHOD — inside a block comment at the top, fill in these five lines before any code:
+AUTHORING METHOD — inside a block comment at the top, fill in these lines before any code:
 // PLAN: the core idea in one sentence — the thing a learner will remember.
+// ARCHETYPE: the domain you classified into and the archetypal form you chose for it.
 // FACTS: the real quantities, units, values and formulas from your Pass 1.
+// CAUSAL MAP: source → mechanism → intermediate state → output → return path.
 // MISCONCEPTION: the wrong belief this model will cure, stated plainly.
 // ENTITIES: every part the concept requires, with its textbook name.
 // REPRESENTATION: the shape whose BEHAVIOR matches each entity's behavior.
@@ -363,6 +397,28 @@ HARD CONTRACT:
 8. Quiz: 2+ questions; at least one targets the misconception from your PLAN.
 9. Set the opening camera: scene.camera({ position, target, fov }).
 10. Triangle budget for this run: ${budget}
+11. Physics is a progressive enhancement, not a requirement — reach for it when the lesson turns on
+    forces the learner should FEEL or PREDICT: a pendulum's period, a projectile's arc, a collision,
+    a seesaw, a spring, a stack that topples, an orbit, a body the learner drops or pushes. Then
+    declare scene.physics with at least one body, a real mass or material density, and at least one
+    declared parameter that drives the simulation (call ctx.motor on a joint from onFrame, or push a
+    body). Animation is legitimate when the mechanism itself is the lesson and the learner is not
+    expected to perturb it — a cutaway engine's parts moving on a driven schedule is a correct
+    depiction — but then never fake the forces: say so in pedagogy.simplifications ("part motion is
+    animated on a driven schedule, not simulated"). Topics where forces are not the lesson
+    (chemistry ball-and-stick, mathematics graphs, economics metaphors) must NOT declare physics:
+    animating a molecule is honest, simulating one is a lie.
+12. A function, equation or graph is drawn as a textbook graph, never a 3-D flourish: explicit axes
+    with labelled units, a visible origin, the curve or surface as the dominant object, and
+    amplitude/period/phase (or slope, root, vertex) bound to the declared parameter so the slider
+    bends the curve. A helix, tube, spiral or spatial wave is FORBIDDEN as the primary representation
+    of a plain sine wave or 2-D function — this is the highest-value rule here, because a sine wrapped
+    around a cylinder teaches nothing, and it is the mistake an ambitious generator reaches for first.
+13. Causal completeness: build every link of source → mechanism → intermediate state → output →
+    return path from your Pass 1 map. A source with no edge to the mechanism it drives is the
+    floating-battery failure and is rejected — a battery glowing alone in space that powers nothing
+    teaches the opposite of the lesson. Every relationship names existing part ids, and every flow
+    has a real source, direction and destination.
 
 BEFORE YOU ANSWER — grade your draft against this rubric and fix anything that fails. This rubric is
 wider than the machine audit: lines marked [audit] are the parts the audit measures and can send back
@@ -381,7 +437,8 @@ as refinement instructions; the others only you can check, and the platform does
 [ ] COMPLETE: [audit: completeness + information + pedagogy] story, quiz with a real misconception
     distractor, camera set, info on every part; every story target, story setParameters key, quiz
     evidence id, motion pathId and parameter affects partId names a declared id — dangling
-    references are flagged as broken lessons.
+    references are flagged as broken lessons, and a force-governed topic that declares no physics
+    (or declares a world with no bodies) is flagged to add simulation.
 [ ] AMBITIOUS: [audit: representationFidelity + detailEconomics + attractiveness] the model is as
     ambitious as the topic deserves — real hierarchy, repetition instanced, shapes whose behaviour is
     right — and never a lazy six-box version.

@@ -16,8 +16,11 @@
  *   3. a parameter bound to a declared motion's rate/amplitude is credited by declaration — the
  *      Phase 1a applicator executes that binding every frame, so the audit need not re-run it.
  *
- * Plus the regression guard that rules them all: the reference turbofan audits clean — a stricter
- * audit that rejects the flagship is wrong, not the model.
+ * Plus the regression guard that rules them all: the reference turbofan audits clean. The physics
+ * check is deliberately scoped so the flagship — a mechanics model that animates a cutaway engine
+ * rather than simulating it, exactly the depiction `02` accepts — is never accused for lacking a
+ * solver; it fires only on the machine-checkable contradiction of a declared physics claim without
+ * a declared world. A stricter audit that rejects the flagship is wrong, not the model.
  */
 import { describe, expect, it } from 'vitest';
 import { prepareProgram } from '@edu3d/sandbox';
@@ -536,6 +539,87 @@ describe('shot vocabulary honesty — a declared shot with no player is a false 
   });
 });
 
+describe('physics honesty — a solver promised but not declared', () => {
+  it('flags a model that claims the physics channel but declares no world, as a minor trade-off', () => {
+    // `02`: physics is "a progressive enhancement". A force-governed model that animates is not
+    // accused — but a model that DECLARES physics intent (a parameter bound to the physics channel)
+    // and declares no scene.physics promises a solver that is not there. Minor: an instruction, so
+    // an honest animation is never sent to paid refinement.
+    const result = audit(`
+      scene.describe({ name: 'Claimed solver', description: 'Promises physics it never declares.',
+        domain: 'mechanics', concept: 'forces must be simulated, not faked',
+        objectives: ['see the motion follow the force'] });
+      scene.param({ id: 'force', kind: 'number', label: 'Force', unit: 'N', min: 0, max: 10,
+        default: 5, affects: [{ channel: 'physics' }, { channel: 'motionRate' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'arm', name: 'Arm', geometry: geom.box({ size: [0.4, 0.03, 0.03] }),
+        material: m });
+      scene.motion({ id: 'swing', partId: 'arm', kind: 'spin', axis: [0, 0, 1],
+        rate: { param: 'force' }, reason: 'The arm swings as the force changes.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const flagged = deficienciesFor(result, 'completeness')?.find((d) => d.subjectId === 'physics');
+    expect(flagged, 'a declared physics claim with no world must be flagged').toBeDefined();
+    expect(flagged?.severity).toBe('minor');
+    expect(flagged?.instruction).toMatch(/scene\.physics/);
+    expect(flagged?.instruction, 'the trade-off must name the depiction escape hatch').toMatch(
+      /simplifications/,
+    );
+  });
+
+  it('flags a declared physics world with zero bodies at major severity', () => {
+    // The opposite failure, and the model's own broken promise: it declared a solver and gave it
+    // nothing to move. Major, so it reaches refinement. The finding is domain-independent — an
+    // empty world simulates nothing anywhere.
+    const result = audit(`
+      scene.describe({ name: 'Empty world', description: 'A solver with nothing to move.',
+        domain: 'chemistry', concept: 'a physics world needs bodies',
+        objectives: ['notice the empty world'] });
+      scene.physics({});
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.motion({ id: 'spin', partId: 'p', kind: 'spin', axis: [0, 0, 1], rate: { const: 1 },
+        reason: 'Turns.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const flagged = deficienciesFor(result, 'completeness')?.find((d) => d.subjectId === 'physics');
+    expect(flagged, 'a physics world with no bodies must be flagged').toBeDefined();
+    expect(flagged?.severity).toBe('major');
+  });
+
+  it('does not flag a force-governed animation that claims no physics — the legitimate depiction', () => {
+    // The false-positive guard the flagship depends on: a mechanics model that animates on a driven
+    // schedule, makes no physics claim, and says so in simplifications is exactly the depiction `02`
+    // accepts. Accusing it would flag the platform's own reference turbofan.
+    const result = audit(`
+      scene.describe({ name: 'Cutaway engine', description: 'An animation, not a simulation.',
+        domain: 'mechanics', concept: 'the mechanism is the lesson',
+        objectives: ['watch the parts move'],
+        simplifications: ['Part motion is animated on a driven schedule, not simulated'] });
+      scene.param({ id: 'rpm', kind: 'number', label: 'Speed', unit: 'rpm', min: 0, max: 10,
+        default: 5, affects: [{ channel: 'motionRate' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'wheel', name: 'Wheel',
+        geometry: geom.cylinder({ radius: 0.3, height: 0.06, segments: 24 }), material: m });
+      scene.motion({ id: 'spin', partId: 'wheel', kind: 'spin', axis: [0, 0, 1],
+        rate: { param: 'rpm' }, reason: 'The driven schedule turns the wheel.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const physicsFindings = (deficienciesFor(result, 'completeness') ?? []).filter(
+      (d) => d.subjectId === 'physics',
+    );
+    expect(physicsFindings, 'an honest depiction must not be accused of missing physics').toEqual(
+      [],
+    );
+  });
+});
+
 describe('the reference turbofan — the regression guard', () => {
   it('audits clean on parameter leverage: every control, including cutaway, provably drives something', () => {
     // The flagship must survive the stricter audit. Before the cutaway toggle was implemented
@@ -561,12 +645,14 @@ describe('the reference turbofan — the regression guard', () => {
     expect(fidelity?.score, 'gear + helix + sdf bonuses must survive the stricter check').toBe(100);
   });
 
-  it('scores 91 with zero deficiencies — the read-out, reference and unit checks must not fire on the flagship', () => {
+  it('scores 91 with zero deficiencies — the read-out, reference, unit and physics checks must not fire on the flagship', () => {
     // The controller's rule: "a stricter audit that rejects the flagship is wrong, not the model."
     // The reference publishes all three of its metrics from onFrame as functions of the parameters
     // they summarize, declares a unit on its rate parameter (rpm), is deliberately dimensionless
     // where reality is (bypass ratio), and every id it names resolves. Score 91 is the published
-    // baseline; a change here means a check fired where no defect exists.
+    // baseline; a change here means a check fired where no defect exists. It is `mechanics` and
+    // simulates nothing — an animation — but declares no physics claim, so the v8 physics check
+    // (which catches a promised solver, not an honest depiction) must leave it unflagged.
     const result = audit(REFERENCE_MODEL_SOURCE);
     expect(result.ok, result.ok ? '' : result.message).toBe(true);
     if (!result.ok) return;

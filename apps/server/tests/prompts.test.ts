@@ -93,6 +93,35 @@ describe('the generation prompt', () => {
     expect(prompt).not.toContain('your program must reach this standard');
     expect(prompt).not.toContain("see the example's period");
   });
+
+  it('offers physics as a progressive enhancement — simulate to feel or predict, else declare the depiction', () => {
+    // v8, narrowed to what the lesson turns on, per `02`: "When a model uses physics, it must
+    // demonstrate mechanics, not depict them", and "Physics is a progressive enhancement." The
+    // clause must carry BOTH halves — reach for the solver when the learner is meant to perturb or
+    // predict, and declare an honest depiction rather than silently animating forces — plus the
+    // worked form showing the real call shape (a solver declaration is easy to invent wrong).
+    expect(prompt).toContain('Physics is a progressive enhancement, not a requirement');
+    expect(prompt).toContain('FEEL or PREDICT');
+    expect(prompt).toContain('Animation is legitimate');
+    expect(prompt).toContain('animated on a driven schedule, not simulated');
+    expect(prompt).toContain('must NOT declare physics');
+    expect(prompt).toContain("ctx.motor('arm'");
+  });
+
+  it('forbids a helix as the primary representation of a plain sine wave — the mathematics rule', () => {
+    // v1's single highest-value rule. An ambitious generator draws a sine as a wrapping helix, and
+    // a sine wrapped around a cylinder teaches nothing; the textbook graph is mandatory and the
+    // forbidden representation is named so it cannot be reached for by mistake.
+    expect(prompt).toContain('textbook graph');
+    expect(prompt).toContain('FORBIDDEN as the primary representation');
+    expect(prompt).toContain('helix, tube, spiral or spatial wave');
+  });
+
+  it('requires archetype classification and a causal map before coding, rejecting the floating battery', () => {
+    expect(prompt).toContain('ARCHETYPE:');
+    expect(prompt).toContain('CAUSAL MAP:');
+    expect(prompt).toContain('floating-battery failure');
+  });
 });
 
 describe('the repair prompt', () => {

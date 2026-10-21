@@ -35,6 +35,16 @@
  *    `pedagogy` at `minor` severity, naming the playable vocabulary, rather than credited. The
  *    reference turbofan declares only `flyTo` shots, so the exemplar stays unflagged.
  *
+ *  - **Physics honesty**: `02` makes physics "a progressive enhancement" and accepts a correct
+ *    depiction, so the audit cannot accuse a force-governed topic merely for animating — the
+ *    reference turbofan is exactly that, and the prompt ships it as the model to imitate. It catches
+ *    the machine-checkable contradiction instead: a model that *declares* physics intent (a
+ *    `physics`-channel parameter, a `physics`-source read-out, or an `applyImpulse` interaction) but
+ *    declares no `scene.physics` world — `minor`, worded as a trade-off (simulate, or declare the
+ *    depiction in simplifications), so an honest animation is never accused and a minor never
+ *    touches refinement. The opposite failure — a declared world with zero bodies — is `major`: the
+ *    model declared a solver and gave it nothing to move.
+ *
  * What the audit deliberately does **not** claim, because a manifest cannot carry the evidence:
  * whether a constant is real, a proportion is right, a causal direction is correct or a formula is
  * true — textbook *accuracy* has no machine-checkable dimension here and lives in the prompt's
@@ -838,6 +848,50 @@ export function auditModel(input: AuditInput): AuditOutcome {
       finding: `The model issues ${manifest.cost.drawCalls} draw calls; this device's budget is ${budgetTable.maxDrawCalls}.`,
       instruction:
         'Repeated or static structure must be instanced (scene.instances) or authored as one component placed many times — not individual meshes.',
+    });
+  }
+
+  // ── Physics honesty: a solver promised but not declared ───────────────────
+  //
+  // `02` makes physics a progressive enhancement and accepts an honest depiction: a cutaway engine
+  // whose parts move on a driven schedule teaches correctly, and animating it is legitimate. So the
+  // audit does not accuse a force-governed topic merely for lacking a solver — that would flag the
+  // platform's own reference turbofan, an animation the prompt tells the model to imitate. It
+  // catches the machine-checkable contradiction instead: a model that DECLARES physics intent (a
+  // parameter that feeds the `physics` channel, a `physics`-source read-out, or an `applyImpulse`
+  // interaction) but declares no `scene.physics` world — promises that do nothing without a solver.
+  // The finding is an instruction, not an accusation (`minor`, never sent to paid refinement),
+  // naming the trade-off: simulate when the learner must perturb or predict, or declare the
+  // depiction in simplifications. A declared world with zero bodies is the opposite failure and is
+  // `major`: the model declared a solver and gave it nothing to move.
+  const physicsClaims: string[] = [];
+  if (manifest.parameters.some((p) => p.affects.some((a) => a.channel === 'physics'))) {
+    physicsClaims.push('a parameter bound to the physics channel');
+  }
+  if (manifest.metrics.some((m) => m.source === 'physics')) {
+    physicsClaims.push('a physics-sourced read-out');
+  }
+  if (manifest.interactions.some((i) => i.kind === 'applyImpulse')) {
+    physicsClaims.push('an impulse interaction');
+  }
+  if (manifest.physics && manifest.physics.bodies.length === 0) {
+    deficiencies.push({
+      dimension: 'completeness',
+      severity: 'major',
+      finding:
+        'The model declares a physics world but no bodies, so nothing in it can be simulated — a solver with nothing to move.',
+      instruction:
+        'Add at least one body to scene.physics.bodies, bound to a part with a material density or explicit mass and a collider, so the solver has something to move.',
+      subjectId: 'physics',
+    });
+  } else if (manifest.physics === undefined && physicsClaims.length > 0) {
+    deficiencies.push({
+      dimension: 'completeness',
+      severity: 'minor',
+      finding: `The model promises a solver it never declares (${physicsClaims.join(', ')}) but there is no scene.physics, so those controls, read-outs and impulses do nothing.`,
+      instruction:
+        'If the learner is meant to perturb or predict this motion, declare scene.physics in SI units — a world, at least one body bound to a part with a real density or mass, and the joint or gravity that acts on it. If the motion is a depiction the learner is not meant to disturb, say so instead in pedagogy.simplifications ("part motion is animated on a driven schedule, not simulated") and drop the physics claim. Physics is a progressive enhancement, not a requirement.',
+      subjectId: 'physics',
     });
   }
 

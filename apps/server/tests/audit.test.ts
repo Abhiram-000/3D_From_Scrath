@@ -294,11 +294,14 @@ describe('read-out liveness — a lying number', () => {
 });
 
 describe('referential integrity — every declared id must resolve', () => {
-  it('flags dangling quiz, story, setParameters and affects references', () => {
-    // Verified unchecked upstream: `scene.motion` and `scene.interaction` throw on a missing
-    // partId at authoring time, but story targets, story setParameters, shot targets, quiz
-    // evidence ids, motion pathIds, affects partIds and interaction targetIds are all captured
-    // verbatim. The learner taps "show me the evidence" and nothing happens.
+  it('flags dangling quiz, story, shot and affects references', () => {
+    // The boundary refuses what it can prove wrong while the generator is still listening —
+    // `scene.motion` and `scene.interaction` throw on a missing partId, and so do a story beat's
+    // `setParameters` keys and a motion's `pathId` (added after live verification watched a
+    // generation die minutes later on exactly those). What remains is captured verbatim: story
+    // targets, story-beat shot targets, shot targets, quiz evidence ids and `affects.partId`
+    // entries. The learner taps "show me the evidence" and nothing happens, so the audit is the
+    // last thing standing between that manifest and the learner.
     const result = audit(`
       scene.describe({ name: 'Broken lesson', description: 'References that point nowhere.',
         concept: 'ids must resolve', objectives: ['find the evidence'] });
@@ -309,7 +312,7 @@ describe('referential integrity — every declared id must resolve', () => {
       scene.shot('ghostShot', { kind: 'flyTo', targetPartId: 'ghostShotTarget', duration: 1 });
       scene.story([
         { id: 'b1', title: 'Ghost', narration: 'This beat points at parts that do not exist.',
-          targetPartId: 'ghostPart', setParameters: { ghostParam: 2 },
+          targetPartId: 'ghostPart',
           shots: [{ kind: 'flyTo', targetPartId: 'ghostBeatTarget' }] },
       ]);
       scene.quiz([
@@ -317,8 +320,6 @@ describe('referential integrity — every declared id must resolve', () => {
           explanation: 'A is right because it is; B is wrong because it is not.',
           evidencePartId: 'ghostEvidence' },
       ]);
-      scene.motion({ id: 'drift', partId: 'p', kind: 'flowAlongPath', pathId: 'ghostPath',
-        reason: 'Flows along an undeclared path.' });
       scene.onFrame(function (ctx) {
         ctx.part('p').setPosition(ctx.params.speed, 0, 0);
       });
@@ -330,10 +331,8 @@ describe('referential integrity — every declared id must resolve', () => {
     const missing = new Set(dangling.map((d) => d.subjectId));
     for (const id of [
       'ghostPart',
-      'ghostParam',
       'ghostBeatTarget',
       'ghostEvidence',
-      'ghostPath',
       'ghostTarget',
       'ghostShotTarget',
     ]) {
@@ -343,6 +342,32 @@ describe('referential integrity — every declared id must resolve', () => {
     // The completeness score must actually suffer, not just record findings.
     const completeness = result.report.dimensions.find((d) => d.dimension === 'completeness');
     expect(completeness && completeness.score < 100).toBe(true);
+  });
+
+  it('refuses the two dangling ids it can prove at the authoring boundary, before any audit', () => {
+    // These used to reach the audit and be scored there (a `minor`-to-`major` finding minutes into a
+    // paid run). They are now refused while the generator is listening, which is why this test reads
+    // the *authoring* message rather than a deficiency: a source that sets an undeclared parameter
+    // or flows along an undeclared path never becomes a manifest at all.
+    const badParameter = audit(`
+      scene.describe({ name: 'Ghost parameter', description: 'x', concept: 'x', objectives: ['y'] });
+      scene.story([{ id: 'b1', title: 't', narration: 'n', setParameters: { ghostParam: 2 } }]);
+    `);
+    expect(badParameter.ok).toBe(false);
+    if (badParameter.ok) return;
+    expect(badParameter.message).toMatch(/story beat 'b1' sets parameter 'ghostParam'/);
+    expect(badParameter.message).toMatch(/scene\.param\(\{ id: 'ghostParam'/);
+
+    const badPath = audit(`
+      scene.describe({ name: 'Ghost path', description: 'x', concept: 'x', objectives: ['y'] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.motion({ id: 'drift', partId: 'p', kind: 'flowAlongPath', pathId: 'ghostPath',
+        reason: 'Flows along a path nobody declared.' });
+    `);
+    expect(badPath.ok).toBe(false);
+    if (badPath.ok) return;
+    expect(badPath.message).toMatch(/motion 'drift' pathId names path 'ghostPath'/);
   });
 
   it('accepts a model whose ids all resolve', () => {

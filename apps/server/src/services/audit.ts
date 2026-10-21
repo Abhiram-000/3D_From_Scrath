@@ -17,12 +17,15 @@
  *    for sliders. Scored and reported under `information` (read-outs are information surfaces);
  *    deliberately not under `parameterLeverage`, because the pipeline harvests *that* dimension's
  *    subjectIds into `unboundParameterIds` and a metric id must never travel as a parameter id.
- *  - **Referential integrity**: story targets, story `setParameters`, shot targets, quiz evidence
- *    ids, `affects.partId` entries, motion `pathId`s and interaction targetIds are captured
- *    verbatim by the authoring pass with no resolution check (unlike `motion.partId` and
- *    `interaction.partId`, which `scene.ts` throws on at authoring time). A dangling id is a
- *    broken lesson — the learner taps "show me the evidence" and nothing happens — so every
- *    declared id must resolve, scored under `completeness`.
+ *  - **Referential integrity**: story targets, story-beat shot targets, shot targets, quiz evidence
+ *    ids and `affects.partId` entries are captured verbatim by the authoring pass with no resolution
+ *    check, so a dangling id here is a broken lesson — the learner taps "show me the evidence" and
+ *    nothing happens. Every declared id must resolve, scored under `completeness`. (Two ids that used
+ *    to be in this list moved upstream after live verification watched a run die minutes later on
+ *    them: a story beat's `setParameters` keys and a motion's `pathId` are now refused by the
+ *    authoring boundary while the generator is still listening. The sweep below still checks them,
+ *    because it is one walk over the manifest and it is the last thing between a *stored* manifest
+ *    and a learner.)
  *  - **Unit discipline on physical controls**: a number parameter that supplies a declared motion's
  *    rate/amplitude or feeds the physics solver, declared with no unit (or an empty one), is not
  *    quantitative — `00`'s hard contract demands real units. Severity is deliberately `minor`:

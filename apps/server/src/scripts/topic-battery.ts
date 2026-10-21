@@ -34,7 +34,10 @@ import { PROMPT_VERSION } from '../services/prompts.ts';
 import { resolveConfig, type ServerConfig } from '../config/config.ts';
 import { BATTERY_REQUEST_HEADER, BATTERY_REQUEST_VALUE } from '../services/rate-limits.ts';
 
-const API = 'http://127.0.0.1:8787';
+// Where the battery points. Overridable because the target is a deployment choice: pinning it to
+// 8787 meant the battery could only ever run against whatever happened to hold that port, which is
+// no use when a second instance is up for a measurement.
+const API = process.env.EDU3D_BATTERY_API ?? 'http://127.0.0.1:8787';
 
 /** The fixed battery: one topic per domain row in `00`'s spectrum, per the doc's own test. */
 const BATTERY: ReadonlyArray<{ topic: string; domain: string }> = [

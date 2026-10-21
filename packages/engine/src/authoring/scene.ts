@@ -35,9 +35,13 @@ import {
   type QuizQuestion,
   type ShotDecl,
   type StoryBeat,
+  InteractionKind,
   MAX_INSTANCES_PER_SET,
   MAX_PARTS,
   PhysicsDecl as PhysicsDeclSchema,
+  ShotEasing,
+  ShotKind,
+  StoryBeat as StoryBeatSchema,
 } from '@edu3d/contracts';
 import { GeometryFactory, type GeometryHandle, type PathHandle } from '../geometry/factory.ts';
 import { MaterialFactory, type MaterialHandle } from '../materials/factory.ts';
@@ -54,6 +58,51 @@ export class SceneError extends Error {
 }
 
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
+
+/**
+ * Camera shots are a documented capability the model is told to copy, so an invented kind used to
+ * survive the whole build and die only at manifest validation — minutes into a *paid* generation,
+ * as `generation_unrepairable: camera.shots.<id>.kind: Invalid option`, because the repair pass
+ * re-sends the same documentation that taught the kind. Named shots, story-beat shots and
+ * interaction shots share `ShotDecl`, so they share one refusal here at the boundary, in the same
+ * house style as an unknown part id: hard, immediate, and naming every legal alternative.
+ */
+const SHOT_KIND_LIST = ShotKind.options.join(', ');
+const SHOT_EASING_LIST = ShotEasing.options.join(', ');
+
+/** Reflected from the `StoryBeat` schema, so this list cannot drift from what manifest validation accepts. */
+const ViewModeList = StoryBeatSchema.shape.viewMode.unwrap().options;
+
+/** Throw unless the raw authored shot object carries a legal kind and easing. `label` names the call site. */
+const assertShotShape = (label: string, kind: unknown, easing: unknown): void => {
+  const kindText = String(kind ?? 'flyTo');
+  if (!(ShotKind.options as readonly string[]).includes(kindText)) {
+    throw new SceneError(
+      `${label} uses shot kind '${kindText}', which is not one of the platform's shot kinds. ` +
+        `Supported kinds: ${SHOT_KIND_LIST} ` +
+        `(e.g. scene.shot('myShot', { kind: 'flyTo', targetPartId: 'partId' })).`,
+    );
+  }
+  const easingText = String(easing ?? 'easeInOut');
+  if (!(ShotEasing.options as readonly string[]).includes(easingText)) {
+    throw new SceneError(
+      `${label} uses easing '${easingText}', which is not one of the platform's shot curves. ` +
+        `Supported easings: ${SHOT_EASING_LIST}.`,
+    );
+  }
+};
+
+/** The same refusal for `scene.interaction`'s own kind, which types the interaction, not a camera move. */
+const assertInteractionKind = (partId: string, kind: unknown): void => {
+  const kindText = String(kind ?? 'select');
+  if (!(InteractionKind.options as readonly string[]).includes(kindText)) {
+    throw new SceneError(
+      `interaction on part '${partId}' uses kind '${kindText}', which is not one of the ` +
+        `platform's interaction kinds. Supported kinds: ${InteractionKind.options.join(', ')} ` +
+        `('playShot' takes a shot object; 'custom' takes a handlerId).`,
+    );
+  }
+};
 
 /**
  * A per-frame handle onto one declared part.
@@ -1282,6 +1331,7 @@ export class SceneBuilder {
       /** Register a named cinematic shot, replayable from a story beat or an interaction (`00`). */
       shot: (name: string, spec: Record<string, unknown>): void => {
         const id = this.requireId(name, 'shot name');
+        assertShotShape(`shot '${id}'`, spec?.kind, spec?.easing);
         this.shots.set(id, {
           kind: (spec?.kind ?? 'flyTo') as never,
           duration: clamp(Number(spec?.duration ?? 1.2), 0, 60),
@@ -1316,12 +1366,30 @@ export class SceneBuilder {
         if (!Array.isArray(beats)) throw new SceneError('scene.story expects an array of beats.');
         for (const beat of beats.slice(0, 12)) {
           const id = this.requireId(beat?.id, 'story beat id');
+          const beatShots = Array.isArray(beat?.shots) ? beat.shots.slice(0, 6) : [];
+          // Beat shots ride the same ShotDecl schema as named shots, so an invented kind must be
+          // refused with the same message the named-shot builder gives — the story path is where
+          // the failing `camera.shots.bobClose` came from.
+          for (const [index, shot] of beatShots.entries()) {
+            const entry = (shot ?? {}) as Record<string, unknown>;
+            assertShotShape(`story beat '${id}' shot ${index + 1}`, entry.kind, entry.easing);
+          }
+          const viewMode = beat?.viewMode;
+          if (
+            viewMode !== undefined &&
+            !(ViewModeList as readonly string[]).includes(String(viewMode))
+          ) {
+            throw new SceneError(
+              `story beat '${id}' uses viewMode '${String(viewMode)}', which is not one of the ` +
+                `platform's view modes. Supported modes: ${ViewModeList.join(', ')}.`,
+            );
+          }
           this.story.push({
             id,
             title: this.requireText(beat?.title, `beat '${id}' title`, 120),
             narration: this.requireText(beat?.narration, `beat '${id}' narration`, 1200),
             ...(beat?.targetPartId ? { targetPartId: String(beat.targetPartId) } : {}),
-            shots: Array.isArray(beat?.shots) ? (beat.shots as ShotDecl[]).slice(0, 6) : [],
+            shots: beatShots as ShotDecl[],
             ...(beat?.setParameters ? { setParameters: beat.setParameters as never } : {}),
             ...(beat?.holdSeconds !== undefined
               ? { holdSeconds: clamp(Number(beat.holdSeconds), 1, 60) }
@@ -1385,6 +1453,14 @@ export class SceneBuilder {
         const partId = this.requireId(spec?.partId, 'interaction.partId');
         if (!this.parts.has(partId)) {
           throw new SceneError(`interaction targets part '${partId}', which does not exist.`);
+        }
+        // A kind the schema rejects used to ride through as `any` and die only at manifest
+        // validation — and the documented example itself used 'toggle', which no schema accepts.
+        // 'playShot' carries an inline shot, validated with the same refusal as scene.shot.
+        assertInteractionKind(partId, spec?.kind);
+        if (spec?.shot !== undefined && spec.shot !== null) {
+          const shot = spec.shot as Record<string, unknown>;
+          assertShotShape(`interaction shot on part '${partId}'`, shot.kind, shot.easing);
         }
         this.interactions.push({
           partId,

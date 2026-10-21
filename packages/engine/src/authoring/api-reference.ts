@@ -23,9 +23,33 @@
  * member. A builder added to the engine without documentation fails the build; documentation for a
  * removed builder fails the build.
  *
- * This module is pure data with no imports — no DOM, no engine code — so the server can import it
- * into prompt assembly and the whole table stays tree-shakeable, printable and diffable.
+ * The same discipline applies to the closed vocabularies the table spells out: the shot-kind,
+ * shot-easing and interaction-kind unions are rendered from the frozen zod enums in `@edu3d/contracts`
+ * (`presentation.ts` / `behavior.ts`) rather than retyped — a hand-maintained union once taught the
+ * model `sweep` and `closeUp`, kinds no schema accepted, and following that documentation lost real
+ * generations to `camera.shots.<id>.kind: Invalid option`. The weld test covers the table entries
+ * against the same enums, in both directions, so neither side can move alone.
+ *
+ * This module is pure data — its only imports are the contract enums it renders, no DOM, no engine
+ * code — so the server can import it into prompt assembly and the whole table stays tree-shakeable,
+ * printable and diffable.
  */
+
+import {
+  InteractionKind,
+  ShotEasing,
+  ShotKind,
+  StoryBeat as StoryBeatSchema,
+} from '@edu3d/contracts';
+
+/** Quoted unions rendered from the contract enums — the table must not retype what the schema owns. */
+const SHOT_KIND_UNION = ShotKind.options.map((kind) => `'${kind}'`).join('|');
+const SHOT_EASING_UNION = ShotEasing.options.map((curve) => `'${curve}'`).join('|');
+const INTERACTION_KIND_UNION = InteractionKind.options.map((kind) => `'${kind}'`).join('|');
+const VIEW_MODE_UNION = StoryBeatSchema.shape.viewMode
+  .unwrap()
+  .options.map((mode) => `'${mode}'`)
+  .join('|');
 
 /** One reference entry: the call shape, the purpose, and a copy-pasteable correct call. */
 export interface ApiReferenceEntry {
@@ -1244,10 +1268,10 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
     example: 'scene.camera({ position: [1.2, 0.8, 1.2], target: [0, 0, 0], fov: 45 })',
   },
   'scene.shot': {
-    signature:
-      "scene.shot(name: string, { kind?: 'flyTo'|'orbit'|'follow'|'sweep'|'closeUp', duration?: number, easing?: string, targetPartId?: string, pose?, distance?, sweep?, fov?, margin? }): void",
-    summary: 'A named cinematic move a story beat or interaction can replay.',
-    example: "scene.shot('inside', { kind: 'closeUp', targetPartId: 'demo', duration: 2 })",
+    signature: `scene.shot(name: string, { kind?: ${SHOT_KIND_UNION}, duration?: number, easing?: ${SHOT_EASING_UNION}, targetPartId?: string, pose?: { position?: [x,y,z], target?: [x,y,z], fov?: number }, distance?: number, sweep?: number, fov?: number, margin?: number }): void`,
+    summary:
+      'A named cinematic move a story beat or interaction can replay. flyTo/follow frame a targetPartId; moveTo/cut take a pose; dolly (toward: negative) and crane (up: positive) take signed distance in metres; orbit and pan sweep radians; fovPull takes the destination fov. Orbit composes with dolly/crane in one shot — see scene.story.',
+    example: "scene.shot('inside', { kind: 'flyTo', targetPartId: 'demo', duration: 2 })",
   },
   'scene.environment': {
     signature:
@@ -1256,9 +1280,9 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
     example: "scene.environment({ preset: 'studio', grid: true })",
   },
   'scene.story': {
-    signature:
-      'scene.story(beats: [{ id: string, title: string, narration: string, targetPartId?: string, shots?: any[], setParameters?: any, holdSeconds?: number, viewMode?: any }]): void',
-    summary: '3–6 beats along the causal arc; each narration is one plain-language idea.',
+    signature: `scene.story(beats: [{ id: string, title: string, narration: string, targetPartId?: string, shots?: [{ kind?: ${SHOT_KIND_UNION}, duration?: number, targetPartId?: string }], setParameters?: { parameterId: number | boolean | string }, holdSeconds?: number, viewMode?: ${VIEW_MODE_UNION} }]): void`,
+    summary:
+      '3–6 beats along the causal arc; each narration is one plain-language idea. Beat shots move the camera for that beat; default is an eased fly-to of targetPartId.',
     example:
       "scene.story([{ id: 'b1', title: 'The swing', narration: 'Gravity pulls the bob back; the rod turns pull into a curve.', targetPartId: 'demo' }])",
   },
@@ -1275,11 +1299,11 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
 }]);`,
   },
   'scene.interaction': {
-    signature:
-      "scene.interaction({ partId: string, on?: 'click'|'hover', kind?: 'select'|'toggle'|'setParameter'|'shot'|'impulse'|'handler', targetId?: string, value?: any, shot?: any, impulse?: [x,y,z], handlerId?: string, hint?: string }): void",
-    summary: 'Behaviour beyond selection on an existing part (declare the part first).',
+    signature: `scene.interaction({ partId: string, on?: 'click'|'doubleClick'|'hover'|'longPress', kind?: ${INTERACTION_KIND_UNION}, targetId?: string, value?: number | boolean | string, shot?: { kind?: ${SHOT_KIND_UNION}, duration?: number, targetPartId?: string }, impulse?: [x,y,z], handlerId?: string, hint?: string }): void`,
+    summary:
+      "Behaviour beyond selection on an existing part (declare the part first). 'playShot' replays its inline shot; 'startStoryBeat' takes the beat id as targetId; 'applyImpulse' takes impulse; 'custom' takes a handlerId registered with scene.onInteraction.",
     example:
-      "scene.interaction({ partId: 'demo', on: 'click', kind: 'toggle', targetId: 'demo', hint: 'Click to pause the mechanism' })",
+      "scene.interaction({ partId: 'demo', on: 'click', kind: 'toggleVisibility', targetId: 'demo', hint: 'Click to see inside' })",
   },
   'scene.onFrame': {
     signature:
@@ -1304,7 +1328,7 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
   },
   'scene.onInteraction': {
     signature: 'scene.onInteraction(id: string, callback: (partId: string) => void): void',
-    summary: "Register a named handler a scene.interaction { kind: 'handler' } invokes.",
+    summary: "Register a named handler a scene.interaction { kind: 'custom' } invokes.",
     example: "scene.onInteraction('pulse', function (partId) { console.log('pulse', partId); })",
   },
   'scene.physics': {

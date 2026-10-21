@@ -29,6 +29,9 @@ import {
   isTerminalEvent,
   SANDBOX_LIMITS,
   TRANSFORM_STRIDE,
+  ShotKind,
+  ShotDecl,
+  ShotEasing,
 } from '../src/index.ts';
 
 describe('primitives', () => {
@@ -51,6 +54,50 @@ describe('primitives', () => {
     expect(AuthoredId.safeParse('drop table;').success).toBe(false);
     expect(AuthoredId.safeParse('<script>').success).toBe(false);
     expect(AuthoredId.safeParse('').success).toBe(false);
+  });
+});
+
+describe('the shot vocabulary', () => {
+  it('carries exactly the vocabulary `00-GOAL.md` promises, each kind mapping to one promised move', () => {
+    // cut = the instant transition, moveTo = the eased move, flyTo = fly-to/focus,
+    // orbit = the reveal orbit, follow = the follow shot, dolly = dolly/push-in,
+    // crane = the crane, pan = the pan, fovPull = the zoom (FOV) pull. Auto-rotate is
+    // deliberately NOT a shot kind: it is CameraLimits.autoRotate, an idle state.
+    expect([...ShotKind.options]).toEqual([
+      'cut',
+      'moveTo',
+      'flyTo',
+      'orbit',
+      'follow',
+      'dolly',
+      'crane',
+      'pan',
+      'fovPull',
+    ]);
+  });
+
+  it('rejects the invented kinds stale documentation taught models to copy', () => {
+    // 'sweep' and 'closeUp' were shown as legal in the prompt's API reference table while no
+    // schema accepted them — the exact makeup of a real `generation_unrepairable` run (a model
+    // copied the documented example, and the repair pass re-sent the same table).
+    expect(ShotKind.safeParse('sweep').success).toBe(false);
+    expect(ShotKind.safeParse('closeUp').success).toBe(false);
+    expect(ShotDecl.safeParse({ kind: 'closeUp', targetPartId: 'demo' }).success).toBe(false);
+  });
+
+  it('accepts a full shot declaration, and fills the defaults playback reads', () => {
+    const parsed = ShotDecl.parse({
+      kind: 'flyTo',
+      targetPartId: 'demo',
+      duration: 2,
+    });
+    expect(parsed.easing).toBe('easeInOut');
+    expect(parsed.margin).toBe(1.35);
+  });
+
+  it('rejects an easing outside the documented curves', () => {
+    expect(ShotEasing.safeParse('snappy').success).toBe(false);
+    expect(ShotDecl.safeParse({ kind: 'flyTo', easing: 'snappy' }).success).toBe(false);
   });
 });
 

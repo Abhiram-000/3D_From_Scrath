@@ -11,7 +11,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { prepareProgram, describeViolations, createGuard } from '@edu3d/sandbox';
+import { InteractionKind, ModelManifest, ShotEasing, ShotKind } from '@edu3d/contracts';
 import { apiSurfaceSet, describeApiSurface } from '../src/authoring/api-surface.ts';
+import { API_REFERENCE } from '../src/authoring/api-reference.ts';
 import { authorModel, runFrame } from '../src/authoring/guest.ts';
 import { applyMotions, type PartTransformLike } from '../src/runtime/motions.ts';
 import { MINIMAL_MODEL_SOURCE, REFERENCE_MODEL_SOURCE } from '../src/reference/turbofan.ts';
@@ -572,5 +574,135 @@ describe('authoring failures are reported, never thrown', () => {
     `);
     expect(result.ok).toBe(true);
     expect(result.logs.map((entry) => entry.message)).toContain('building 42');
+  });
+});
+
+/**
+ * The shot vocabulary is a documented capability: the prompt's API reference table shows a
+ * call, the model copies it, and the manifest schema validates the result. When the table and
+ * the schema disagree, following the documentation is a guaranteed generation failure — the
+ * repair pass re-sends the same table, so the bad call survives every repair budget and dies
+ * as `generation_unrepairable: camera.shots.<id>.kind: Invalid option` after minutes of paid
+ * generation. These tests weld the three surfaces together: authoring validation (fail the
+ * build, cheaply, naming the legal kinds), the manifest schema, and the prompt table itself.
+ */
+describe('the cinematic shot vocabulary', () => {
+  const PROGRAM_WITH_SHOT = (shotCall: string) => `
+    scene.describe({ name: 'Shot', description: 'Camera vocabulary.', concept: 'x', objectives: ['y'] });
+    scene.mesh({ id: 'a', geometry: geom.box([1, 1, 1]), material: mat.metal({}) });
+    ${shotCall}
+  `;
+
+  it('builds the scene.shot example exactly as the prompt table documents it, and the manifest still validates', () => {
+    // The literal call documented at API_REFERENCE['scene.shot'] — the pattern a generated
+    // program is told to copy. Following it used to survive authoring, then die as
+    // `camera.shots.<id>.kind: Invalid option` at manifest validation, 199 s into a real
+    // generation. The documented example must produce a manifest the schema accepts.
+    const example = API_REFERENCE['scene.shot']?.example ?? '';
+    expect(example, 'the table must carry a scene.shot example').toMatch(/scene\.shot\(/);
+    const result = author(PROGRAM_WITH_SHOT(example));
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    expect(Object.keys(result.manifest.camera.shots)).toHaveLength(1);
+    const parsed = ModelManifest.safeParse(result.manifest);
+    expect(
+      parsed.success === true,
+      JSON.stringify(parsed.success === true ? [] : parsed.error.issues),
+    ).toBe(true);
+  });
+
+  it('a legal shot of every documented kind builds and its manifest validates', () => {
+    const result = author(
+      `${PROGRAM_WITH_SHOT(
+        [
+          ...ShotKind.options.map(
+            (kind) =>
+              `scene.shot('shot_${kind.replace(/([A-Z])/g, '_$1').toLowerCase()}', { kind: '${kind}' });`,
+          ),
+          'scene.shot("direct_dolly", { kind: \'dolly\', distance: -0.4, duration: 2 });',
+          'scene.shot("direct_orbit", { kind: \'orbit\', sweep: 1.5, duration: 4 });',
+        ].join('\n'),
+      )}`,
+    );
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const kinds = Object.values(result.manifest.camera.shots).map((shot) => shot.kind);
+    expect(new Set(kinds)).toEqual(new Set(ShotKind.options));
+    const parsed = ModelManifest.safeParse(result.manifest);
+    expect(parsed.success, JSON.stringify(parsed.success === true ? [] : parsed.error.issues)).toBe(
+      true,
+    );
+  });
+
+  it('refuses an invented shot kind at authoring, naming every legal kind', () => {
+    // The generation failure reproduced at its source: a kind that survives the builder and is
+    // only rejected at manifest validation costs a paid generation to discover. The build must
+    // fail here, now, with the alternatives spelled out.
+    for (const invented of ['closeUp', 'sweep']) {
+      const result = author(PROGRAM_WITH_SHOT(`scene.shot('inside', { kind: '${invented}' });`));
+      expect(result.ok, `${invented} must fail at authoring`).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toMatch(new RegExp(`'${invented}'`));
+      for (const legal of ShotKind.options) expect(result.message).toMatch(legal);
+    }
+  });
+
+  it('refuses an invented story-beat shot kind at authoring, naming every legal kind', () => {
+    // The story path is where the failing `camera.shots.bobClose` shot came from: beats and
+    // named shots share the ShotDecl schema, so an invented kind must fail equally loudly
+    // whichever way it arrives.
+    const result = author(
+      PROGRAM_WITH_SHOT(
+        `scene.story([{ id: 'b1', title: 'The swing', narration: 'One idea per beat, as the schema requires.', shots: [{ kind: 'closeUp', targetPartId: 'a' }] }]);`,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/'closeUp'/);
+    for (const legal of ShotKind.options) expect(result.message).toMatch(legal);
+  });
+
+  it('accepts a story-beat shot of a legal kind', () => {
+    const result = author(
+      PROGRAM_WITH_SHOT(
+        `scene.story([{ id: 'b1', title: 'The swing', narration: 'One idea per beat, as the schema requires.', shots: [{ kind: 'flyTo', targetPartId: 'a', duration: 2 }] }]);`,
+      ),
+    );
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.story[0]?.shots[0]?.kind).toBe('flyTo');
+  });
+
+  it('refuses an interaction whose shot kind is invented, and whose kind is undocumented', () => {
+    const badShot = author(
+      PROGRAM_WITH_SHOT(
+        `scene.interaction({ partId: 'a', kind: 'playShot', shot: { kind: 'closeUp', targetPartId: 'a' } });`,
+      ),
+    );
+    expect(badShot.ok).toBe(false);
+    if (!badShot.ok) expect(badShot.message).toMatch(/'closeUp'/);
+
+    // 'toggle' was the documented kind; the schema (and every consumer) spells it 'toggleVisibility'.
+    const badKind = author(
+      PROGRAM_WITH_SHOT(`scene.interaction({ partId: 'a', kind: 'toggle', targetId: 'a' });`),
+    );
+    expect(badKind.ok).toBe(false);
+    if (!badKind.ok) {
+      expect(badKind.message).toMatch(/'toggle'/);
+      for (const legal of InteractionKind.options) expect(badKind.message).toMatch(legal);
+    }
+  });
+
+  it('rejects an invented easing at authoring, naming the documented curves', () => {
+    const result = author(
+      PROGRAM_WITH_SHOT(`scene.shot('inside', { kind: 'flyTo', easing: 'snappy' });`),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toMatch(/'snappy'/);
+      for (const legal of ShotEasing.options) expect(result.message).toMatch(legal);
+    }
   });
 });

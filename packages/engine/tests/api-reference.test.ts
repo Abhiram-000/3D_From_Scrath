@@ -16,6 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { prepareProgram, describeViolations } from '@edu3d/sandbox';
+import { InteractionKind, ShotKind } from '@edu3d/contracts';
 import { apiSurfaceSet, describeApiSurface } from '../src/authoring/api-surface.ts';
 import { API_REFERENCE } from '../src/authoring/api-reference.ts';
 import { authorModel } from '../src/authoring/guest.ts';
@@ -98,6 +99,8 @@ const LOAD_BEARING_MEMBERS = [
   'geom.gear',
   'geom.helix',
   'geom.sweep',
+  'scene.shot',
+  'scene.interaction',
 ] as const;
 
 describe('the load-bearing examples', () => {
@@ -123,4 +126,65 @@ describe('the load-bearing examples', () => {
       expect(result.ok, result.ok ? '' : result.message).toBe(true);
     });
   }
+});
+
+/**
+ * The shot-vocabulary weld, the camera-shaped analogue of the surface welds above.
+ *
+ * The model copies the kinds it reads in the reference table; the manifest schema validates
+ * them. A kind documented but not in the zod enum is an illegal call presented as the pattern
+ * to copy — it survives authoring and dies minutes later as
+ * `generation_unrepairable: camera.shots.<id>.kind: Invalid option`, unrecoverable by repair
+ * (the repair pass re-sends the same table). Both directions must hold: every documented kind
+ * is legal, and every legal kind is documented.
+ */
+describe('the shot-vocabulary weld between the table and the schema', () => {
+  /** The first quoted union after `kind?:` in a signature — the shape the model copies. */
+  const documentedKinds = (signature: string): string[] => {
+    const [union = ''] = signature.split('kind?: ')[1]?.split(', ') ?? [];
+    if (!union) return [];
+    return union
+      .split('|')
+      .map((kind) => kind.trim().replaceAll("'", ''))
+      .filter(Boolean);
+  };
+
+  it('documents every legal shot kind in scene.shot — a documented kind the schema rejects loses whole generations', () => {
+    const documented = documentedKinds(API_REFERENCE['scene.shot']?.signature ?? '');
+    const undocumented = ShotKind.options.filter(
+      (kind) => !(documented as string[]).includes(kind),
+    );
+    expect(undocumented, 'legal kinds the table never shows the model').toEqual([]);
+  });
+
+  it('in scene.shot documents only legal kinds — an invented kind survives authoring and dies at manifest validation', () => {
+    const documented = documentedKinds(API_REFERENCE['scene.shot']?.signature ?? '');
+    const invented = documented.filter(
+      (kind) => !(ShotKind.options as readonly string[]).includes(kind),
+    );
+    expect(invented.sort()).toEqual([]);
+    expect(documented, 'the table must document the vocabulary, not a subset').toHaveLength(
+      ShotKind.options.length,
+    );
+  });
+
+  it('documents every legal interaction kind in scene.interaction — the example kind must be one the schema accepts', () => {
+    const documented = documentedKinds(API_REFERENCE['scene.interaction']?.signature ?? '');
+    expect(documented.sort()).toEqual([...InteractionKind.options].sort());
+    // And the example itself must be a call that passes: 'toggle' read as 'toggleVisibility'
+    // used to be presented as the pattern to copy.
+    const example = API_REFERENCE['scene.interaction']?.example ?? '';
+    const kindInExample = /kind: '([^']+)'/.exec(example)?.[1] ?? '';
+    expect(InteractionKind.options, `example kind '${kindInExample}' must be legal`).toContain(
+      kindInExample,
+    );
+  });
+
+  it('carries the shot-kind union in the story-beat shots entries the schema validates', () => {
+    const documented = documentedKinds(API_REFERENCE['scene.story']?.signature ?? '');
+    const invented = documented.filter(
+      (kind) => !(ShotKind.options as readonly string[]).includes(kind),
+    );
+    expect(invented.sort()).toEqual([]);
+  });
 });

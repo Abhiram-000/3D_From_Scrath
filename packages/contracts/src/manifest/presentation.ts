@@ -38,6 +38,15 @@ export type CameraLimits = z.infer<typeof CameraLimits>;
 /**
  * The shot vocabulary. Every entry here is scriptable from the scene API and composable, because
  * `00` requires "orbit *while* dollying = a spiral shot".
+ *
+ * The nine kinds are exactly the moves `00-GOAL.md` promises in "The shot vocabulary": `cut` the
+ * instant transition, `moveTo` the eased move, `flyTo` fly-to/focus, `orbit` the reveal orbit,
+ * `follow` the follow shot, `dolly` push-in, `crane`, `pan`, and `fovPull` the zoom (FOV) pull.
+ * Idle auto-rotation is deliberately *not* a shot kind — it is `CameraLimits.autoRotate`.
+ * The authoring builder refuses anything else (`scene.ts`), and the prompt's API reference table
+ * renders this union from `ShotKind.options`, so documentation, declaration and validation cannot
+ * drift apart — a hand-maintained union once taught the model kinds no schema accepted, which lost
+ * whole paid generations after a repair pass re-sent the same wrong table.
  */
 export const ShotKind = z.enum([
   'cut',

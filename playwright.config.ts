@@ -10,9 +10,13 @@
  * worker bundling and asset hashing are all part of what can break, and none of them exist in dev.
  */
 import { defineConfig, devices } from '@playwright/test';
+import { tmpdir } from 'node:os';
 
 /** Port kept distinct from the dev server's 5173 so a running `pnpm dev` does not collide with a test run. */
 const PORT = 4173;
+
+/** The deployed configuration's port — the API process serving the built site, distinct from preview. */
+const API_PORT = 4174;
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -68,20 +72,44 @@ export default defineConfig({
     },
   ],
 
-  webServer: {
-    // `--host 127.0.0.1` is load-bearing, not decoration. Vite's preview server binds `localhost`,
-    // which resolves to ::1 first on many systems, so the process is listening on IPv6 while the
-    // `url` below probes IPv4 — the readiness check then never passes and every test fails for a
-    // reason that has nothing to do with the code under test. Pinning the bind to IPv4 makes the
-    // address in `url` the address the server actually holds.
-    command: `pnpm --filter @edu3d/web exec vite preview --host 127.0.0.1 --port ${PORT} --strictPort`,
-    url: `http://127.0.0.1:${PORT}`,
-    // Never reuse a server we did not start. A preview server left over from an earlier run serves
-    // a stale build directory: hashed chunk names 404, the page renders as an empty fallback shell,
-    // and the whole suite fails in a way that looks like an application bug.
-    reuseExistingServer: false,
-    timeout: 120_000,
-    stdout: 'ignore',
-    stderr: 'pipe',
-  },
+  // Two servers, deliberately. `vite preview` is what the *dev* flow looks like, and the suite has
+  // always driven it. It is also, critically, NOT the configuration that ships: preview sets no
+  // Content-Security-Policy, so a viewer that renders there can still refuse to compile a single
+  // model in production. That is exactly how a fatal CSP bug shipped and stayed invisible through a
+  // green suite. The second server below IS the deployed shape — the API process serving the built
+  // site on one origin, policy enforced — so `deployed-viewer.spec.ts` can assert against it.
+  webServer: [
+    {
+      // `--host 127.0.0.1` is load-bearing, not decoration. Vite's preview server binds `localhost`,
+      // which resolves to ::1 first on many systems, so the process is listening on IPv6 while the
+      // `url` below probes IPv4 — the readiness check then never passes and every test fails for a
+      // reason that has nothing to do with the code under test. Pinning the bind to IPv4 makes the
+      // address in `url` the address the server actually holds.
+      command: `pnpm --filter @edu3d/web exec vite preview --host 127.0.0.1 --port ${PORT} --strictPort`,
+      url: `http://127.0.0.1:${PORT}`,
+      // Never reuse a server we did not start. A preview server left over from an earlier run serves
+      // a stale build directory: hashed chunk names 404, the page renders as an empty fallback shell,
+      // and the whole suite fails in a way that looks like an application bug.
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: 'ignore',
+      stderr: 'pipe',
+    },
+    {
+      // The deployed configuration: one origin, the built site, CSP enforced. `EDU3D_WRITE_TOKEN` is
+      // required in production (the server refuses to boot without it) and `ALLOW_EPHEMERAL_STORE`
+      // accepts the file-backed gallery, so the API needs no database to come up here. Port 4174,
+      // distinct from the preview port, so both can run at once.
+      command:
+        `NODE_ENV=production PORT=${API_PORT} HOST=127.0.0.1 TRUST_PROXY=0 ` +
+        `EDU3D_ALLOW_EPHEMERAL_STORE=true EDU3D_WRITE_TOKEN=e2e-read-only ` +
+        `EDU3D_DATA_DIR=${tmpdir()}/edu3d-e2e-gallery ` +
+        `pnpm --filter @edu3d/server exec node --experimental-strip-types src/main.ts`,
+      url: `http://127.0.0.1:${API_PORT}/api/health`,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      stdout: 'ignore',
+      stderr: 'pipe',
+    },
+  ],
 });

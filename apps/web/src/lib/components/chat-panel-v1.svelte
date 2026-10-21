@@ -19,7 +19,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import type { ChatPersona, ModelManifest } from '@edu3d/contracts';
-  import { apiFetch } from '$lib/core/api.ts';
+  import { chatStream } from '$lib/core/api.ts';
   import { SettingsStore } from '$lib/core/settings.ts';
   import { toContext } from '$lib/core/model-context.ts';
 
@@ -62,6 +62,12 @@
   const settings = new SettingsStore();
   let persona = $state<ChatPersona>(settings.current.chatPersona);
   let thinking = $state(false);
+  /**
+   * The id of the assistant bubble currently being streamed into, once its first delta has created
+   * it. Null means "no text yet" — the typing indicator still owns the moment (`05`): a tutor that
+   * shows dots, then letters, reads as thinking-then-writing; one that shows an empty bubble does not.
+   */
+  let streamingId = $state<number | null>(null);
   let nearBottom = $state(true);
   let showScrollButton = $state(false);
 
@@ -134,41 +140,71 @@
       .slice(-12)
       .map((message) => ({ role: message.role, content: message.text }));
 
-    const result = await apiFetch<{ text: string }>('/chat', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      // The tutor streams (`05`): the answer bubble is created on the first delta and grown with
+      // each fragment, so the learner watches it write instead of waiting out a silent call. The
+      // composer stays disabled (via `thinking`) until the ONE terminal event lands.
+      const outcome = await chatStream({
         message: content,
         persona,
         history,
         context: manifest ? toContext(manifest, selectedPart) : undefined,
-        stream: false,
-      }),
-    });
-
-    thinking = false;
-    if (result.ok) {
-      messages = [
-        ...messages,
-        { id: sequence++, role: 'assistant', text: result.data.text, timestamp: now() },
-      ];
-    } else {
-      // A retriable rate limit is tellable: the server's own wait goes in the same sentence.
-      const wait = result.retryAfterSeconds
-        ? ` Try again in about ${result.retryAfterSeconds}s.`
-        : '';
-      input = content;
-      messages = [
-        ...messages,
-        {
-          id: sequence++,
-          role: 'assistant',
-          text: `${result.message}${wait} Your message is back in the box — try again in a moment.`,
-          timestamp: now(),
+        onDelta: (fragment) => {
+          if (streamingId === null) {
+            streamingId = sequence++;
+            messages = [
+              ...messages,
+              { id: streamingId, role: 'assistant', text: fragment, timestamp: now() },
+            ];
+          } else {
+            const id = streamingId;
+            messages = messages.map((message) =>
+              message.id === id ? { ...message, text: message.text + fragment } : message,
+            );
+          }
+          // Keep the newest text in view, but only for a learner already at the bottom (`05`).
+          if (nearBottom) void scrollToBottom(false);
         },
+      });
+
+      if (outcome.ok) {
+        // The terminal `done` carries the authoritative text; the accumulated deltas were the view.
+        finishReply(outcome.text);
+      } else {
+        // A retriable rate limit is tellable: the server's own wait goes in the same sentence. A
+        // mid-stream failure keeps any partial answer and appends the honest error to it.
+        const wait = outcome.retryAfterSeconds
+          ? ` Try again in about ${outcome.retryAfterSeconds}s.`
+          : '';
+        input = content;
+        const notice = `${outcome.message}${wait} Your message is back in the box — try again in a moment.`;
+        finishReply(
+          streamingId !== null
+            ? `${messages.find((message) => message.id === streamingId)?.text ?? ''}\n\n${notice}`
+            : notice,
+        );
+      }
+    } finally {
+      // The terminal event — success, error or cancellation — is what re-enables the composer.
+      thinking = false;
+      streamingId = null;
+      if (nearBottom) void scrollToBottom();
+    }
+  }
+
+  /** Close the in-progress bubble with its final text, creating it if no delta ever arrived. */
+  function finishReply(finalText: string) {
+    if (streamingId !== null) {
+      const id = streamingId;
+      messages = messages.map((message) =>
+        message.id === id ? { ...message, text: finalText } : message,
+      );
+    } else {
+      messages = [
+        ...messages,
+        { id: sequence++, role: 'assistant', text: finalText, timestamp: now() },
       ];
     }
-    if (nearBottom) void scrollToBottom();
   }
 
   /** Escaped text with a constrained **bold** renderer — never raw HTML (`05` trust rule). */
@@ -212,7 +248,7 @@
         </div>
       </div>
     {/each}
-    {#if thinking}
+    {#if thinking && streamingId === null}
       <div class="chat-message ai-message typing-indicator">
         <div class="message-avatar">AI</div>
         <div class="message-content">

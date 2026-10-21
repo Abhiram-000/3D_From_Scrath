@@ -66,7 +66,12 @@ function respondWith(body: () => Response): void {
   );
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  // Some tests below drive fake timers (a provider-dictated backoff); without restoring the real
+  // clock here, every later test's own timers freeze and hang their 20s budget.
+  vi.useRealTimers();
+});
 
 describe('a stream that dies mid-program', () => {
   it('refuses partial text rather than reporting success', { timeout: 20_000 }, async () => {
@@ -522,4 +527,120 @@ describe('a provider-dictated backoff', () => {
       expect(progress.mock.calls.length).toBeGreaterThan(attempts);
     },
   );
+});
+
+/**
+ * A streaming completion must hand the answer over as the provider writes it, not after the call
+ * ends — `05`: "answers should stream token-by-token into the bubble — the tutor is writing,
+ * visibly."
+ *
+ * These pin the two properties the chat route depends on: fragments observed while the call is
+ * still open, and the per-attempt timeout still cutting a stream that never writes (a stalled
+ * stream is a timeout, exactly as on the non-streaming path — never a silent hang).
+ */
+describe('a streaming completion yields text as it is written', () => {
+  /** Poll until `condition` holds, so a microtask ordering is never the thing under test. */
+  async function until(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+    const start = Date.now();
+    while (!condition()) {
+      if (Date.now() - start > timeoutMs) throw new Error('condition was never met');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
+  it('forwards each fragment before the completion resolves', { timeout: 20_000 }, async () => {
+    const encoder = new TextEncoder();
+    let push!: (frame: string) => void;
+    let close!: () => void;
+    // A hand-fed SSE body: the test IS the provider, so it decides exactly when the answer ends.
+    const body = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          push = (frame) => controller.enqueue(encoder.encode(frame));
+          close = () => controller.close();
+        },
+      }),
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => body),
+    );
+
+    const deltas: string[] = [];
+    let settled = false;
+    const pending = new AiClient(config)
+      .completeStream(
+        { maxOutputTokens: 4096, messages: [{ role: 'user', content: 'a tutor answered live' }] },
+        (fragment) => deltas.push(fragment),
+      )
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+
+    push(delta('Air '));
+    push(delta('moves.'));
+    await until(() => deltas.length === 2);
+
+    // The load-bearing assertion: both fragments were in the learner's hands while the call was
+    // STILL open. An implementation that surfaces text only after the completion fails here.
+    expect(settled).toBe(false);
+    expect(deltas).toEqual(['Air ', 'moves.']);
+
+    push(finish('stop'));
+    push(DONE);
+    close();
+
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.text).toBe('Air moves.');
+  });
+
+  it('the attempt timeout aborts a stalled stream', { timeout: 20_000 }, async () => {
+    // A provider that accepted the request and then wrote nothing. The per-attempt timeout must
+    // still fire through the streaming path — the same selfAbort the non-streaming path uses.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: unknown, init?: RequestInit) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener(
+              'abort',
+              () => {
+                try {
+                  controller.error(new DOMException('aborted', 'AbortError'));
+                } catch {
+                  /* already gone */
+                }
+              },
+              { once: true },
+            );
+          },
+        });
+        return Promise.resolve(
+          new Response(body, { headers: { 'content-type': 'text/event-stream' } }),
+        );
+      }),
+    );
+
+    const deltas: string[] = [];
+    const result = await new AiClient(config).completeStream(
+      {
+        maxOutputTokens: 4096,
+        messages: [{ role: 'user', content: 'a silent provider' }],
+        timeoutMs: 40,
+      },
+      (fragment) => deltas.push(fragment),
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    // Same classification as a stalled non-streaming call: our own timeout, retryable — never a
+    // learner cancellation and never the provider's socket death.
+    expect(result.code).toBe('timeout');
+    expect(result.retryable).toBe(true);
+    expect(deltas).toEqual([]);
+  });
 });

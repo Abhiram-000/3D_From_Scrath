@@ -35,6 +35,17 @@ export interface CompletionRequest {
    */
   onProgress?: (chars: number) => void;
   /**
+   * Called with each answer fragment as the provider writes it — the tutor _writing_, visibly,
+   * instead of the learner waiting for the whole reply (`05`: answers stream token-by-token).
+   *
+   * Only `delta.content` is forwarded: `reasoning_content` counts toward `onProgress` but is not
+   * part of the answer, so it is never shown. Supplying this (like `onProgress`) puts the provider
+   * call into SSE mode, so the fragments are a VIEW of a call whose reassembly, failure
+   * classification, retry and abort rules are otherwise identical — the terminal result is the
+   * same `CompletionResult` `complete()` returns.
+   */
+  onDelta?: (delta: string) => void;
+  /**
    * The learner's connection, not a timeout.
    *
    * A minutes-long generation routinely outlives the tab that asked for it. Without this the
@@ -358,6 +369,24 @@ export class AiClient {
     return reported as CompletionResult;
   }
 
+  /**
+   * A completion that also yields the answer as it is written.
+   *
+   * `05`: the tutor must be visibly writing, not silent for ten seconds and then dumping a
+   * paragraph. This runs the IDENTICAL machinery as `complete()` — the same model cascade, typed
+   * retries, drain/learner abort composition, per-attempt timeout and failure classification — and
+   * resolves the identical `CompletionResult`. The one difference: provider SSE text is forwarded to
+   * `onDelta` as each fragment lands, so a caller can render the answer before the call finishes.
+   * Because nothing about the fetch path changes, the attempt timeout still aborts a stalled
+   * stream and the classification of that abort is unchanged.
+   */
+  completeStream(
+    request: CompletionRequest,
+    onDelta: (delta: string) => void,
+  ): Promise<CompletionResult> {
+    return this.complete({ ...request, onDelta });
+  }
+
   /** The same-provider model cascade for a base URL; empty when the provider is unknown. */
   private cascadeFor(baseUrl: string): readonly string[] {
     for (const [host, models] of Object.entries(MODEL_CASCADES)) {
@@ -485,9 +514,10 @@ export class AiClient {
           // was written (finish=length, empty content); 'medium' still plans thoroughly while
           // leaving room for the program itself. Unknown providers ignore the field.
           reasoning_effort: 'medium',
-          // Streaming whenever the caller wants progress, so token arrival is observable instead
-          // of a minutes-long opaque wait. The text is reassembled below; behavior is identical.
-          ...(request.onProgress ? { stream: true } : {}),
+          // Streaming whenever the caller wants progress OR deltas, so token arrival is
+          // observable instead of an opaque wait. The text is reassembled below either way;
+          // behavior is identical.
+          ...(request.onProgress || request.onDelta ? { stream: true } : {}),
         }),
         signal: combined,
       });
@@ -503,10 +533,10 @@ export class AiClient {
       }
 
       // Streaming mode: reassemble SSE chunks into the same shape the non-streaming path returns,
-      // reporting character progress as tokens arrive. Falls back to JSON if the provider ignored
-      // `stream: true` (content-type is the tell).
+      // reporting character progress and forwarding text fragments as tokens arrive. Falls back to
+      // JSON if the provider ignored `stream: true` (content-type is the tell).
       if (
-        request.onProgress &&
+        (request.onProgress || request.onDelta) &&
         (response.headers.get('content-type') ?? '').includes('text/event-stream')
       ) {
         return await this.consumeStream(response, request, selfAbort);
@@ -604,7 +634,9 @@ export class AiClient {
    * Consume an SSE stream, reassembling it into the non-streaming result shape.
    *
    * Chunks carry `delta.content` fragments (and `delta.reasoning_content` on reasoning models —
-   * counted as progress too: thinking IS progress, it is just not text the program keeps). The
+   * counted as progress too: thinking IS progress, it is just not text the program keeps). Each
+   * content fragment is forwarded to `request.onDelta` as it arrives, so a caller can render the
+   * answer live while this method still reassembles and classifies the whole call identically. The
    * finish reason arrives on the final chunk; usage where providers send it.
    */
   private async consumeStream(
@@ -664,9 +696,14 @@ export class AiClient {
             const delta = choice?.delta;
             if (delta?.reasoning_content) reasoningChars += delta.reasoning_content.length;
             const content = delta?.content;
-            if (typeof content === 'string') text += content;
-            else if (Array.isArray(content))
-              text += content.map((part) => part?.text ?? '').join('');
+            if (typeof content === 'string') {
+              text += content;
+              if (content.length > 0) request.onDelta?.(content);
+            } else if (Array.isArray(content)) {
+              const piece = content.map((part) => part?.text ?? '').join('');
+              text += piece;
+              if (piece.length > 0) request.onDelta?.(piece);
+            }
 
             // Throttled progress: every ~400 chars, so a fast stream does not spam the callback.
             const total = text.length + reasoningChars;

@@ -593,6 +593,10 @@ describe('correlation ids reach the responses that bypass context.json', () => {
   it('the chat NDJSON stream carries x-request-id', async () => {
     const chattyAi = {
       complete: async () => ({ ok: true, text: 'Because the fan pushes air.' }),
+      completeStream: async (_request: unknown, onDelta: (text: string) => void) => {
+        onDelta('Because the fan pushes air.');
+        return { ok: true, text: 'Because the fan pushes air.' };
+      },
     } as unknown as AiClient;
     const { app } = appFor({ AI_API_KEY: 'test-key' }, chattyAi);
     const response = await app.request('/api/chat', {
@@ -641,5 +645,145 @@ describe('the CSP follows the configured origins', () => {
     const policy = response.headers.get('content-security-policy');
     expect(policy).toContain("connect-src 'self';");
     expect(policy).not.toContain('edu3d.example');
+  });
+});
+
+/**
+ * The chat stream's contract: real provider deltas forwarded as they arrive, exactly one terminal
+ * event, and the untouched JSON answer for a caller that did not ask for a stream (`05` streaming).
+ */
+describe('the chat stream — real deltas, one terminal event, JSON on request', () => {
+  /** The shape the route writes; only the fields these assertions read are named. */
+  interface ChatLine {
+    type: 'delta' | 'done' | 'error';
+    text?: string;
+    code?: string;
+    message?: string;
+    requestId?: string;
+  }
+
+  const postChat = (app: TestApp, body: Record<string, unknown>) =>
+    app.request('/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  it('a caller that did not ask for a stream still gets one JSON object', async () => {
+    const ai = {
+      complete: async () => ({
+        ok: true,
+        text: 'The fan pushes air backwards.',
+        finishReason: 'stop',
+        usage: { promptTokens: 1, completionTokens: 2 },
+      }),
+      completeStream: async () => {
+        throw new Error('the streaming path must not run for stream:false');
+      },
+    } as unknown as AiClient;
+    const { app } = appFor({ AI_API_KEY: 'test-key' }, ai);
+
+    const response = await postChat(app, { message: 'why does the fan spin?', stream: false });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/json');
+    const body = (await response.json()) as { text: string; requestId: string };
+    expect(body.text).toBe('The fan pushes air backwards.');
+    expect(body.requestId).toBeTruthy();
+  });
+
+  it('forwards provider deltas as they arrive, then exactly one terminal done', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const ai = {
+      complete: async () => {
+        throw new Error('the streaming path must not use the blocking completion');
+      },
+      completeStream: async (_request: unknown, onDelta: (text: string) => void) => {
+        onDelta('Because ');
+        onDelta('the fan pushes air.');
+        // Hold the completion open: the deltas must reach the wire BEFORE it resolves.
+        await held;
+        return {
+          ok: true,
+          text: 'Because the fan pushes air.',
+          finishReason: 'stop',
+          usage: { promptTokens: 1, completionTokens: 5 },
+        };
+      },
+    } as unknown as AiClient;
+    const { app } = appFor({ AI_API_KEY: 'test-key' }, ai);
+
+    const response = await postChat(app, { message: 'why does the fan spin?', stream: true });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/x-ndjson');
+
+    const events: ChatLine[] = [];
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('the chat stream must carry a body');
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const drain = async (): Promise<boolean> => {
+      const { done, value } = await reader.read();
+      if (done) return false;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed) events.push(JSON.parse(trimmed) as ChatLine);
+      }
+      return true;
+    };
+    while (events.filter((event) => event.type === 'delta').length < 2) {
+      if (!(await drain())) break;
+    }
+
+    // The proof: both deltas were readable while `completeStream` was still gated open — the
+    // server streams the provider's own fragments instead of re-chunking a finished answer.
+    expect(events.map((event) => event.type)).toEqual(['delta', 'delta']);
+    expect(events.map((event) => event.text ?? '').join('')).toBe('Because the fan pushes air.');
+
+    release();
+    while (await drain()) {
+      /* drain the terminal event */
+    }
+    expect(events.map((event) => event.type)).toEqual(['delta', 'delta', 'done']);
+    expect(events[events.length - 1]?.text).toBe('Because the fan pushes air.');
+  });
+
+  it('a mid-stream provider failure ends with exactly one terminal error', async () => {
+    const ai = {
+      complete: async () => {
+        throw new Error('the streaming path must not use the blocking completion');
+      },
+      completeStream: async (_request: unknown, onDelta: (text: string) => void) => {
+        onDelta('The fan ');
+        return {
+          ok: false,
+          code: 'truncated',
+          message: 'The model stopped writing partway through. Try again.',
+          retryable: false,
+        };
+      },
+    } as unknown as AiClient;
+    const { app } = appFor({ AI_API_KEY: 'test-key' }, ai);
+
+    const response = await postChat(app, { message: 'why?', stream: true });
+    const events = (await response.text())
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as ChatLine);
+
+    // A partial answer, then exactly ONE terminal event — never done AND error, never none.
+    expect(events.filter((event) => event.type === 'delta')).toHaveLength(1);
+    const terminals = events.filter((event) => event.type === 'done' || event.type === 'error');
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.type).toBe('error');
+    // The taxonomy is unchanged: a non-quota provider failure is `upstream_failed`.
+    expect(terminals[0]?.code).toBe('upstream_failed');
+    expect(terminals[0]?.requestId).toBeTruthy();
   });
 });

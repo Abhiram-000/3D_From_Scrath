@@ -5,7 +5,8 @@
  * it is copied between call sites (`04`: heartbeats, terminal-event guarantees, stall detection). The
  * loading page and the viewer's Generate dialog both go through `generateStream`, which is why the
  * previous version's bug — the two entries behaving differently for the same action — cannot recur
- * here.
+ * here. The tutor's answer streams through `chatStream` for the same reason (`05`): one owner of the
+ * NDJSON-parsing and one-terminal-event rule, however many call sites grow around it.
  */
 import {
   COMPLEXITY_IDS,
@@ -13,9 +14,12 @@ import {
   HEARTBEAT_INTERVAL_MS,
   CLIENT_TOTAL_BACKSTOP_MS,
   type ComplexityPreference,
+  type ChatEvent,
+  type ChatPersona,
   type GenerationEvent,
   type HealthResponse,
   type ModelBundle,
+  type ModelContext,
 } from '@edu3d/contracts';
 
 /**
@@ -218,6 +222,124 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
     clearInterval(stallTimer);
     clearTimeout(totalTimer);
     options.signal?.removeEventListener('abort', abortOuter);
+  }
+}
+
+export interface ChatStreamOptions {
+  message: string;
+  persona: ChatPersona;
+  /** Recent exchange only, so "why does it do that?" works after the previous answer (`05`). */
+  history: Array<{ role: 'user' | 'assistant'; content: string }>;
+  context?: ModelContext;
+  /** The learner's connection: navigating away abandons the tutor's in-flight answer (`05`). */
+  signal?: AbortSignal;
+  /** Called with each fragment as it arrives, so the bubble can visibly write. */
+  onDelta?: (text: string) => void;
+}
+
+export type ChatOutcome =
+  | { ok: true; text: string }
+  | { ok: false; code: string; message: string; retryAfterSeconds?: number };
+
+/**
+ * One tutor exchange, consuming the NDJSON chat stream (`05`).
+ *
+ * This is the generation stream's discipline in miniature: deltas are forwarded as they arrive
+ * (`onDelta`), the server ends the stream with EXACTLY ONE terminal event (`done` | `error`), and a
+ * stream that ends without one is itself a failure (`04`) — the same rule `generateStream` enforces,
+ * which is why the parsing lives here rather than being re-implemented at the panel. The resolved
+ * terminal outcome is what re-enables the composer. Answers are short — the route caps the provider
+ * at 60 s and 2,000 tokens — so the stall/backstop timers generation needs are deliberately not
+ * repeated: any provider silence ends as the server's own timeout `error` event.
+ */
+export async function chatStream(options: ChatStreamOptions): Promise<ChatOutcome> {
+  try {
+    const response = await fetch(`${API_BASE}/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        message: options.message,
+        persona: options.persona,
+        history: options.history,
+        context: options.context,
+        stream: true,
+      }),
+      signal: options.signal,
+    });
+
+    if (!response.ok) {
+      // A failure before the stream starts (rate limit, drain, bad request) is the plain envelope.
+      const body = (await response.json().catch(() => null)) as {
+        error?: { code?: string; message?: string; retryAfterSeconds?: number };
+      } | null;
+      return {
+        ok: false,
+        code: body?.error?.code ?? 'internal',
+        message: body?.error?.message ?? 'The tutor could not answer right now.',
+        ...(body?.error?.retryAfterSeconds
+          ? { retryAfterSeconds: body.error.retryAfterSeconds }
+          : {}),
+      };
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      return { ok: false, code: 'internal', message: 'This browser cannot read the chat stream.' };
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let terminal: ChatOutcome | null = null;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // NDJSON: events are newline-delimited; a partial last line stays buffered.
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+        let event: ChatEvent;
+        try {
+          event = JSON.parse(trimmed) as ChatEvent;
+        } catch {
+          continue;
+        }
+        if (event.type === 'delta') {
+          text += event.text;
+          options.onDelta?.(event.text);
+        } else if (event.type === 'done') {
+          // The terminal success carries the authoritative full text; deltas were the view. Fall
+          // back to what arrived if a provider sent an empty terminal payload.
+          terminal = { ok: true, text: event.text.length > 0 ? event.text : text };
+        } else if (event.type === 'error') {
+          terminal = { ok: false, code: event.code, message: event.message };
+        }
+        if (terminal) break;
+      }
+      if (terminal) break;
+    }
+
+    // Release the reader either way; a terminal event means the server is already closing.
+    await reader.cancel().catch(() => {});
+
+    return (
+      terminal ?? {
+        ok: false,
+        code: 'internal',
+        message: 'The tutor’s reply ended before it was finished. Try again.',
+      }
+    );
+  } catch (error) {
+    if ((error as Error).name === 'AbortError') {
+      // The learner navigated away: not a failure to explain, just a cancelled exchange.
+      return { ok: false, code: 'aborted', message: 'Chat was cancelled.' };
+    }
+    return { ok: false, code: 'network', message: 'The server could not be reached.' };
   }
 }
 

@@ -19,11 +19,12 @@ import {
   QuizRequest,
   HEARTBEAT_INTERVAL_MS,
   type ApiError,
+  type ChatEvent,
   type ErrorCode,
   type GenerationEvent,
 } from '@edu3d/contracts';
 import type { ServerConfig } from './config/config.ts';
-import { type AiClient } from './services/ai-client.ts';
+import { type AiClient, type CompletionRequest } from './services/ai-client.ts';
 import { runPipeline } from './services/pipeline.ts';
 import { describeQueueFailure, type GenerationQueue } from './services/generation-queue.ts';
 import { buildChatPrompt, buildQuizPrompt } from './services/prompts.ts';
@@ -552,50 +553,99 @@ export function buildApp(state: AppState): Hono<AppContext> {
       request.persona,
       request.context ? JSON.stringify(request.context) : 'no model loaded',
     );
-    const completion = await state.ai.complete({
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...request.history.slice(-12),
-        { role: 'user', content: request.message },
-      ],
-      maxOutputTokens: 2000,
-      temperature: 0.6,
-      timeoutMs: 60_000,
-    });
-
-    if (!completion.ok) {
-      return context.json(
-        apiError(
-          completion.code === 'quota' ? 'upstream_quota' : 'upstream_failed',
-          completion.message,
-          requestId,
-        ),
-        (completion.code === 'quota' ? 429 : 502) as 429 | 502,
-      );
-    }
+    // The same message list both paths send: the persona's system prompt, recent memory, the ask.
+    const messages: CompletionRequest['messages'] = [
+      { role: 'system', content: systemPrompt },
+      ...request.history.slice(-12),
+      { role: 'user', content: request.message },
+    ];
 
     if (!request.stream) {
+      // A caller that did not ask for a stream gets the one JSON object it always got — content
+      // negotiation, not a second endpoint (`04`). This path is byte-identical to before streaming.
+      const completion = await state.ai.complete({
+        messages,
+        maxOutputTokens: 2000,
+        temperature: 0.6,
+        timeoutMs: 60_000,
+      });
+      if (!completion.ok) {
+        return context.json(
+          apiError(
+            completion.code === 'quota' ? 'upstream_quota' : 'upstream_failed',
+            completion.message,
+            requestId,
+          ),
+          (completion.code === 'quota' ? 429 : 502) as 429 | 502,
+        );
+      }
       return context.json({ text: completion.text, requestId });
     }
 
-    const encoder = new TextEncoder();
-    // Chunked into deltas so the bubble visibly writes; the transport is the same NDJSON as generation.
-    const chunks = completion.text.match(/[\s\S]{1,60}/g) ?? [];
+    // NDJSON: text deltas flushed the moment the provider writes them, then exactly ONE terminal
+    // event (`done` | `error`) — the generation stream's event discipline (`05`, `04`). No
+    // re-chunking: the deltas ARE the provider's own stream, so the bubble writes honestly instead
+    // of the server replaying a blocking call on a timer.
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
-        for (const chunk of chunks) {
-          controller.enqueue(encoder.encode(`${JSON.stringify({ type: 'delta', text: chunk })}\n`));
-          await new Promise((resolve) => setTimeout(resolve, 15));
+        const encoder = new TextEncoder();
+        // A closed controller means the learner navigated away — never write to a dead socket (`04`).
+        let clientGone = false;
+        const write = (event: ChatEvent) => {
+          if (clientGone) return;
+          try {
+            controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          } catch {
+            clientGone = true;
+          }
+        };
+        try {
+          const completion = await state.ai.completeStream(
+            {
+              messages,
+              maxOutputTokens: 2000,
+              temperature: 0.6,
+              timeoutMs: 60_000,
+              // Cancel-on-navigate: a closed tab stops the provider call (`05`).
+              signal: context.req.raw.signal,
+            },
+            (delta) => write({ type: 'delta', text: delta }),
+          );
+          if (completion.ok) {
+            // The terminal success carries the authoritative full text; deltas were the view.
+            write({ type: 'done', text: completion.text });
+          } else {
+            // The error taxonomy is unchanged: provider quota is `upstream_quota`, everything else
+            // provider-shaped is `upstream_failed` — now on the terminal event rather than a JSON body.
+            write({
+              type: 'error',
+              code: completion.code === 'quota' ? 'upstream_quota' : 'upstream_failed',
+              message: completion.message,
+              requestId,
+            });
+          }
+        } catch {
+          // The single terminal event the client depends on, even on an unforeseen throw.
+          write({
+            type: 'error',
+            code: 'internal',
+            message: DEFAULT_ERROR_MESSAGE.internal,
+            requestId,
+          });
+        } finally {
+          try {
+            controller.close();
+          } catch {
+            /* the reader is already gone */
+          }
         }
-        controller.enqueue(
-          encoder.encode(`${JSON.stringify({ type: 'done', text: completion.text })}\n`),
-        );
-        controller.close();
       },
     });
     return new Response(stream, {
       headers: {
         'content-type': 'application/x-ndjson; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        // Any proxy in the chain must not buffer a delta nobody sees until the end (`04`).
         'x-accel-buffering': 'no',
         // Bare Response bypasses the context headers — same as the generate stream (B6).
         'x-request-id': requestId,

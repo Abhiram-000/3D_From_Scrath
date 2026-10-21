@@ -23,8 +23,8 @@ import {
   stepGlide,
   type GlideLimits,
   type OrbitPose,
-  type ShotEasing,
 } from './camera-glide';
+import type { ShotEasing } from '@edu3d/contracts';
 
 const NO_LIMITS: GlideLimits = {
   minPhi: 0.08,

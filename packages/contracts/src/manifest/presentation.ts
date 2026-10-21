@@ -89,6 +89,16 @@ export const ShotDecl = z.object({
 export type ShotDecl = z.infer<typeof ShotDecl>;
 
 /**
+ * A shot declaration as captured, defaults not yet applied — the same input-vs-output distinction
+ * `ScalarSourceInput` and `MotionDeclInput` make in behavior.ts. Story-beat and interaction shots
+ * reach the player straight from the authoring pass without a zod round-trip, so `duration`,
+ * `easing` and `margin` can arrive absent; the player defaults them itself (see
+ * `SHOT_DEFAULT_DURATION` in sandbox-worker.ts). A fully-defaulted `ShotDecl` is always assignable
+ * to this shape, which is why parsed manifests still pass through unchanged.
+ */
+export type ShotDeclInput = z.input<typeof ShotDecl>;
+
+/**
  * Lights.
  *
  * `00` requires that every model gets a sane default rig even if the AI writes no lighting code, so

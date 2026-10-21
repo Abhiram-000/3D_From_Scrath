@@ -15,7 +15,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import type * as SandboxModule from '@edu3d/sandbox';
-import type { ShotDecl } from '@edu3d/contracts';
+import type { ShotDeclInput } from '@edu3d/contracts';
 import type * as WorkerModule from './sandbox-worker.ts';
 
 const posted: Array<Record<string, unknown>> = [];
@@ -65,7 +65,12 @@ scene.interaction({ partId: 'wheel', on: 'click', kind: 'playShot',
 `;
 
 /** A WorkerState the test owns, as far from "loaded" as the interface allows. */
-function makeFakeState() {
+/**
+ * A partial worker state — only the fields a shot player touches. Cast once, here, rather than at
+ * each of the twenty call sites: this is a test double, not a full worker, and pretending otherwise
+ * would mean maintaining sixty fields that the player never reads.
+ */
+function makeFakeState(): WorkerModule.WorkerState {
   return {
     renderer: {
       setPixelRatio: () => undefined,
@@ -138,7 +143,7 @@ function makeFakeState() {
 
     raycaster: new THREE.Raycaster(),
     pointer: new THREE.Vector2(),
-  };
+  } as unknown as WorkerModule.WorkerState;
 }
 
 async function loadedState(code: string) {
@@ -154,7 +159,7 @@ async function loadedState(code: string) {
 
 /** Step the player to completion on 60 Hz frames, like the render loop would. */
 function settle(
-  worker: typeof import('./sandbox-worker.ts'),
+  worker: typeof WorkerModule,
   target: ReturnType<typeof makeFakeState>,
   maxFrames = 400,
 ): void {
@@ -176,7 +181,7 @@ describe('the shot player', () => {
       kind: 'flyTo',
       targetPartId: 'wheel',
       duration: 0.5,
-    } satisfies ShotDecl);
+    } satisfies ShotDeclInput);
     expect(started, 'a flyTo shot at a real part must start').toBe(true);
     expect(target.glide).not.toBeNull();
 
@@ -199,7 +204,7 @@ describe('the shot player', () => {
     const ok = worker.playShot(target, {
       kind: 'cut',
       pose: { position: [1, 2, 3], target: [0, 0, 0] },
-    } satisfies ShotDecl);
+    } satisfies ShotDeclInput);
     expect(ok).toBe(true);
     expect(target.glide).toBeNull();
     // Zero seconds of travel, full arrival: the distance is |pos − target| ≈ 3.742.
@@ -209,7 +214,7 @@ describe('the shot player', () => {
     const withFov = worker.playShot(target, {
       kind: 'cut',
       pose: { position: [1, 2, 3], target: [0, 0, 0], fov: 55 },
-    } satisfies ShotDecl);
+    } satisfies ShotDeclInput);
     expect(withFov).toBe(true);
     expect(target.camera.fov).toBeCloseTo(55, 6);
   });
@@ -224,7 +229,7 @@ describe('the shot player', () => {
       distance: -1,
       duration: 1,
       easing: 'linear',
-    } satisfies ShotDecl);
+    } satisfies ShotDeclInput);
     expect(ok).toBe(true);
 
     // Linear over 1 s: halfway through, exactly halfway along the axis. Stepped in frame-sized
@@ -249,7 +254,7 @@ describe('the shot player', () => {
       kind: 'fovPull',
       fov: 30,
       duration: 1,
-    } satisfies ShotDecl);
+    } satisfies ShotDeclInput);
     expect(ok).toBe(true);
 
     worker.advanceShot(target, 0.5);
@@ -267,8 +272,12 @@ describe('the shot player', () => {
 
   it('refuses a kind with no player instead of faking it', async () => {
     const { worker, target } = await loadedState(GUEST);
-    expect(worker.playShot(target, { kind: 'crane', distance: 2 } satisfies ShotDecl)).toBe(false);
-    expect(worker.playShot(target, { kind: 'orbit', sweep: 1 } satisfies ShotDecl)).toBe(false);
+    expect(worker.playShot(target, { kind: 'crane', distance: 2 } satisfies ShotDeclInput)).toBe(
+      false,
+    );
+    expect(worker.playShot(target, { kind: 'orbit', sweep: 1 } satisfies ShotDeclInput)).toBe(
+      false,
+    );
     expect(target.glide).toBeNull();
     expect(target.fovMove).toBeNull();
   });
@@ -279,14 +288,14 @@ describe('the shot player', () => {
       kind: 'flyTo',
       targetPartId: 'ghost',
       duration: 0.5,
-    } satisfies ShotDecl);
+    } satisfies ShotDeclInput);
     expect(ok, '05: a missing target skips the move, it does not fake one').toBe(false);
     expect(target.glide).toBeNull();
   });
 
   it('yields the move the moment the learner steers', async () => {
     const { worker, target } = await loadedState(GUEST);
-    worker.playShot(target, { kind: 'flyTo', targetPartId: 'wheel' } satisfies ShotDecl);
+    worker.playShot(target, { kind: 'flyTo', targetPartId: 'wheel' } satisfies ShotDeclInput);
     expect(target.glide).not.toBeNull();
     worker.cancelCameraMove(target);
     expect(target.glide).toBeNull();
@@ -295,7 +304,7 @@ describe('the shot player', () => {
 
   it('never fights the rig: a flyTo past the limits clamps into it', async () => {
     const { worker, target } = await loadedState(GUEST);
-    const ok = worker.playShot(target, { kind: 'dolly', distance: 900 } satisfies ShotDecl);
+    const ok = worker.playShot(target, { kind: 'dolly', distance: 900 } satisfies ShotDeclInput);
     expect(ok).toBe(true);
     // The manifest declares no limits here, so the rig's floor/ceiling (0.1 … 500) applies at
     // step time; landing outside them would leave the camera somewhere the rig refuses to be.

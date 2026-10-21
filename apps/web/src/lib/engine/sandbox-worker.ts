@@ -31,6 +31,7 @@ import {
   type QualityRung,
   type RuntimeStats,
   type ShotDecl,
+  type ShotDeclInput,
   type ShotEasing,
 } from '@edu3d/contracts';
 import {
@@ -283,7 +284,7 @@ interface FovMove {
 }
 
 /** Everything the worker owns between loads. */
-interface WorkerState {
+export interface WorkerState {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
@@ -661,6 +662,9 @@ const SHOT_DEFAULT_DURATION = 1.2;
 
 const SHOT_DEFAULT_MARGIN = 1.35;
 
+/** The easing the contract defaults a captured shot to when none was authored. */
+const SHOT_DEFAULT_EASING: ShotEasing = 'easeInOut';
+
 /** Write the projection's field of view. One place, so every caller updates the matrix too. */
 function applyFov(target: WorkerState, fov: number): void {
   target.camera.fov = fov;
@@ -677,7 +681,7 @@ function applyFov(target: WorkerState, fov: number): void {
  */
 function shotDestination(
   target: WorkerState,
-  shot: ShotDecl,
+  shot: ShotDeclInput,
 ): { pose: OrbitPose; focus: { object: THREE.Object3D; margin: number } | null } | null {
   const margin = shot.margin ?? SHOT_DEFAULT_MARGIN;
   if (shot.targetPartId !== undefined && target.model) {
@@ -726,10 +730,11 @@ function shotDestination(
  * exactly where it was, which is why the audit flags the kind and dangling ids separately — the
  * learner must never watch a move the manifest promised and did not make.
  */
-export function playShot(target: WorkerState, shot: ShotDecl): boolean {
+export function playShot(target: WorkerState, shot: ShotDeclInput): boolean {
   if (!target.manifest) return false;
   if (!PLAYABLE_SHOT_KINDS.has(shot.kind)) return false;
   const duration = shot.duration ?? SHOT_DEFAULT_DURATION;
+  const easing = shot.easing ?? SHOT_DEFAULT_EASING;
 
   switch (shot.kind) {
     case 'cut': {
@@ -749,7 +754,7 @@ export function playShot(target: WorkerState, shot: ShotDecl): boolean {
       if (!destination) return false;
       target.autoRotate = false;
       // The focus rides along so a moving part is re-framed every frame while the approach runs.
-      startGlide(target, destination.pose, destination.focus ?? undefined, duration, shot.easing);
+      startGlide(target, destination.pose, destination.focus ?? undefined, duration, easing);
       return true;
     }
     case 'dolly': {
@@ -761,7 +766,7 @@ export function playShot(target: WorkerState, shot: ShotDecl): boolean {
         dollyPose(currentPose(target), shot.distance),
         undefined,
         duration,
-        shot.easing,
+        easing,
       );
       return true;
     }
@@ -776,7 +781,7 @@ export function playShot(target: WorkerState, shot: ShotDecl): boolean {
         toFov: shot.fov,
         elapsed: 0,
         duration: Math.max(0.01, duration),
-        easing: shot.easing,
+        easing,
       };
       target.cameraDirty = true;
       return true;

@@ -93,15 +93,50 @@ export class PhysicsWorld {
   }
 
   /**
-   * Load the WASM and build the world. Returns null when the runtime cannot load — the caller treats
-   * that as the honest degraded mode, never as a failure (`02` R1).
+   * Start the WASM runtime while the realm still has `WebAssembly`, and remember the answer.
+   *
+   * The sandbox deletes `WebAssembly` when it hardens the realm (PLAN.md §A1 layer 4:
+   * "...`WebAssembly`... deleted/poisoned"), and hardening happens during every load — before any
+   * world is built. So `RAPIER.init()` called from `create()` compiled nothing and always failed,
+   * and the worker reported it as "the physics engine could not load on this device": an honest
+   * message about a cause that was never the device's fault. Every model that declared physics was
+   * therefore dead in the browser while `02` R1's progressive-enhancement path looked healthy.
+   *
+   * The compile is started at worker boot — the same window `new Function` needs for the guest
+   * program's own compilation — and `create()` awaits the same promise, so it happens exactly once
+   * and before the capability is dropped. Resolution is memoised, so a second model costs nothing.
+   */
+  private static runtime: Promise<boolean> | null = null;
+
+  /**
+   * Why the runtime failed, when it did.
+   *
+   * The degraded path is honest but was silent about the cause: the worker could only say "the
+   * engine could not load on this device", which is a statement about the device made by code that
+   * could not tell device from sandbox. Keeping the rejection here lets the status bar (and the log)
+   * name what actually went wrong, which is the difference between a diagnosis and a guess.
+   */
+  static runtimeFailure: string | null = null;
+
+  /** Compile the solver once, before hardening. Safe to call more than once. */
+  static warmUp(): Promise<boolean> {
+    PhysicsWorld.runtime ??= RAPIER.init().then(
+      () => true,
+      (error: unknown) => {
+        PhysicsWorld.runtimeFailure =
+          error instanceof Error ? error.message : String(error).slice(0, 200);
+        return false;
+      },
+    );
+    return PhysicsWorld.runtime;
+  }
+
+  /**
+   * Build the world on the warmed runtime. Returns null when the runtime could not load — the caller
+   * treats that as the honest degraded mode, never as a failure (`02` R1).
    */
   static async create(manifest: ModelManifest, tier: DeviceTier): Promise<PhysicsWorld | null> {
-    try {
-      await RAPIER.init();
-    } catch {
-      return null;
-    }
+    if (!(await PhysicsWorld.warmUp())) return null;
     const gravity = manifest.physics?.world.gravity ?? [0, -GRAVITY, 0];
     const world = new RAPIER.World({ x: gravity[0], y: gravity[1], z: gravity[2] });
     world.timestep = FIXED_DT;

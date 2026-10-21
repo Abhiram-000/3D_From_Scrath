@@ -33,6 +33,14 @@ import {
   type ShotDecl,
   type ShotDeclInput,
   type ShotEasing,
+  type AnnotationPin,
+  type ProjectedAnnotation,
+  type VideoRecordingCapability,
+  type PointPickRequest,
+  type SetAnnotationsRequest,
+  type PointPickResponse,
+  type AnnotationProjectionResponse,
+  VIDEO_CLIP_LIMITS,
 } from '@edu3d/contracts';
 import {
   compileGuest,
@@ -120,6 +128,16 @@ export type WorkerRequest =
   | { type: 'orbit'; deltaX: number; deltaY: number }
   | { type: 'zoom'; delta: number }
   | { type: 'pan'; deltaX: number; deltaY: number }
+  /** Return the camera to the authored opening frame (`03` R5: Reset restores authored time = 0 and
+   * parameter defaults *and* the initial camera). */
+  | { type: 'resetCamera' }
+  /** Raycast a screen point against the realized model (`03` R7: a note must glue to real geometry). */
+  | PointPickRequest
+  /** Replace the projected pin set; an empty list switches the whole projection path off. */
+  | SetAnnotationsRequest
+  /** Begin an honest WebM clip if this device can encode one; bounded by `VIDEO_CLIP_LIMITS`. */
+  | { type: 'startRecording'; maxSeconds?: number }
+  | { type: 'stopRecording' }
   | { type: 'focusPart'; partId: string | null }
   | { type: 'playShot'; shot: ShotDecl }
   | { type: 'viewPreset'; preset: 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso' }
@@ -140,7 +158,13 @@ export type WorkerResponse =
   | { type: 'selected'; partId: string | null }
   | { type: 'log'; level: 'log' | 'warn' | 'error'; message: string }
   | { type: 'notice'; message: string }
-  | { type: 'snapshot'; blob: Blob }
+  /** The PNG plus the exact pixels it was rendered at, so the page can name the file honestly. */
+  | { type: 'snapshot'; blob: Blob; width: number; height: number }
+  | { type: 'capabilities'; video: VideoRecordingCapability }
+  | { type: 'recording'; blob: Blob; seconds: number; bytes: number }
+  | { type: 'recordingFailed'; message: string }
+  | PointPickResponse
+  | AnnotationProjectionResponse
   | { type: 'disposed' };
 
 /** The admission verdict, minus the `Map`/`Set` fields that do not survive structured cloning cleanly. */
@@ -198,6 +222,17 @@ const hostPerformance = hostScope.performance;
 const now = (): number => hostPerformance.now();
 
 /**
+ * The physics runtime starts compiling here, at worker boot — a *head start*, not the guarantee.
+ *
+ * It is the guarantee in `beginBoot`, which awaits this same promise before `initRenderer` hardens
+ * the realm (hardening deletes `WebAssembly`, so a Rapier world built afterwards can never start).
+ * Starting it at module scope just means the compile overlaps the host's spawn handshake instead of
+ * beginning after it. Do not remove the await in `beginBoot` on the strength of this line: the
+ * ordering here is a race, and a race was exactly how physics came to be unreachable everywhere.
+ */
+void PhysicsWorld.warmUp();
+
+/**
  * The worker's private channel to the page.
  *
  * Captured before hardening deletes `postMessage` from the global. That is the whole trick: after hardening, guest
@@ -211,6 +246,18 @@ const post = ((): ((message: WorkerResponse, transfer?: Transferable[]) => void)
     else captured(message);
   };
 })();
+
+/**
+ * The WebCodecs constructors, captured at module scope like the scheduler and the clock above.
+ *
+ * `hardenRealm` deletes the device surfaces the guest must not reach, and it runs inside a load —
+ * after this module has already evaluated. Looking `VideoEncoder` up from the global at recording
+ * time would therefore depend on a hardening list that is allowed to grow, which is the exact
+ * ordering bug the retained-globals block was written to end. Capturing removes the dependency.
+ * Absent on any runtime without WebCodecs, which is what the capability probe reports.
+ */
+const HostVideoEncoder = (globalThis as { VideoEncoder?: typeof VideoEncoder }).VideoEncoder;
+const HostVideoFrame = (globalThis as { VideoFrame?: typeof VideoFrame }).VideoFrame;
 
 /**
  * Dev-only build-stage telemetry over the existing `log` channel — protocol unchanged, messages
@@ -281,6 +328,37 @@ interface FovMove {
   elapsed: number;
   duration: number;
   easing: ShotEasing;
+}
+
+/** One encoded frame on its way into the container. */
+export interface EncodedVideoFrame {
+  data: Uint8Array;
+  /** Microseconds from the start of the clip, as `VideoEncoder` reports it. */
+  timestampUs: number;
+  key: boolean;
+}
+
+/**
+ * A clip in flight.
+ *
+ * Everything the recorder needs and nothing else: the encoded chunks accumulate here (bounded by
+ * `maxBytes`), and `finishing` is the latch that keeps a frame arriving mid-flush from re-entering.
+ * The encoder itself holds GPU state, so it is closed on exactly one path — `finishRecording` or
+ * `abortRecording` — never both.
+ */
+export interface RecordingSession {
+  encoder: VideoEncoder;
+  width: number;
+  height: number;
+  fps: number;
+  startedAtMs: number;
+  /** Microseconds of the last submitted frame; `-1` until the first, which is also the keyframe test. */
+  lastFrameUs: number;
+  chunks: EncodedVideoFrame[];
+  bytes: number;
+  maxSeconds: number;
+  maxBytes: number;
+  finishing: boolean;
 }
 
 /** Everything the worker owns between loads. */
@@ -372,6 +450,30 @@ export interface WorkerState {
   loadStartedAt: number;
   /** Milliseconds the last physics step cost, for the status bar's budget line (`02`). */
   physicsMillis: number;
+  /**
+   * Why physics is not running, when the model declared it and this device could not provide it.
+   *
+   * Set from the async creation's failure path, cleared on every model swap. `physicsStatus` reads it
+   * together with `physics` so the status bar reports the measured truth rather than the model's hope
+   * (`03` R9).
+   */
+  physicsUnavailableReason: string | null;
+  /**
+   * The learner's pinned world points, exactly as the page sent them.
+   *
+   * Empty is the common case, and the frame loop checks it *before* doing any projection work: the
+   * worker must not pay for a feature nobody used (`03` R7).
+   */
+  annotations: readonly AnnotationPin[];
+  /**
+   * What the device can do about video export, probed once at init.
+   *
+   * `null` until the async probe answers. The host shows "checking" until it does, rather than
+   * guessing — a capability that is assumed is a capability that is eventually faked.
+   */
+  videoCapability: VideoRecordingCapability | null;
+  /** The clip being recorded, or null. */
+  recording: RecordingSession | null;
   /**
    * The guest frame callback's circuit breaker (`frame-disable.ts`).
    *
@@ -576,15 +678,100 @@ function applyPose(target: WorkerState, pose: OrbitPose): void {
   target.orbit.target.set(pose.target.x, pose.target.y, pose.target.z);
 }
 
+/**
+ * Frame the model the way its author opened it.
+ *
+ * `00`: "every model opens with the full concept in view — the AI author sets the initial camera".
+ * Shared by the load path and by Reset (`03` R5), so "look at it fresh" restores exactly the frame
+ * the model was authored to open with rather than an approximation of it, and the two can never
+ * drift apart.
+ *
+ * The authored pose is re-clamped through the model's own `camera.limits`. `00` requires that a
+ * learner "can never lose the model off-screen or zoom through the floor", and a pose that sits
+ * outside those limits is a pose the very next gesture would snap away from — so the opening frame is
+ * brought inside the declared box, direction preserved. For a manifest whose limits admit its own
+ * opening pose (the normal case, and the reference model's) the clamp is exactly a no-op.
+ *
+ * Returns false when there is no manifest to read that frame from.
+ */
+export function resetCameraToInitial(target: WorkerState): boolean {
+  const manifest = target.manifest;
+  if (!manifest) return false;
+
+  // Any move in flight belonged to where the camera used to be; leaving one running would carry the
+  // camera straight back off the authored pose it was just put on.
+  cancelCameraMove(target);
+
+  const pose = manifest.camera.initial;
+  applyFov(target, pose.fov);
+  target.orbit.target.set(pose.target[0], pose.target[1], pose.target[2]);
+
+  const dx = pose.position[0] - pose.target[0];
+  const dy = pose.position[1] - pose.target[1];
+  const dz = pose.position[2] - pose.target[2];
+  // `null` here would mean a non-finite pose, which a parsed manifest cannot produce; falling back to
+  // the floor keeps the spherical conversion below non-degenerate either way (the limits are positive).
+  const distance = clampDistance(Math.hypot(dx, dy, dz), distanceLimits(target)) ?? 1;
+  const phi = Math.acos(Math.max(-1, Math.min(1, dy / distance)));
+  const polar = polarLimits(target);
+  target.orbit.distance = distance;
+  target.orbit.theta = Math.atan2(dx, dz);
+  target.orbit.phi = Math.min(polar.max, Math.max(polar.min, phi));
+  target.autoRotate = manifest.camera.limits.autoRotate;
+  updateCamera(target);
+  target.cameraDirty = true;
+  return true;
+}
+
+/**
+ * The rig's distance limits, lowest-first, from the model's own declaration.
+ *
+ * `00` requires that a learner "can never lose the model off-screen or zoom through the floor", so
+ * every command that moves the camera along its view axis — a scroll notch, an absolute pinch
+ * distance, a declared dolly — passes through here rather than trusting its caller. A malformed
+ * manifest can invert the pair (`minDistance` above `maxDistance`); sorting keeps the range
+ * non-empty instead of making `clampDistance` return the minimum forever.
+ */
+export function distanceLimits(target: WorkerState): { min: number; max: number } {
+  const limits = target.manifest?.camera.limits;
+  const min = limits?.minDistance ?? 0.1;
+  const max = limits?.maxDistance ?? 500;
+  return { min: Math.min(min, max), max: Math.max(min, max) };
+}
+
+/**
+ * Clamp a prospective camera distance into the rig's limits.
+ *
+ * Returns `null` for a non-finite distance rather than a number: `Math.min`/`Math.max` propagate
+ * `NaN`, and a `NaN` orbit distance writes `NaN` into the camera position, which takes the renderer
+ * down with it. "This command changed nothing" is the honest answer to a pinch that computed garbage.
+ */
+export function clampDistance(
+  distance: number,
+  limits: { min: number; max: number },
+): number | null {
+  if (!Number.isFinite(distance)) return null;
+  return Math.min(limits.max, Math.max(limits.min, distance));
+}
+
+/**
+ * The rig's polar-angle limits, lowest-first, from the model's own declaration.
+ *
+ * Sorted for the same reason `distanceLimits` is: a manifest that inverted the pair must still leave
+ * the rig a non-empty range rather than pinning the camera to one angle.
+ */
+export function polarLimits(target: WorkerState): { min: number; max: number } {
+  const limits = target.manifest?.camera.limits;
+  const min = limits?.minPolarAngle ?? 0.08;
+  const max = limits?.maxPolarAngle ?? Math.PI - 0.08;
+  return { min: Math.min(min, max), max: Math.max(min, max) };
+}
+
 /** The rig's own limits, so a camera move can never end somewhere the rig refuses to be. */
 function glideLimits(target: WorkerState): GlideLimits {
-  const limits = target.manifest?.camera.limits;
-  return {
-    minPhi: limits?.minPolarAngle ?? 0.08,
-    maxPhi: limits?.maxPolarAngle ?? Math.PI - 0.08,
-    minDistance: limits?.minDistance ?? 0.1,
-    maxDistance: limits?.maxDistance ?? 500,
-  };
+  const { min: minDistance, max: maxDistance } = distanceLimits(target);
+  const { min: minPhi, max: maxPhi } = polarLimits(target);
+  return { minPhi, maxPhi, minDistance, maxDistance };
 }
 
 /**
@@ -987,6 +1174,10 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     loadStartedAt: 0,
     frameDisable: createFrameDisableState(),
     physicsMillis: 0,
+    physicsUnavailableReason: null,
+    annotations: [],
+    videoCapability: null,
+    recording: null,
 
     ladder: {
       applied: new Set(),
@@ -1182,6 +1373,11 @@ export function loadProgram(
   }
   target.physics?.dispose();
   target.physics = null;
+  // The reason belonged to the previous model's failure. Cleared unconditionally, not only when the
+  // new model declares physics — otherwise a model with no simulation would inherit the last one's
+  // "physics unavailable" and the status bar would explain a problem that is not there.
+  target.simFailed = false;
+  target.physicsUnavailableReason = null;
   if (target.builder) target.builder.dispose();
 
   target.builder = builder;
@@ -1255,6 +1451,7 @@ export function loadProgram(
   // and the status bar says simulation is off — never a crash, never a fake.
   if (manifest.physics) {
     target.simFailed = false;
+    target.physicsUnavailableReason = null;
     PhysicsWorld.create(manifest, target.tier)
       .then((world) => {
         // A newer load may have replaced the model while the WASM was loading.
@@ -1262,6 +1459,12 @@ export function loadProgram(
         else if (world) world.dispose();
         if (!world && target.builder === builder) {
           target.simFailed = true;
+          // The status bar reads this reason from the next `stats`; the notice says it once, out loud.
+          // The runtime's own failure (when it has one) is carried through: "the device could not
+          // load it" is a claim this code cannot actually make on the device's behalf.
+          target.physicsUnavailableReason = PhysicsWorld.runtimeFailure
+            ? `Physics could not start: ${PhysicsWorld.runtimeFailure}`
+            : 'The physics engine could not load on this device.';
           post({
             type: 'notice',
             message:
@@ -1270,20 +1473,15 @@ export function loadProgram(
         }
       })
       .catch(() => {
-        if (target.builder === builder) target.simFailed = true;
+        if (target.builder === builder) {
+          target.simFailed = true;
+          target.physicsUnavailableReason = 'The physics engine could not load on this device.';
+        }
       });
   }
 
   // Apply the authored opening frame. `00`: "every model opens with the full concept in view."
-  const pose = manifest.camera.initial;
-  applyFov(target, pose.fov);
-  target.orbit.target.set(...pose.target);
-  const offset = new THREE.Vector3(...pose.position).sub(target.orbit.target);
-  target.orbit.distance = Math.max(0.1, offset.length());
-  target.orbit.theta = Math.atan2(offset.x, offset.z);
-  target.orbit.phi = Math.acos(Math.max(-1, Math.min(1, offset.y / target.orbit.distance)));
-  target.autoRotate = manifest.camera.limits.autoRotate;
-  updateCamera(target);
+  resetCameraToInitial(target);
 
   // Post-processing and pixel ratio follow the admission decisions rather than the model's wishes.
   target.renderer.setPixelRatio(Math.min(target.pixelRatio, verdict.decisions.maxPixelRatio));
@@ -1391,6 +1589,24 @@ function applyViewMode(target: WorkerState): void {
   }
 }
 
+/**
+ * Walk up to the nearest ancestor that declares itself selectable.
+ *
+ * A click on a sub-mesh must resolve to the part the learner thinks they clicked, which is why this
+ * ascends rather than reading `userData` off the hit alone. Shared by hover and by the annotation
+ * pick, so the two can never disagree about what "that part" means.
+ */
+function selectablePartId(object: THREE.Object3D): string | null {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (current.userData.selectable && typeof current.userData.partId === 'string') {
+      return current.userData.partId as string;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
 /** Raycast against the model and report what the pointer is over. */
 function updateHover(target: WorkerState): boolean {
   const model = target.model;
@@ -1401,16 +1617,7 @@ function updateHover(target: WorkerState): boolean {
 
   let partId: string | null = null;
   for (const hit of hits) {
-    // Walk up to the nearest ancestor that declares itself selectable, so a click on a sub-mesh still resolves to
-    // the part the learner thinks they clicked.
-    let current: THREE.Object3D | null = hit.object;
-    while (current) {
-      if (current.userData.selectable && typeof current.userData.partId === 'string') {
-        partId = current.userData.partId as string;
-        break;
-      }
-      current = current.parent;
-    }
+    partId = selectablePartId(hit.object);
     if (partId) break;
   }
 
@@ -1421,6 +1628,103 @@ function updateHover(target: WorkerState): boolean {
   }
   // The caller renders only on change: a cast is cheap, a presented frame is not.
   return changed;
+}
+
+/**
+ * The pick ray's normalised device coordinate, kept apart from the hover pointer.
+ *
+ * `target.pointer` belongs to hover, whose cast is coalesced to one per frame; a click writing into it
+ * would leave a later coalesced hover casting from the click's position instead of the mouse's, and
+ * highlight the wrong part. One extra `Vector2` avoids that entirely.
+ */
+const PICK_NDC = new THREE.Vector2();
+
+/**
+ * Turn a screen point into a world-space point on the realized model (`03` R7).
+ *
+ * Returns the first surface the ray strikes, with the nearest selectable part it belongs to — a note
+ * pinned to unselectable geometry (a ground plane, a backdrop) is still a note glued to geometry, so
+ * the point is reported even when no part owns it. A miss returns `null`, never the model's centre.
+ */
+export function pickPoint(
+  target: WorkerState,
+  x: number,
+  y: number,
+): { point: [number, number, number] | null; partId: string | null } {
+  const model = target.model;
+  if (!model) return { point: null, partId: null };
+
+  PICK_NDC.set((x / target.width) * 2 - 1, -(y / target.height) * 2 + 1);
+  target.raycaster.setFromCamera(PICK_NDC, target.camera);
+  const hit = target.raycaster.intersectObject(model.root, true)[0];
+  if (!hit) return { point: null, partId: null };
+
+  return {
+    point: [hit.point.x, hit.point.y, hit.point.z],
+    partId: selectablePartId(hit.object),
+  };
+}
+
+/** A projected point: a canvas position when it can be seen, or an explicit "nothing honest to report". */
+export type ProjectedPoint = { visible: true; x: number; y: number } | { visible: false };
+
+/** Projection scratch, module-level: one reused vector instead of one per pin per frame. */
+const PROJECT_SCRATCH = new THREE.Vector3();
+
+/**
+ * Project a world point onto the canvas, in the same pixel space pointer messages use.
+ *
+ * The view matrix is applied first, on purpose. `Vector3.project` divides by `w`, and a point behind
+ * the camera has a negative `w` — the division mirrors it back through the origin, so a pin whose
+ * geometry is behind the learner comes out as a plausible-looking coordinate on the *opposite* side
+ * of the screen. Testing view-space `z` against the near plane catches that case before any division,
+ * and the frustum test catches the rest. Both report `visible: false`, and neither invents a number.
+ *
+ * `updateMatrixWorld` is called here rather than trusted to the caller: it composes the world matrix
+ * from position/quaternion (and inverts it), so a projection can never read a stale pose — including
+ * in tests that set the camera without ever rendering.
+ */
+export function projectPointToCanvas(
+  camera: THREE.PerspectiveCamera,
+  width: number,
+  height: number,
+  point: readonly [number, number, number],
+): ProjectedPoint {
+  camera.updateMatrixWorld();
+  PROJECT_SCRATCH.set(point[0], point[1], point[2]).applyMatrix4(camera.matrixWorldInverse);
+  // View space looks down −Z, so a point in front of the camera has z strictly beyond the near plane.
+  if (!(PROJECT_SCRATCH.z < -camera.near)) return { visible: false };
+
+  PROJECT_SCRATCH.applyMatrix4(camera.projectionMatrix);
+  if (Math.abs(PROJECT_SCRATCH.x) > 1 || Math.abs(PROJECT_SCRATCH.y) > 1) return { visible: false };
+
+  return {
+    visible: true,
+    x: (PROJECT_SCRATCH.x * 0.5 + 0.5) * width,
+    y: (-PROJECT_SCRATCH.y * 0.5 + 0.5) * height,
+  };
+}
+
+/**
+ * Publish every pin's screen position for this frame.
+ *
+ * One message per call, and the frame loop calls it once per presented frame — that is the throttle.
+ * With no pins it returns before touching a matrix: the common case must cost nothing, because the
+ * feature nobody used should not be paid for by everyone (`03` R7).
+ */
+export function projectAnnotations(target: WorkerState): void {
+  if (target.annotations.length === 0) return;
+
+  const pins: ProjectedAnnotation[] = [];
+  for (const pin of target.annotations) {
+    const projected = projectPointToCanvas(target.camera, target.width, target.height, pin.point);
+    pins.push(
+      projected.visible
+        ? { id: pin.id, visible: true, x: projected.x, y: projected.y }
+        : { id: pin.id, visible: false },
+    );
+  }
+  post({ type: 'annotationPositions', pins });
 }
 
 /**
@@ -1480,6 +1784,22 @@ function applyDeclaredMotions(target: WorkerState): void {
     probes: target.lastProbes,
   };
   applyMotions(host, context, target.paused);
+}
+
+/**
+ * Apply the learner's time scale.
+ *
+ * Clamped to a range that stays meaningful: below 0.05× the model reads as frozen, and above 4× every
+ * declared motion becomes a blur that teaches nothing (`02` calls the control "slow-motion for
+ * collision study"). A non-finite scale is ignored — a `NaN` here would multiply through into
+ * `elapsed` and poison every declared motion from that frame on.
+ *
+ * Extracted from the message handler so the policy can be tested without a worker realm, and so the
+ * host's `setTimeScale` has exactly one place where its value is interpreted.
+ */
+export function applyTimeScale(target: WorkerState, scale: number): void {
+  if (!Number.isFinite(scale)) return;
+  target.timeScale = Math.max(0.05, Math.min(4, scale));
 }
 
 /** One frame: advance the model, run guest logic, render, publish. */
@@ -1627,7 +1947,16 @@ function renderFrame(target: WorkerState, timestamp: number): void {
     // A lost context is a reclaim in progress: presenting against it wastes the frame and fights
     // the browser for the memory. The loop keeps its cadence and its stats (so the watchdog sees a
     // live worker, not a hang), and restoration re-presents via `needsRender`.
-    if (!CONTEXT_LOST) target.renderer.render(target.scene, target.camera);
+    if (!CONTEXT_LOST) {
+      target.renderer.render(target.scene, target.camera);
+      // The clip is the viewport, so it is taken from the frame that was just presented — no second
+      // render target, nothing to dispose. `captureRecordingFrame` itself closes the `VideoFrame`.
+      if (target.recording) captureRecordingFrame(target);
+    }
+
+    // Pin projection, once per presented frame (`03` R7). A still frame does not reach here, which is
+    // correct: nothing moved, so the positions the page already holds are still the positions.
+    projectAnnotations(target);
 
     const frameTime = now() - frameStart;
     target.frameTimes.push(frameTime);
@@ -1887,6 +2216,24 @@ function startHeartbeat(): void {
   }, TIMING.heartbeatIntervalMs);
 }
 
+/**
+ * The measured physics state, for the status bar.
+ *
+ * Derived from the live world, not from `manifest.physics`: the manifest says the model *asked* for a
+ * simulation, and the honest answer to "is it running" is whether a world exists and no creation has
+ * failed. `03` R9 forbids faking a trust indicator, and "Physics: On" on a device where the WASM never
+ * loaded is precisely that fake.
+ */
+export function physicsStatus(target: WorkerState): {
+  physicsActive: boolean;
+  physicsUnavailableReason?: string;
+} {
+  if (target.physics) return { physicsActive: true };
+  return target.physicsUnavailableReason
+    ? { physicsActive: false, physicsUnavailableReason: target.physicsUnavailableReason }
+    : { physicsActive: false };
+}
+
 /** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */
 function publishStats(target: WorkerState): void {
   const publishedAt = now();
@@ -1912,6 +2259,7 @@ function publishStats(target: WorkerState): void {
       drawCalls: info.render.calls,
       triangles: info.render.triangles,
       physicsMillis: target.physicsMillis,
+      ...physicsStatus(target),
       cacheHitRate: cacheTotal > 0 ? (geometryStats?.hits ?? 0) / cacheTotal : 1,
       // Reported as the pin when the learner set one: the status bar must show the quality in
       // force, not the quality the tier would have chosen.
@@ -1931,6 +2279,479 @@ function publishStats(target: WorkerState): void {
   target.lastRateAt = publishedAt;
 }
 
+/**
+ * The three numbers an export temporarily changes, captured so the restore is exact.
+ *
+ * A 4K snapshot that left the drawing buffer at 4K would render every frame afterwards at four times
+ * the fragments — a permanent cost paid for one file — so the restore is verified, not assumed.
+ */
+export interface ViewSize {
+  width: number;
+  height: number;
+  pixelRatio: number;
+}
+
+/** The largest export edge, so a 4K request cannot allocate a buffer the GPU refuses and take the tab with it. */
+export const MAX_SNAPSHOT_EDGE = 4_096;
+
+/** What the page should know about the file it just received. */
+export interface SnapshotSize {
+  restore: ViewSize;
+  width: number;
+  height: number;
+}
+
+/** The renderer's real drawing-buffer geometry — read back, never assumed from `state.width`. */
+function viewSize(target: WorkerState): ViewSize {
+  const size = target.renderer.getSize(new THREE.Vector2());
+  return { width: size.x, height: size.y, pixelRatio: target.renderer.getPixelRatio() };
+}
+
+function clampEdge(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(MAX_SNAPSHOT_EDGE, Math.round(value)));
+}
+
+/**
+ * Resize the drawing buffer for an export render and hand back the numbers that restore it.
+ *
+ * Pixel ratio 1 is the point of an authored resolution: an "HD" file must be 1280×720, not
+ * 1280·DPR, or the same button produces a different file on every device.
+ */
+export function beginSnapshot(target: WorkerState, width: number, height: number): SnapshotSize {
+  const restore = viewSize(target);
+  const exportWidth = clampEdge(width);
+  const exportHeight = clampEdge(height);
+  target.renderer.setPixelRatio(1);
+  target.renderer.setSize(exportWidth, exportHeight, false);
+  target.camera.aspect = exportWidth / Math.max(1, exportHeight);
+  target.camera.updateProjectionMatrix();
+  return { restore, width: exportWidth, height: exportHeight };
+}
+
+/**
+ * Restore the view exactly, and report whether it is exact.
+ *
+ * The return value exists so the worker can *say* when a restore failed rather than leave the learner
+ * with a canvas that renders at export size forever. `false` posts a notice; it is never swallowed.
+ */
+export function endSnapshot(target: WorkerState, restore: ViewSize): boolean {
+  target.renderer.setPixelRatio(restore.pixelRatio);
+  target.renderer.setSize(restore.width, restore.height, false);
+  target.camera.aspect = restore.width / Math.max(1, restore.height);
+  target.camera.updateProjectionMatrix();
+  // The buffer was resized twice, which clears it; the frame that proves the restore must present.
+  target.needsRender = true;
+
+  const restored = viewSize(target);
+  return (
+    restored.width === restore.width &&
+    restored.height === restore.height &&
+    restored.pixelRatio === restore.pixelRatio
+  );
+}
+
+/** Frames per second a clip is sampled at. The render loop runs faster; closer frames are skipped. */
+const RECORDING_FPS = 30;
+
+/** Bits per pixel per second for the encoder. High enough for a screen recording, low enough for a phone. */
+const RECORDING_BITS_PER_PIXEL = 0.12;
+
+function recordingBitrate(width: number, height: number): number {
+  const raw = width * height * RECORDING_FPS * RECORDING_BITS_PER_PIXEL;
+  return Math.round(Math.max(500_000, Math.min(12_000_000, raw)));
+}
+
+/**
+ * Probe what this device can actually encode, once, and tell the page.
+ *
+ * The answer is a promise from the runtime (`isConfigSupported`), not a feature-detect guess: a
+ * `VideoEncoder` that refuses every configuration is not a device that can record, and reporting it as
+ * one would put a button on screen that does nothing — the exact dishonest UI `03` R8 asks us to avoid.
+ */
+export async function probeVideoCapability(target: WorkerState): Promise<void> {
+  const limits = {
+    maxSeconds: VIDEO_CLIP_LIMITS.maxSeconds,
+    maxBytes: VIDEO_CLIP_LIMITS.maxBytes,
+  };
+
+  if (!HostVideoEncoder) {
+    target.videoCapability = {
+      supported: false,
+      reason: 'This browser cannot encode video clips in the background.',
+      ...limits,
+    };
+    post({ type: 'capabilities', video: target.videoCapability });
+    return;
+  }
+
+  const codec = 'vp8';
+  try {
+    const support = await HostVideoEncoder.isConfigSupported({
+      codec,
+      width: target.canvas.width,
+      height: target.canvas.height,
+      bitrate: recordingBitrate(target.canvas.width, target.canvas.height),
+      framerate: RECORDING_FPS,
+    });
+    target.videoCapability = support.supported
+      ? { supported: true, codec, ...limits }
+      : { supported: false, reason: `This device cannot encode ${codec} video.`, ...limits };
+  } catch {
+    target.videoCapability = {
+      supported: false,
+      reason: 'This device refused a video encoder configuration.',
+      ...limits,
+    };
+  }
+  post({ type: 'capabilities', video: target.videoCapability });
+}
+
+/**
+ * Start a clip, or refuse honestly.
+ *
+ * Every refusal is a `recordingFailed` carrying the reason, never a silent no-op: the page either
+ * never offered the button (because the capability said so) or gets told why not.
+ */
+export function startRecording(target: WorkerState, requestedSeconds: number): void {
+  if (target.recording) return;
+
+  const capability = target.videoCapability;
+  if (!HostVideoEncoder || !HostVideoFrame || !capability?.supported || !capability.codec) {
+    post({
+      type: 'recordingFailed',
+      message: capability?.reason ?? 'Recording is not available on this device.',
+    });
+    return;
+  }
+
+  const width = target.canvas.width;
+  const height = target.canvas.height;
+  if (width < 2 || height < 2) {
+    post({
+      type: 'recordingFailed',
+      message: 'The viewer is not on screen, so there is nothing to record.',
+    });
+    return;
+  }
+
+  // Bounded here as well as at the message boundary: the cap is a property of the recorder, not a
+  // courtesy the caller is trusted to respect.
+  const maxSeconds = Math.max(1, Math.min(VIDEO_CLIP_LIMITS.maxSeconds, requestedSeconds));
+
+  // `session` is assigned before `configure`/`encode`, which are the only calls that can fire the
+  // callbacks below; the null check keeps the closures total without a non-null assertion.
+  let session: RecordingSession | null = null;
+  const encoder = new HostVideoEncoder({
+    output: (chunk) => {
+      if (!session) return;
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      session.chunks.push({ data, timestampUs: chunk.timestamp, key: chunk.type === 'key' });
+      session.bytes += data.byteLength;
+    },
+    error: (error) => {
+      if (session) abortRecording(target, session, `Recording stopped: ${error.message}`);
+    },
+  });
+
+  session = {
+    encoder,
+    width,
+    height,
+    fps: RECORDING_FPS,
+    startedAtMs: now(),
+    lastFrameUs: -1,
+    chunks: [],
+    bytes: 0,
+    maxSeconds,
+    maxBytes: VIDEO_CLIP_LIMITS.maxBytes,
+    finishing: false,
+  };
+
+  try {
+    encoder.configure({
+      codec: capability.codec,
+      width,
+      height,
+      bitrate: recordingBitrate(width, height),
+      framerate: RECORDING_FPS,
+      latencyMode: 'realtime',
+    });
+  } catch (error) {
+    releaseEncoder(encoder);
+    post({ type: 'recordingFailed', message: describeFailure(error).message });
+    return;
+  }
+
+  target.recording = session;
+  // The first frame of the clip is the frame the learner is already looking at.
+  target.needsRender = true;
+}
+
+/**
+ * Hand the presented canvas to the encoder, once per interval.
+ *
+ * The canvas *is* the clip: recording the frame that was just presented is what "video clip recording
+ * of the viewport" means, and it avoids a second render target entirely. Frames closer together than
+ * the sample interval are dropped, so a 120 fps presenter does not quadruple the bitrate of a 30 fps
+ * clip. `VideoFrame` is GPU-backed, so it is closed immediately after encoding — an open frame is a
+ * real allocation held for the life of the worker.
+ */
+function captureRecordingFrame(target: WorkerState): void {
+  const session = target.recording;
+  if (!session || session.finishing || !HostVideoFrame) return;
+
+  const elapsedMs = now() - session.startedAtMs;
+  if (elapsedMs >= session.maxSeconds * 1000) {
+    void finishRecording(target);
+    return;
+  }
+
+  const timestampUs = Math.round(elapsedMs * 1000);
+  const intervalUs = Math.round(1_000_000 / session.fps);
+  if (session.lastFrameUs >= 0 && timestampUs - session.lastFrameUs < intervalUs) return;
+  const isFirstFrame = session.lastFrameUs < 0;
+  session.lastFrameUs = timestampUs;
+
+  const frame = new HostVideoFrame(target.canvas, { timestamp: timestampUs, duration: intervalUs });
+  try {
+    session.encoder.encode(frame, { keyFrame: isFirstFrame });
+  } finally {
+    frame.close();
+  }
+
+  // The byte cap is the second hard stop: a still scene costs almost nothing to encode, but a busy one
+  // must not be able to grow the clip past what the page can hold.
+  if (session.bytes >= session.maxBytes) void finishRecording(target);
+}
+
+/** Flush, mux and deliver the clip. Idempotent per session via the `finishing` latch. */
+async function finishRecording(target: WorkerState): Promise<void> {
+  const session = target.recording;
+  if (!session || session.finishing) return;
+  session.finishing = true;
+  target.recording = null;
+
+  try {
+    await session.encoder.flush();
+  } catch {
+    // The encoder may already have errored and closed; the chunks collected so far are still usable.
+  }
+  releaseEncoder(session.encoder);
+
+  if (session.chunks.length === 0) {
+    post({ type: 'recordingFailed', message: 'The recording produced no frames.' });
+    return;
+  }
+
+  const bytes = muxWebmVp8(session.chunks, session.width, session.height, 1000 / session.fps);
+  post({
+    type: 'recording',
+    blob: new Blob([bytes], { type: 'video/webm' }),
+    seconds: Math.max(0, session.lastFrameUs) / 1_000_000,
+    bytes: bytes.byteLength,
+  });
+  target.needsRender = true;
+}
+
+/** Drop a clip that failed, releasing the encoder and everything it held. Never posts a fake success. */
+function abortRecording(target: WorkerState, session: RecordingSession, message: string): void {
+  if (session.finishing) return;
+  session.finishing = true;
+  if (target.recording === session) target.recording = null;
+  releaseEncoder(session.encoder);
+  session.chunks.length = 0;
+  post({ type: 'recordingFailed', message });
+}
+
+/** Close an encoder at most once. `close()` on an already-closed encoder throws, and must not escape. */
+function releaseEncoder(encoder: VideoEncoder): void {
+  try {
+    encoder.close();
+  } catch {
+    // Already closed (or errored). Closing is bookkeeping here, not the operation being reported.
+  }
+}
+
+/** Release a clip during teardown, without messaging a realm that is going away. */
+function releaseRecording(target: WorkerState): void {
+  const session = target.recording;
+  if (!session) return;
+  session.finishing = true;
+  target.recording = null;
+  releaseEncoder(session.encoder);
+  session.chunks.length = 0;
+}
+
+// ── WebM muxing ──────────────────────────────────────────────────────────────
+
+/**
+ * A minimal WebM (Matroska) writer for VP8 chunks.
+ *
+ * WebCodecs hands back encoded chunks, not a container, and this platform ships no muxing dependency.
+ * Building the handful of EBML elements a single VP8 track needs keeps `00-GOAL.md`'s "video clip
+ * recording of the viewport" real without adding a package. The clip is bounded long before it gets
+ * here (`VIDEO_CLIP_LIMITS`), so the whole file fits in memory and the element sizes are known — no
+ * streaming, no unknown-size segments.
+ */
+function ebmlUint(value: number): Uint8Array<ArrayBuffer> {
+  const bytes: number[] = [];
+  let remaining = Math.max(0, Math.floor(value));
+  do {
+    bytes.unshift(remaining & 0xff);
+    remaining = Math.floor(remaining / 256);
+  } while (remaining > 0);
+  return new Uint8Array(bytes);
+}
+
+function ebmlFloat(value: number): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(8);
+  new DataView(bytes.buffer).setFloat64(0, value, false);
+  return bytes;
+}
+
+/** Variable-length EBML size, in the shortest form the value allows (all-ones is reserved as "unknown"). */
+function ebmlSize(value: number): Uint8Array<ArrayBuffer> {
+  let length = 1;
+  while (length < 8 && value >= 2 ** (7 * length) - 1) length += 1;
+  const bytes = new Uint8Array(length);
+  let remaining = value;
+  for (let index = length - 1; index >= 0; index -= 1) {
+    bytes[index] = remaining & 0xff;
+    remaining = Math.floor(remaining / 256);
+  }
+  bytes[0] = (bytes[0] ?? 0) | (1 << (8 - length));
+  return bytes;
+}
+
+function ebmlElement(id: readonly number[], payload: Uint8Array): Uint8Array<ArrayBuffer> {
+  const size = ebmlSize(payload.byteLength);
+  const out = new Uint8Array(id.length + size.byteLength + payload.byteLength);
+  out.set(id, 0);
+  out.set(size, id.length);
+  out.set(payload, id.length + size.byteLength);
+  return out;
+}
+
+function ebmlConcat(parts: readonly Uint8Array[]): Uint8Array<ArrayBuffer> {
+  let length = 0;
+  for (const part of parts) length += part.byteLength;
+  const out = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+function asciiBytes(text: string): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(text.length);
+  for (let index = 0; index < text.length; index += 1) {
+    bytes[index] = text.charCodeAt(index) & 0x7f;
+  }
+  return bytes;
+}
+
+/**
+ * Mux VP8 chunks into a playable WebM.
+ *
+ * One video track, one timecode scale (milliseconds), clusters split only when a `SimpleBlock`'s
+ * signed 16-bit relative timestamp would overflow — which the duration cap makes rare, but the
+ * encoder is not trusted to stay inside it.
+ */
+export function muxWebmVp8(
+  frames: readonly EncodedVideoFrame[],
+  width: number,
+  height: number,
+  frameDurationMs: number,
+): Uint8Array<ArrayBuffer> {
+  const first = frames[0];
+  if (!first) return new Uint8Array(0);
+
+  const header = ebmlElement(
+    [0x1a, 0x45, 0xdf, 0xa3],
+    ebmlConcat([
+      ebmlElement([0x42, 0x86], ebmlUint(1)), // EBMLVersion
+      ebmlElement([0x42, 0xf7], ebmlUint(1)), // EBMLReadVersion
+      ebmlElement([0x42, 0xf2], ebmlUint(4)), // EBMLMaxIDLength
+      ebmlElement([0x42, 0xf3], ebmlUint(8)), // EBMLMaxSizeLength
+      ebmlElement([0x42, 0x82], asciiBytes('webm')), // DocType
+      ebmlElement([0x42, 0x87], ebmlUint(2)), // DocTypeVersion
+      ebmlElement([0x42, 0x85], ebmlUint(2)), // DocTypeReadVersion
+    ]),
+  );
+
+  const firstMs = Math.round(first.timestampUs / 1000);
+  const last = frames[frames.length - 1] ?? first;
+  const lastMs = Math.round(last.timestampUs / 1000);
+  const durationMs = Math.max(frameDurationMs, lastMs - firstMs + frameDurationMs);
+
+  const info = ebmlElement(
+    [0x15, 0x49, 0xa9, 0x66],
+    ebmlConcat([
+      // TimecodeScale is nanoseconds per tick, so 1 ms ticks.
+      ebmlElement([0x2a, 0xd7, 0xb1], ebmlUint(1_000_000)),
+      ebmlElement([0x4d, 0x80], asciiBytes('edu3d')),
+      ebmlElement([0x57, 0x41], asciiBytes('edu3d')),
+      ebmlElement([0x44, 0x89], ebmlFloat(durationMs)),
+    ]),
+  );
+
+  const trackEntry = ebmlElement(
+    [0xae],
+    ebmlConcat([
+      ebmlElement([0xd7], ebmlUint(1)), // TrackNumber
+      ebmlElement([0x73, 0xc5], ebmlUint(1)), // TrackUID
+      ebmlElement([0x83], ebmlUint(1)), // TrackType: video
+      ebmlElement([0x86], asciiBytes('V_VP8')), // CodecID
+      ebmlElement(
+        [0xe0],
+        ebmlConcat([
+          ebmlElement([0xb0], ebmlUint(width)), // PixelWidth
+          ebmlElement([0xba], ebmlUint(height)), // PixelHeight
+        ]),
+      ),
+    ]),
+  );
+  const tracks = ebmlElement([0x16, 0x54, 0xae, 0x6b], trackEntry);
+
+  const clusters: Uint8Array[] = [];
+  let clusterStartMs = firstMs;
+  let blocks: Uint8Array[] = [];
+  const flushCluster = (): void => {
+    if (blocks.length === 0) return;
+    clusters.push(
+      ebmlElement(
+        [0x1f, 0x43, 0xb6, 0x75],
+        ebmlConcat([ebmlElement([0xe7], ebmlUint(clusterStartMs)), ...blocks]),
+      ),
+    );
+    blocks = [];
+  };
+
+  for (const frame of frames) {
+    const timeMs = Math.round(frame.timestampUs / 1000);
+    if (blocks.length > 0 && timeMs - clusterStartMs > 30_000) {
+      flushCluster();
+      clusterStartMs = timeMs;
+    }
+    const relative = Math.max(0, Math.min(32_767, timeMs - clusterStartMs));
+    const block = new Uint8Array(4 + frame.data.byteLength);
+    block[0] = 0x81; // track number 1, written as a one-byte vint
+    block[1] = (relative >> 8) & 0xff;
+    block[2] = relative & 0xff;
+    block[3] = frame.key ? 0x80 : 0x00; // flags: keyframe bit
+    block.set(frame.data, 4);
+    blocks.push(ebmlElement([0xa3], block));
+  }
+  flushCluster();
+
+  const segment = ebmlElement([0x18, 0x53, 0x80, 0x67], ebmlConcat([info, tracks, ...clusters]));
+  return ebmlConcat([header, segment]);
+}
+
 /** Release everything the worker owns. Idempotent and tolerant of partial prior failures (`02` R7). */
 function disposeAll(): void {
   if (!state) return;
@@ -1938,6 +2759,9 @@ function disposeAll(): void {
     state.scene.remove(state.model.root);
     state.model.dispose();
   }
+  // The clip's encoder holds a codec instance and the chunks hold the encoded bytes; both die here
+  // rather than waiting for the realm to be collected.
+  releaseRecording(state);
   state.physics?.dispose();
   state.builder?.dispose();
   state.renderer.dispose();
@@ -1965,6 +2789,37 @@ function loop(timestamp: number): void {
 }
 
 /**
+ * Boot, and the one message that starts it.
+ *
+ * `initRenderer` hardens the realm, and hardening deletes `WebAssembly` — so Rapier's runtime has to
+ * be compiled *before* it, which makes boot genuinely asynchronous. That is why the physics runtime
+ * used to be unreachable: `PhysicsWorld.create` called `RAPIER.init()` during a load, long after the
+ * capability was gone, and every physics model degraded to "the engine could not load on this
+ * device" — a claim about the device made by code that could not tell the device from the sandbox.
+ *
+ * Because `ready` now arrives one compile later, every other message waits in `deferredRequests`.
+ * The host sends `init` and `load` back to back; a `load` that overtook a still-booting worker hit
+ * `if (!state) return` and vanished, and the symptom was a viewer that never loaded anything with
+ * nothing on screen to read.
+ */
+let bootComplete = false;
+const deferredRequests: WorkerRequest[] = [];
+
+async function beginBoot(request: Extract<WorkerRequest, { type: 'init' }>): Promise<void> {
+  // Failure is not fatal: `PhysicsWorld.create` degrades honestly, which is `02` R1's contract.
+  await PhysicsWorld.warmUp();
+  state = initRenderer(request);
+  post({ type: 'ready' });
+  scheduleFrame(loop);
+  startHeartbeat();
+  // The video-capability probe is asynchronous (`isConfigSupported`), so the page hears "checking"
+  // from `ready` and the real answer a moment later. Nothing blocks on it.
+  void probeVideoCapability(state);
+  bootComplete = true;
+  for (const pending of deferredRequests.splice(0)) dispatch(pending);
+}
+
+/**
  * Message handler.
  *
  * Registered before hardening deletes `addEventListener` from the global. The listener survives the deletion,
@@ -1976,17 +2831,21 @@ function loop(timestamp: number): void {
   }
 ).addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
+  if (request.type === 'init') {
+    void beginBoot(request);
+    return;
+  }
+  if (!bootComplete) {
+    deferredRequests.push(request);
+    return;
+  }
+  dispatch(request);
+});
 
+/** The protocol, in one place: everything except `init`, which boot owns. */
+function dispatch(request: WorkerRequest): void {
   try {
     switch (request.type) {
-      case 'init': {
-        state = initRenderer(request);
-        post({ type: 'ready' });
-        scheduleFrame(loop);
-        startHeartbeat();
-        break;
-      }
-
       case 'load': {
         if (!state) return;
         loadProgram(state, request);
@@ -2039,7 +2898,7 @@ function loop(timestamp: number): void {
 
       case 'setTimeScale': {
         if (!state) return;
-        state.timeScale = Math.max(0.05, Math.min(4, request.scale));
+        applyTimeScale(state, request.scale);
         break;
       }
 
@@ -2051,6 +2910,14 @@ function loop(timestamp: number): void {
         state.wallElapsed = 0;
         if (state.manifest) state.physics?.reset(state.manifest);
         state.needsRender = true;
+        break;
+      }
+
+      case 'resetCamera': {
+        if (!state) return;
+        // `resetCameraToInitial` already invalidates the frame; keeping the learner at their current
+        // pause state and parameter values is the point of Reset being a view command, not a reload.
+        resetCameraToInitial(state);
         break;
       }
 
@@ -2129,14 +2996,12 @@ function loop(timestamp: number): void {
         state.autoRotate = false;
         // The learner is steering: a camera move in flight yields to them.
         cancelCameraMove(state);
-        const limits = state.manifest?.camera.limits;
-        const min = limits?.minDistance ?? 0.1;
-        const max = limits?.maxDistance ?? 500;
         // Multiplicative zoom, so a scroll notch feels the same at every distance.
-        state.orbit.distance = Math.max(
-          min,
-          Math.min(max, state.orbit.distance * (1 + request.delta * 0.001)),
+        const distance = clampDistance(
+          state.orbit.distance * (1 + request.delta * 0.001),
+          distanceLimits(state),
         );
+        if (distance !== null) state.orbit.distance = distance;
         state.cameraDirty = true;
         break;
       }
@@ -2232,17 +3097,67 @@ function loop(timestamp: number): void {
         break;
       }
 
+      case 'pickPoint': {
+        // Answered even with no model loaded: the page is waiting on a promise, and silence would
+        // leave it waiting forever. "Nothing there" is the truthful answer in that state.
+        const hit = state ? pickPoint(state, request.x, request.y) : { point: null, partId: null };
+        post({
+          type: 'pickedPoint',
+          requestId: request.requestId,
+          point: hit.point,
+          partId: hit.partId,
+        });
+        break;
+      }
+
+      case 'setAnnotations': {
+        if (!state) return;
+        state.annotations = request.pins;
+        // One frame presents and republishes the positions. An empty list needs no frame at all, and
+        // the projection path costs nothing from here on (`projectAnnotations` checks first).
+        if (request.pins.length > 0) state.needsRender = true;
+        break;
+      }
+
+      case 'startRecording': {
+        if (!state) return;
+        startRecording(state, request.maxSeconds ?? VIDEO_CLIP_LIMITS.maxSeconds);
+        break;
+      }
+
+      case 'stopRecording': {
+        if (!state) return;
+        void finishRecording(state);
+        break;
+      }
+
       case 'snapshot': {
         if (!state) return;
-        // Rendered on the learner's device and sent to the page as bytes; the server stores it without rendering
-        // anything itself. This is the platform's only server-side pixel operation, and it is a file write.
+        // Rendered on the learner's device and sent to the page as bytes; the server stores it without
+        // rendering anything itself. This is the platform's only file operation on pixels.
+        //
+        // The drawing buffer is resized to the authored resolution, rendered, captured, and restored —
+        // and the restore is checked, because a snapshot that left the canvas at 4K would cost every
+        // later frame four times the fragments for the sake of one file.
+        const { restore, width, height } = beginSnapshot(state, request.width, request.height);
         state.renderer.render(state.scene, state.camera);
         state.canvas
           .convertToBlob({ type: 'image/png' })
-          .then((blob: Blob) => post({ type: 'snapshot', blob }))
+          .then((blob: Blob) => post({ type: 'snapshot', blob, width, height }))
           .catch(() =>
             post({ type: 'notice', message: 'Could not capture a snapshot on this device.' }),
-          );
+          )
+          .finally(() => {
+            // `state` may have been torn down while the blob was being encoded; the renderer is gone
+            // with it and must not be resized.
+            if (!state) return;
+            if (!endSnapshot(state, restore)) {
+              post({
+                type: 'notice',
+                message: 'The view could not be restored after the export; reload the page.',
+              });
+            }
+          });
         break;
       }
 
@@ -2261,4 +3176,4 @@ function loop(timestamp: number): void {
     const described = describeFailure(error);
     post({ type: 'notice', message: described.message });
   }
-});
+}

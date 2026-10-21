@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { AuthoredId, finite, shortText } from '../primitives.ts';
 import { ModelManifest } from '../manifest/model.ts';
 import { DeviceTier } from '../budgets.ts';
+import { MAX_ANNOTATIONS_PER_MODEL } from '../settings.ts';
 
 /** Why the gate rejected a program. Each maps to a specific repair instruction (`04` stage 3). */
 export const GateViolationKind = z.enum([
@@ -200,3 +201,114 @@ export const SANDBOX_LIMITS = Object.freeze({
   /** Iterations allowed in a single guarded loop before it throws. */
   maxLoopIterations: 20_000_000,
 });
+
+/**
+ * Host ↔ worker view RPCs.
+ *
+ * A different dialect from the guest program protocol above: these messages never reach the guest
+ * realm and no untrusted code can observe or answer them. They live in this file because they cross
+ * the same sandbox boundary and must move with it — a pin the page stores and a point the worker
+ * projects are two halves of one contract (`03` R7). They are deliberately *not* members of
+ * `SandboxRequest`/`SandboxResponse`, which are the guest-facing dialect.
+ */
+
+/**
+ * One pinned note's world point, reduced to exactly what projection consumes.
+ *
+ * `Annotation` in `settings.ts` is the persisted learner record — text, timestamp and all. The worker
+ * needs none of that: it needs an id to answer with and a point to project, and sending the rest
+ * across the boundary every frame would be paying to clone prose the worker cannot read.
+ */
+export const AnnotationPin = z.object({
+  id: z.string().min(1).max(64),
+  /** World-space point on the model; re-projected every frame as the camera moves (`03` R7). */
+  point: z.tuple([finite, finite, finite]),
+});
+export type AnnotationPin = z.infer<typeof AnnotationPin>;
+
+/** Host → worker: raycast this screen point against the realized scene and report the world hit. */
+export const PointPickRequest = z.object({
+  type: z.literal('pickPoint'),
+  /** Correlates the reply, so two picks in flight cannot swap answers. */
+  requestId: shortText(64),
+  /** Canvas-space pixels, origin top-left — the same space pointer messages already use. */
+  x: finite,
+  y: finite,
+});
+export type PointPickRequest = z.infer<typeof PointPickRequest>;
+
+/** Worker → host: where a pick ray landed, or an honest miss. */
+export const PointPickResponse = z.object({
+  type: z.literal('pickedPoint'),
+  requestId: shortText(64),
+  /**
+   * The world-space point the ray struck, or `null` when it hit nothing. Never a guessed origin: a
+   * pin placed at the model's centre because the click missed is a note attached to nothing.
+   */
+  point: z.tuple([finite, finite, finite]).nullable(),
+  /** The nearest selectable part the ray passed through, when the geometry belongs to one. */
+  partId: AuthoredId.nullable(),
+});
+export type PointPickResponse = z.infer<typeof PointPickResponse>;
+
+/** Host → worker: this is the whole pin set; project these and forget any other. */
+export const SetAnnotationsRequest = z.object({
+  type: z.literal('setAnnotations'),
+  /** Capped like the persisted list, so a stuck click cannot make the per-frame projection unbounded. */
+  pins: z.array(AnnotationPin).max(MAX_ANNOTATIONS_PER_MODEL),
+});
+export type SetAnnotationsRequest = z.infer<typeof SetAnnotationsRequest>;
+
+/**
+ * One pin's screen position for this frame.
+ *
+ * `x`/`y` are present only when `visible`. A point behind the camera or outside the frustum has no
+ * honest screen position — projecting it anyway mirrors it through the origin, which is how a pin
+ * lands on the opposite side of the screen — so the visibility flag is the whole answer and the
+ * coordinates are omitted rather than fabricated (`03` R7: pins "hide behind the camera").
+ */
+export const ProjectedAnnotation = z.object({
+  id: z.string().min(1).max(64),
+  visible: z.boolean(),
+  /** Canvas-space pixels, origin top-left. Absent unless `visible`. */
+  x: finite.optional(),
+  y: finite.optional(),
+});
+export type ProjectedAnnotation = z.infer<typeof ProjectedAnnotation>;
+
+/** Worker → host: every pin's position this frame. Sent at most once per presented frame, never when idle. */
+export const AnnotationProjectionResponse = z.object({
+  type: z.literal('annotationPositions'),
+  pins: z.array(ProjectedAnnotation).max(MAX_ANNOTATIONS_PER_MODEL),
+});
+export type AnnotationProjectionResponse = z.infer<typeof AnnotationProjectionResponse>;
+
+/**
+ * The hard stops every clip is bounded by.
+ *
+ * `03` R8 allows "a duration cap", and the reason is the same one that governs the rest of this
+ * platform: an export that can run until the tab dies is an export that eventually does. Both limits
+ * are enforced in the worker itself, not merely offered to the caller.
+ */
+export const VIDEO_CLIP_LIMITS = Object.freeze({ maxSeconds: 10, maxBytes: 24_000_000 });
+
+/**
+ * What the device can actually do about video export.
+ *
+ * `03` R8 promises video clip recording, but `MediaRecorder` and `captureStream` do not exist on an
+ * `OffscreenCanvas` in any browser, so the only honest route is WebCodecs (`VideoEncoder`). When the
+ * probe reports `supported: false`, the UI can say "recording is not available on this device"
+ * instead of offering a button that does nothing.
+ */
+export const VideoRecordingCapability = z.object({
+  supported: z.boolean(),
+  /** The WebCodecs codec string the probe accepted, when supported. */
+  codec: z.string().max(32).optional(),
+  /** Learner-facing explanation of why recording is unavailable. Absent when it is available. */
+  reason: z.string().max(200).optional(),
+  /** Hard cap on clip length, seconds. */
+  maxSeconds: z.number().positive(),
+  /** Hard cap on encoded bytes, so a clip can never grow without bound. */
+  maxBytes: z.number().int().positive(),
+});
+export type VideoRecordingCapability = z.infer<typeof VideoRecordingCapability>;

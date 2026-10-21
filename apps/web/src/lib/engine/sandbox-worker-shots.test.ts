@@ -169,6 +169,76 @@ function settle(
   }
 }
 
+/** The same model, with an authored opening pose that sits *outside* its own declared distance limits. */
+const OUT_OF_LIMITS_GUEST = `${GUEST}
+scene.camera({ position: [3, 2, 4], target: [0, 0, 0], fov: 42,
+  limits: { minDistance: 1, maxDistance: 5 } });
+`;
+
+describe('returning the camera to the authored opening frame', () => {
+  it('lands exactly on the authored pose after a shot move, and the rig stays there', async () => {
+    const { worker, target } = await loadedState(GUEST);
+
+    // Move the camera away from the opening frame the ordinary way.
+    expect(worker.playShot(target, { kind: 'flyTo', targetPartId: 'wheel', duration: 0.4 })).toBe(
+      true,
+    );
+    worker.advanceShot(target, 0.2);
+    expect(target.glide).not.toBeNull();
+    expect(target.orbit.distance).not.toBeCloseTo(Math.hypot(2, 1.5, 2.4), 6);
+
+    // `03` R5 Reset: the camera half is the authored initial pose, and nothing else.
+    expect(worker.resetCameraToInitial(target)).toBe(true);
+
+    expect(target.orbit.target.x).toBeCloseTo(0, 9);
+    expect(target.orbit.target.y).toBeCloseTo(0, 9);
+    expect(target.orbit.target.z).toBeCloseTo(0, 9);
+    expect(target.orbit.distance).toBeCloseTo(Math.hypot(2, 1.5, 2.4), 9);
+    expect(target.camera.fov).toBeCloseTo(42, 9);
+    expect(target.camera.position.x).toBeCloseTo(2, 6);
+    expect(target.camera.position.y).toBeCloseTo(1.5, 6);
+    expect(target.camera.position.z).toBeCloseTo(2.4, 6);
+
+    // The cancelled move leaves nothing behind that could carry the camera back off the pose.
+    expect(target.glide).toBeNull();
+    expect(target.fovMove).toBeNull();
+    expect(target.glideFocus).toBeNull();
+
+    // And it genuinely stops: further shot ticks move nothing.
+    for (let index = 0; index < 60; index += 1) worker.advanceShot(target, 1 / 60);
+    expect(target.orbit.distance).toBeCloseTo(Math.hypot(2, 1.5, 2.4), 9);
+    expect(target.camera.position.x).toBeCloseTo(2, 6);
+    expect(target.camera.position.y).toBeCloseTo(1.5, 6);
+    expect(target.camera.position.z).toBeCloseTo(2.4, 6);
+  });
+
+  it('cancels a fov pull as well, restoring the authored zoom', async () => {
+    const { worker, target } = await loadedState(GUEST);
+    expect(worker.playShot(target, { kind: 'fovPull', fov: 30, duration: 1 })).toBe(true);
+    worker.advanceShot(target, 0.5);
+    expect(target.camera.fov).toBeLessThan(42);
+
+    worker.resetCameraToInitial(target);
+
+    expect(target.camera.fov).toBeCloseTo(42, 9);
+    expect(target.fovMove).toBeNull();
+    for (let index = 0; index < 60; index += 1) worker.advanceShot(target, 1 / 60);
+    expect(target.camera.fov).toBeCloseTo(42, 9);
+  });
+
+  it('brings an authored pose that violates its own limits inside them, direction preserved', async () => {
+    const { worker, target } = await loadedState(OUT_OF_LIMITS_GUEST);
+
+    // |(3, 2, 4)| = √29 ≈ 5.39, past the declared maxDistance of 5.
+    worker.resetCameraToInitial(target);
+
+    expect(target.orbit.distance).toBeCloseTo(5, 9);
+    // Clamped along the same sight line, not snapped somewhere else.
+    expect(target.camera.position.x / target.camera.position.z).toBeCloseTo(3 / 4, 6);
+    expect(target.camera.position.y).toBeGreaterThan(0);
+  });
+});
+
 describe('the shot player', () => {
   it('plays flyTo as a real glide that settles on the declared part', async () => {
     const { worker, target } = await loadedState(GUEST);

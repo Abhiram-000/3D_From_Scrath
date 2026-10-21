@@ -18,12 +18,16 @@
  * All rendering happens here, on the learner's device. The server is never involved in a frame.
  */
 import type {
+  AnnotationPin,
   DeviceTier,
   ModelManifest,
+  ProjectedAnnotation,
   QualityPreset,
   RuntimeStats,
   ShotDecl,
+  VideoRecordingCapability,
 } from '@edu3d/contracts';
+import { VIDEO_CLIP_LIMITS } from '@edu3d/contracts';
 import type { SerializableVerdict, WorkerRequest, WorkerResponse } from './sandbox-worker.ts';
 import SandboxWorker from './sandbox-worker.ts?worker';
 import {
@@ -44,6 +48,13 @@ import {
   type WatchdogState,
 } from './watchdog.ts';
 
+/** Where a pick ray landed, as the page receives it (`03` R7). */
+export interface PickedPoint {
+  /** World-space point on the model, or null when the ray hit nothing. */
+  point: [number, number, number] | null;
+  partId: string | null;
+}
+
 /** What the viewer subscribes to. Each callback is optional so a caller takes only what it needs. */
 export interface HostCallbacks {
   onReady?: () => void;
@@ -55,7 +66,21 @@ export interface HostCallbacks {
   onSelected?: (partId: string | null) => void;
   onLog?: (level: 'log' | 'warn' | 'error', message: string) => void;
   onNotice?: (message: string) => void;
-  onSnapshot?: (blob: Blob) => void;
+  /** The PNG and the exact pixels it was rendered at, so the download can be named honestly. */
+  onSnapshot?: (blob: Blob, info: { width: number; height: number }) => void;
+  /**
+   * Every pin's screen position, at most once per presented frame (`03` R7).
+   *
+   * Called only when at least one pin is set, and never while the frame loop is idle — the worker
+   * suppresses the whole path for a viewer that has no notes.
+   */
+  onAnnotationPositions?: (positions: ProjectedAnnotation[]) => void;
+  /** The device's answered video-recording capability, once the worker's probe returns. */
+  onRecordingCapability?: (capability: VideoRecordingCapability) => void;
+  /** A finished clip, delivered as a real file. Never called for a recording that did not happen. */
+  onVideoClip?: (blob: Blob, info: { seconds: number; bytes: number }) => void;
+  /** Recording could not start or stopped early, with the reason. The UI says so rather than nothing. */
+  onRecordingFailed?: (message: string) => void;
   /** Fired when the watchdog killed the worker. The viewer stays alive; the model is gone. */
   onKilled?: (reason: string) => void;
 }
@@ -148,6 +173,25 @@ export function sandboxSupported(): { supported: boolean; reason?: string } {
   return { supported: true };
 }
 
+/** The screenshot sizes `00-GOAL.md` promises, plus the viewport itself. */
+export type SnapshotPreset = 'viewport' | 'hd' | 'fullHd' | 'uhd4k';
+
+/**
+ * The authored export resolutions, in CSS pixels.
+ *
+ * A resolution is a parameter of the export rather than a constant in the worker, because one button
+ * must be able to produce a share thumbnail and a 4K slide from the same frame (`00-GOAL.md`:
+ * "Screenshots at multiple resolutions (HD, Full HD, 4K)"). `viewport` means "whatever the canvas is
+ * now" and is resolved on the main thread, which is the only place that knows the layout.
+ */
+export const SNAPSHOT_PRESETS: Readonly<
+  Record<Exclude<SnapshotPreset, 'viewport'>, { width: number; height: number }>
+> = Object.freeze({
+  hd: { width: 1280, height: 720 },
+  fullHd: { width: 1920, height: 1080 },
+  uhd4k: { width: 3840, height: 2160 },
+});
+
 export class SandboxHost {
   private worker: Worker | null = null;
   private canvas: HTMLCanvasElement | null = null;
@@ -198,6 +242,30 @@ export class SandboxHost {
   /** Dev-only instrumentation state: load-start clock and stats cadence. */
   private loadStartedAt = 0;
   private statsPublished = 0;
+
+  /**
+   * The last answered video-recording capability.
+   *
+   * Starts as "checking", not as "available": a capability the page assumes before the device has
+   * answered is a capability that is eventually faked. The worker's probe replaces it within a frame
+   * or two of `ready`, and a respawn resets it because the new worker must answer for itself.
+   */
+  private videoCapability: VideoRecordingCapability = {
+    supported: false,
+    reason: 'Checking whether this device can record video…',
+    maxSeconds: VIDEO_CLIP_LIMITS.maxSeconds,
+    maxBytes: VIDEO_CLIP_LIMITS.maxBytes,
+  };
+
+  /**
+   * Picks awaiting a reply, keyed by request id.
+   *
+   * A promise is the right shape for "where did this click land", but a worker killed mid-pick would
+   * leave it pending forever — so every path that discards a worker settles them with an honest
+   * "nothing", rather than leaking a promise the page awaits for the rest of the session.
+   */
+  private readonly pendingPicks = new Map<string, (result: PickedPoint) => void>();
+  private pickCounter = 0;
 
   constructor(
     container: HTMLElement,
@@ -280,6 +348,15 @@ export class SandboxHost {
 
     const worker = new SandboxWorker();
     this.worker = worker;
+
+    // A fresh realm has answered nothing yet. The previous worker's capability answer died with it,
+    // and reporting a stale "yes" would offer a button whose worker cannot honour it.
+    this.videoCapability = {
+      supported: false,
+      reason: 'Checking whether this device can record video…',
+      maxSeconds: VIDEO_CLIP_LIMITS.maxSeconds,
+      maxBytes: VIDEO_CLIP_LIMITS.maxBytes,
+    };
 
     // Every event is scoped to the worker it came from — captured here, compared on delivery.
     // `terminate()` discards messages still queued *inside* a worker, but a `MessageEvent` already
@@ -441,7 +518,30 @@ export class SandboxHost {
         this.callbacks.onNotice?.(message.message);
         break;
       case 'snapshot':
-        this.callbacks.onSnapshot?.(message.blob);
+        this.callbacks.onSnapshot?.(message.blob, { width: message.width, height: message.height });
+        break;
+      case 'annotationPositions':
+        this.callbacks.onAnnotationPositions?.(message.pins);
+        break;
+      case 'pickedPoint': {
+        const resolve = this.pendingPicks.get(message.requestId);
+        if (!resolve) break;
+        this.pendingPicks.delete(message.requestId);
+        resolve({ point: message.point, partId: message.partId });
+        break;
+      }
+      case 'capabilities':
+        this.videoCapability = message.video;
+        this.callbacks.onRecordingCapability?.(message.video);
+        break;
+      case 'recording':
+        this.callbacks.onVideoClip?.(message.blob, {
+          seconds: message.seconds,
+          bytes: message.bytes,
+        });
+        break;
+      case 'recordingFailed':
+        this.callbacks.onRecordingFailed?.(message.message);
         break;
       case 'disposed':
         break;
@@ -515,6 +615,7 @@ export class SandboxHost {
   kill(reason: string): void {
     if (devEnabled) devError(`worker terminated — ${reason}`);
     this.stopWatchdog();
+    this.settlePicks({ point: null, partId: null });
     this.worker?.terminate();
     this.worker = null;
     // The grace belonged to the model that just died. A worker that wedges immediately after this
@@ -550,6 +651,7 @@ export class SandboxHost {
     }
     // Restart so each model gets a clean realm.
     this.stopWatchdog();
+    this.settlePicks({ point: null, partId: null });
     this.worker?.terminate();
     this.worker = null;
     this.recreateCanvas();
@@ -612,6 +714,85 @@ export class SandboxHost {
     this.send({ type: 'pan', deltaX, deltaY });
   }
 
+  /**
+   * Return the camera to the authored opening frame, without touching time, parameters or motion.
+   *
+   * The camera half of `03` R5's Reset. It is an absolute command rather than a re-load because the
+   * learner expects to keep the model they have been exploring: Reset is "look at it fresh", not
+   * "start over". `resetTime` is its sibling for the clock.
+   */
+  resetCamera(): void {
+    this.send({ type: 'resetCamera' });
+  }
+
+  /**
+   * Turn a screen-space point into a world-space point on the realized model (`03` R7).
+   *
+   * The raycast happens in the worker because that is where the scene, the camera and the geometry
+   * live; the page only ever sees the answer. Resolves with `point: null` when the ray missed, and
+   * also when the worker is replaced before it can answer — the promise is always settled.
+   */
+  pickPoint(x: number, y: number): Promise<PickedPoint> {
+    const requestId = `pick-${(this.pickCounter += 1)}`;
+    return new Promise<PickedPoint>((resolve) => {
+      this.pendingPicks.set(requestId, resolve);
+      this.send({ type: 'pickPoint', requestId, x, y });
+    });
+  }
+
+  /**
+   * Publish the learner's pinned world points so the worker can project them every frame.
+   *
+   * The page owns the notes (they are persisted per model); the host forwards only the id and the
+   * world point. An empty array switches the worker's projection path off entirely, so a viewer with
+   * no notes pays nothing for the feature.
+   */
+  setAnnotations(pins: readonly AnnotationPin[]): void {
+    this.send({ type: 'setAnnotations', pins: [...pins] });
+  }
+
+  /**
+   * What this device can actually do about video export.
+   *
+   * Read it before showing a record button: `supported: false` with a `reason` is a state the UI can
+   * explain, and no recording is ever fabricated to make a button look alive (`03` R8).
+   */
+  get recordingCapability(): VideoRecordingCapability {
+    return this.videoCapability;
+  }
+
+  /**
+   * Begin a bounded clip of the viewport.
+   *
+   * Reports through `onRecordingFailed` rather than doing nothing when the device cannot encode, so a
+   * caller that ignored the capability still gets the truth. The worker enforces both caps itself.
+   */
+  startRecording(maxSeconds: number = VIDEO_CLIP_LIMITS.maxSeconds): void {
+    if (!this.videoCapability.supported) {
+      this.callbacks.onRecordingFailed?.(
+        this.videoCapability.reason ?? 'Recording is not available on this device.',
+      );
+      return;
+    }
+    this.send({ type: 'startRecording', maxSeconds });
+  }
+
+  /** Stop the clip in flight; the worker flushes and delivers it through `onVideoClip`. */
+  stopRecording(): void {
+    this.send({ type: 'stopRecording' });
+  }
+
+  /**
+   * Resolve every outstanding pick as a miss.
+   *
+   * Called wherever the worker that would have answered is discarded. Reporting a miss is honest:
+   * the click genuinely produced no point, because the model it was aimed at is gone.
+   */
+  private settlePicks(result: PickedPoint): void {
+    for (const resolve of this.pendingPicks.values()) resolve(result);
+    this.pendingPicks.clear();
+  }
+
   focusPart(partId: string | null): void {
     this.send({ type: 'focusPart', partId });
   }
@@ -642,14 +823,32 @@ export class SandboxHost {
     this.send({ type: 'setTheme', theme });
   }
 
-  /** Ask for a PNG. Rendered on this device; the server only ever stores the bytes. */
-  requestSnapshot(width = 1200, height = 675): void {
-    this.send({ type: 'snapshot', width, height });
+  /**
+   * Ask for a PNG at an authored resolution.
+   *
+   * `viewport` renders at the container's own size; the presets are the sizes `00-GOAL.md` names. The
+   * worker resizes the drawing buffer, renders, captures and restores it — and *verifies* the restore,
+   * so a 4K export cannot leave the canvas stuck at 4K for the rest of the session. Pixels are
+   * rendered on this device; the server only ever stores the bytes.
+   */
+  requestSnapshot(preset: SnapshotPreset = 'viewport'): void {
+    const size = preset === 'viewport' ? this.viewportSize() : SNAPSHOT_PRESETS[preset];
+    this.send({ type: 'snapshot', width: size.width, height: size.height });
+  }
+
+  /** The container's current size, floored to whole pixels — what "viewport resolution" means. */
+  private viewportSize(): { width: number; height: number } {
+    const rect = this.container.getBoundingClientRect();
+    return {
+      width: Math.max(1, Math.floor(rect.width)),
+      height: Math.max(1, Math.floor(rect.height)),
+    };
   }
 
   dispose(): void {
     this.disposed = true;
     this.rafProbeRunning = false;
+    this.settlePicks({ point: null, partId: null });
     this.stopWatchdog();
     this.send({ type: 'dispose' });
     // Terminating immediately rather than awaiting the `disposed` reply: a worker that is already wedged would

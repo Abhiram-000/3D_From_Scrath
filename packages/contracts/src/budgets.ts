@@ -141,6 +141,22 @@ export const RuntimeStats = z.object({
   drawCalls: z.number().int().min(0),
   triangles: z.number().int().min(0),
   physicsMillis: z.number().min(0),
+  /**
+   * Whether the simulation is *actually stepping right now*, as measured in the worker.
+   *
+   * The status bar used to answer this from `manifest.physics`, which says only that the model
+   * *declared* a simulation: a device whose Rapier WASM failed to load still read "Physics: On" with
+   * only a toast admitting otherwise, which is exactly the faked trust indicator `03` R9 forbids.
+   * Defaults to `false` so an older worker that never measured this can never be mistaken for one
+   * that did.
+   */
+  physicsActive: z.boolean().default(false),
+  /**
+   * Why physics is not running, present only when the model asked for it and the device could not
+   * provide it. The status bar reads the pair — active, or unavailable and why, or off by the
+   * model's own choice — instead of guessing which of the three it is.
+   */
+  physicsUnavailableReason: z.string().max(200).optional(),
   /** Geometry/material cache hit rate; a visible stat because `08` requires the technique be measured. */
   cacheHitRate: z.number().min(0).max(1),
   quality: QualityPreset,

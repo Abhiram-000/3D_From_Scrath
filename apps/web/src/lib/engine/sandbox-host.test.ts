@@ -64,7 +64,7 @@ const { TrackedFakeWorker, workers } = vi.hoisted(() => {
 
 vi.mock('./sandbox-worker.ts?worker', () => ({ default: TrackedFakeWorker }));
 
-import { SandboxHost } from './sandbox-host';
+import { SandboxHost, type HostCallbacks } from './sandbox-host';
 import type { SerializableVerdict } from './sandbox-worker.ts';
 
 /** A manifest with just the fields the host's dev-instrumentation touches. Cast keeps focus. */
@@ -347,5 +347,149 @@ describe('returning to a hidden tab is never a hang', () => {
     tick();
     expect(killed).toHaveLength(1);
     host.dispose();
+  });
+});
+
+describe('the commands the page sends, and the surfaces it reads', () => {
+  let host: SandboxHost | null = null;
+
+  afterEach(() => {
+    host?.dispose();
+    host = null;
+  });
+
+  /** Start a host and hand back both halves, so no test has to reach through a nullable field. */
+  const startHost = (
+    callbacks: HostCallbacks = {},
+  ): { instance: SandboxHost; worker: InstanceType<typeof TrackedFakeWorker> } => {
+    const instance = new SandboxHost(container, callbacks);
+    host = instance;
+    instance.start();
+    return { instance, worker: workerAt(0) };
+  };
+
+  it('forwards setTimeScale to the worker unchanged', () => {
+    const { instance, worker } = startHost();
+    instance.setTimeScale(0.25);
+    // The value must reach the worker, where `applyTimeScale` clamps and stores it.
+    expect(worker.sent).toContainEqual({ type: 'setTimeScale', scale: 0.25 });
+  });
+
+  it('forwards resetCamera, which the toolbar’s Reset calls', () => {
+    const { instance, worker } = startHost();
+    instance.resetCamera();
+    expect(worker.sent).toContainEqual({ type: 'resetCamera' });
+  });
+
+  it('resolves a pick from the worker’s answer, keyed by request id', async () => {
+    const { instance, worker } = startHost();
+    const pending = instance.pickPoint(120, 90);
+
+    const requested = worker.sent.find(
+      (message) => (message as { type: string }).type === 'pickPoint',
+    ) as { requestId: string; x: number; y: number } | undefined;
+    expect(requested).toMatchObject({ x: 120, y: 90 });
+    expect(typeof requested?.requestId).toBe('string');
+
+    worker.emit({
+      type: 'pickedPoint',
+      requestId: requested?.requestId,
+      point: [1, 2, 3],
+      partId: 'wheel',
+    });
+
+    await expect(pending).resolves.toEqual({ point: [1, 2, 3], partId: 'wheel' });
+  });
+
+  it('settles an outstanding pick as a miss when the worker is replaced', async () => {
+    const { instance } = startHost();
+    const pending = instance.pickPoint(10, 10);
+    // A model swap terminates the worker that would have answered; the promise must not hang.
+    instance.load('next model', 3);
+    await expect(pending).resolves.toEqual({ point: null, partId: null });
+  });
+
+  it('forwards the pin set and routes the per-frame positions to the page', () => {
+    const positions: unknown[] = [];
+    const { instance, worker } = startHost({
+      onAnnotationPositions: (pins) => positions.push(pins),
+    });
+
+    instance.setAnnotations([{ id: 'note-1', point: [0, 1, 2] }]);
+    expect(worker.sent).toContainEqual({
+      type: 'setAnnotations',
+      pins: [{ id: 'note-1', point: [0, 1, 2] }],
+    });
+
+    worker.emit({
+      type: 'annotationPositions',
+      pins: [{ id: 'note-1', visible: true, x: 10, y: 20 }],
+    });
+    expect(positions).toEqual([[{ id: 'note-1', visible: true, x: 10, y: 20 }]]);
+  });
+
+  it('reports the snapshot’s real resolution alongside the blob', () => {
+    const shots: Array<{ width: number; height: number }> = [];
+    const { instance, worker } = startHost({ onSnapshot: (_blob, info) => shots.push(info) });
+
+    instance.requestSnapshot('uhd4k');
+    expect(worker.sent).toContainEqual({ type: 'snapshot', width: 3840, height: 2160 });
+
+    worker.emit({ type: 'snapshot', blob: new Blob([]), width: 3840, height: 2160 });
+    expect(shots).toEqual([{ width: 3840, height: 2160 }]);
+  });
+
+  it('resolves the viewport preset from the container, not a hard-coded size', () => {
+    const { instance, worker } = startHost();
+    instance.requestSnapshot();
+    // The stub container is 800×600.
+    expect(worker.sent).toContainEqual({ type: 'snapshot', width: 800, height: 600 });
+  });
+
+  it('offers no recording until the worker answers, and never starts one it cannot honour', () => {
+    const failures: string[] = [];
+    const { instance, worker } = startHost({
+      onRecordingFailed: (message) => failures.push(message),
+    });
+
+    // "Checking", not "available": a capability the page assumes is a capability that gets faked.
+    expect(instance.recordingCapability.supported).toBe(false);
+
+    instance.startRecording(5);
+
+    expect(
+      worker.sent.some((message) => (message as { type: string }).type === 'startRecording'),
+    ).toBe(false);
+    expect(failures).toHaveLength(1);
+  });
+
+  it('starts and stops a clip once the worker reports it can encode', () => {
+    const capabilities: boolean[] = [];
+    const { instance, worker } = startHost({
+      onRecordingCapability: (capability) => capabilities.push(capability.supported),
+    });
+
+    worker.emit({
+      type: 'capabilities',
+      video: { supported: true, codec: 'vp8', maxSeconds: 10, maxBytes: 24_000_000 },
+    });
+
+    expect(capabilities).toEqual([true]);
+    expect(instance.recordingCapability.codec).toBe('vp8');
+
+    instance.startRecording(5);
+    expect(worker.sent).toContainEqual({ type: 'startRecording', maxSeconds: 5 });
+
+    instance.stopRecording();
+    expect(worker.sent).toContainEqual({ type: 'stopRecording' });
+  });
+
+  it('delivers a finished clip as a real file', () => {
+    const clips: Array<{ seconds: number; bytes: number }> = [];
+    const { worker } = startHost({ onVideoClip: (_blob, info) => clips.push(info) });
+
+    worker.emit({ type: 'recording', blob: new Blob(['webm']), seconds: 3.5, bytes: 1024 });
+
+    expect(clips).toEqual([{ seconds: 3.5, bytes: 1024 }]);
   });
 });

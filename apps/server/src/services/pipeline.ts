@@ -36,6 +36,48 @@ import {
 
 export const MAX_REPAIR_PASSES = 2;
 
+/**
+ * Which wall stopped a truncated reply — the runtime half of the diagnosis the provider's /models
+ * data motivated. The remedies differ completely, so the pipeline says which one it saw:
+ *
+ *   - `output_cap` — reported completion tokens reached OUR configured ceiling. The wall is ours;
+ *     the remedy is raising `AI_MAX_OUTPUT_TOKENS` (now 131,072 — the provider permits 393,216 on
+ *     deepseek-v4-flash, so we were asking for 6× less than the model allows).
+ *   - `early_stream` — the provider reported usage BELOW our cap, yet the reply is incomplete:
+ *     either the gateway cut the stream, or the model is a reasoning model whose thinking tokens
+ *     are not counted in `completion_tokens` and consumed budget invisibly. The cap raise only
+ *     helps the second variant; the continuation protocol handles both.
+ *   - `unreported` — no usage arrived at all (premature socket death): nothing to compare, the
+ *     provider died before accounting for anything.
+ */
+export type TruncationWall = 'output_cap' | 'early_stream' | 'unreported';
+
+export function classifyTruncationWall(
+  usage: { completionTokens: number } | undefined,
+  maxOutputTokens: number,
+): TruncationWall {
+  if (usage && usage.completionTokens >= maxOutputTokens) return 'output_cap';
+  if (usage && usage.completionTokens > 0) return 'early_stream';
+  return 'unreported';
+}
+
+/**
+ * Bounded continuation passes: how many times a cut-off reply may be CONTINUED on top of the first
+ * attempt (so a program may be assembled from up to `1 + MAX_CONTINUATION_PASSES` pieces).
+ *
+ * Why continuation and not the old complete-re-ask: every measured generation failure was
+ * `upstream_truncated`, on exactly the topics needing the longest programs, and the old remedy —
+ * send the partial back, ask for the COMPLETE program again — has the same probability of being
+ * cut a second time while paying a full re-roll. That is why those topics failed twice and gave
+ * up. A continuation sends the partial as an ASSISTANT turn and asks for only the missing
+ * remainder: the model's output budget goes to new code instead of re-emitting what already
+ * arrived, and each pass resumes from further along. Three is the bound because every pass is
+ * still a multi-minute paid call; past that, failing with an honest diagnosis beats stacking
+ * more attempts on a provider that is out of room. (Wire-visible constant: it bounds how long a
+ * truncation-recovering run may take, roughly `(1 + 3) × one_generation` in the worst case.)
+ */
+export const MAX_CONTINUATION_PASSES = 3;
+
 /** The sink the pipeline emits into — a real stream, or the buffer the non-streaming path reads. */
 export interface PipelineSink {
   (event: GenerationEvent): void;
@@ -73,6 +115,12 @@ export interface PipelineFailure {
     | 'draining'
     /** The learner closed the tab. Not a failure anyone will read — the stream is already gone. */
     | 'cancelled'
+    /**
+     * The bounded generation-queue wait ran out (services/generation-queue.ts → 429). An existing
+     * `ErrorCode` — the honest name for "the server is at its provider concurrency and the wait
+     * for a slot expired", with a retry-after telling the client when to come back.
+     */
+    | 'rate_limited'
     /** An unexpected fault inside the pipeline itself — carries `internal`'s honest status. */
     | 'internal';
   message: string;
@@ -102,8 +150,8 @@ const nowSec = () => Date.now();
  *
  * A legitimately complete program closes its fence, sits under the cap with a genuine `stop`,
  * and parses clean — none of the signals above fire on it. A signal never refuses a program
- * outright: it routes the run into the one-bounded continuation re-ask, so even a border case
- * costs one call, not a refusal.
+ * outright: it routes the run into the bounded continuation protocol (`MAX_CONTINUATION_PASSES`
+ * re-asks for only the missing remainder), so even a border case costs one small call, not a refusal.
  */
 function replyLooksCut(
   rawReply: string,
@@ -127,6 +175,165 @@ function replyLooksCut(
     );
   }
   return false;
+}
+
+/** A fenced block, with or without a language tag (same shape `prepareProgram` extracts). */
+const CLOSED_FENCE = /```(?:javascript|js|jsx|typescript|ts)?[ \t]*\r?\n([\s\S]*?)\r?\n?[ \t]*```/g;
+/** An opening fence line whether or not its block was ever closed. */
+const OPEN_FENCE = /```(?:javascript|js|jsx|typescript|ts)?[ \t]*\r?\n/;
+
+/** The largest CLOSED fenced block in a reply, or null when there is none. */
+function largestClosedFence(raw: string): string | null {
+  const blocks = [...raw.matchAll(CLOSED_FENCE)].map((match) => match[1] ?? '');
+  if (blocks.length === 0) return null;
+  return blocks.reduce((longest, block) => (block.length > longest.length ? block : longest));
+}
+
+/** First non-empty, trimmed line of a line list — the seam/restart anchor. */
+function firstNonEmptyLine(lines: string[]): string {
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return '';
+}
+
+/**
+ * Join a partial program and its continuation into one fenced program.
+ *
+ * Returns the RAW reply to feed into `prepareProgram` and `replyLooksCut` and to hand to later
+ * repair prompts — always exactly one CLOSED fence, so fence parity is restored by construction.
+ *
+ * The seam cases, in the order they are handled:
+ *   1. **Restart** — the model ignored "continue" and rewrote the whole program (observed under
+ *      the old complete-re-ask instruction). Detected by its first line matching the partial's
+ *      first line; a rewrite supersedes the partial, so it ships alone.
+ *   2. **Echoed tail** — the model repeats the last line(s) before continuing (models asked to
+ *      "continue from where you stopped" routinely echo one or two lines). Bounded suffix/prefix
+ *      line match drops the repeated span. A single-line echo only counts when the line is
+ *      substantive (≥ 5 chars): an echo of `});` is too ambiguous to match on and is left to the
+ *      gate + repair loop instead of risking a silently wrong dedupe.
+ *   3. **Mid-token seam** — the cut landed inside a statement, so the continuation's first
+ *      characters ARE the rest of the partial's last line: joined with no separator
+ *      (`const radius = 0.` + `5;` → `const radius = 0.5;`).
+ *   4. **Clean seam** — the partial's last line ended a statement; joined with a newline.
+ *   5. **Everything else** — a seam the model phrased in a way these rules did not predict will
+ *      usually fail the static gate ON THE SEAM LINES, which is not wasted: the existing bounded
+ *      repair loop (stage 4) sends the model its own stitched code plus the exact violations, and
+ *      a seam fix is precisely the one-line-specific-error repair that loop was built for.
+ */
+export function stitchContinuation(partialReply: string, continuationReply: string): string {
+  // ── Head: what the provider wrote before the cut ──
+  // A streamed cut usually opens a fence it never closes; a cap cut with text after the fence
+  // closed leaves a stray closing fence. Both are dropped — we only keep code.
+  let head = partialReply;
+  const open = head.match(OPEN_FENCE);
+  if (open?.index !== undefined) head = head.slice(open.index + open[0].length);
+  head = head.replace(/```[ \t]*\s*$/, '');
+
+  // ── Continuation body: closed fence first, then content after an opening fence, else the raw
+  // reply (minus one leading prose line when the model ignored the fence instruction entirely —
+  // a line with no code punctuation in it before the first code-shaped line).
+  let contBody = largestClosedFence(continuationReply);
+  if (contBody === null) {
+    const contOpen = continuationReply.match(OPEN_FENCE);
+    contBody =
+      contOpen?.index !== undefined
+        ? continuationReply.slice(contOpen.index + contOpen[0].length)
+        : continuationReply.trim();
+    if (contOpen?.index === undefined) {
+      const lines = contBody.split('\n');
+      const firstCode = lines.findIndex(
+        (line) =>
+          /^\s*(import\b|const\b|let\b|var\b|function\b|\/\/|\/\*|for\b|if\b|return\b|export\b)/.test(
+            line,
+          ) || line.includes('ctx.'),
+      );
+      if (firstCode > 0) contBody = lines.slice(firstCode).join('\n');
+    }
+  }
+  contBody = contBody.trim();
+  const contLines = contBody.split('\n');
+  const headLines = head.split('\n');
+
+  // 1. Restart: the continuation begins with the partial's own first line.
+  const contFirst = firstNonEmptyLine(contLines);
+  const headFirst = firstNonEmptyLine(headLines);
+  if (contFirst.length > 0 && contFirst === headFirst) {
+    return '```javascript\n' + contBody + '\n```';
+  }
+
+  // 2. Echoed tail: longest suffix of the head that the continuation repeats as its prefix.
+  //    Line-granularity (not char) because models echo whole lines, and capped so a pathological
+  //    reply cannot cost an unbounded scan.
+  const MAX_OVERLAP_LINES = 24;
+  let overlap = 0;
+  const headTrimmed = headLines.map((line) => line.trimEnd());
+  for (let n = Math.min(MAX_OVERLAP_LINES, headLines.length, contLines.length); n >= 1; n -= 1) {
+    const suffix = headTrimmed.slice(headLines.length - n).join('\n');
+    const prefix = contLines
+      .slice(0, n)
+      .map((line) => line.trimEnd())
+      .join('\n');
+    if (suffix.length > 0 && suffix === prefix && (n >= 2 || suffix.length >= 5)) {
+      overlap = n;
+      break;
+    }
+  }
+  const joinLines = overlap > 0 ? headLines.slice(0, headLines.length - overlap) : headLines;
+
+  // 3./4. The seam: the continuation resumes whatever line the head stopped in. If that line is a
+  // complete statement (or a blank/closed block), the continuation starts a NEW line; if it is
+  // half-written, the continuation's first characters complete it — no separator. On a direct
+  // join, trailing BLANK lines of the head are dropped first: a fence-stripped partial often
+  // carries one, and `...frag\n` + `` would put the continuation's mid-line characters on a line
+  // of their own — a stealth syntax error exactly at the seam.
+  const lastJoinLine = firstNonEmptyLine([...joinLines].reverse());
+  const statementComplete =
+    joinLines.length === 0 || /(^|[^\\])[;{}]$/.test(lastJoinLine) || lastJoinLine.endsWith('*/');
+  const separator = joinLines.length === 0 || statementComplete ? '\n' : '';
+  // Drop the head's trailing blank lines ONLY on a direct join: a fence-stripped partial often
+  // carries one, and `...frag\n` + `` would put the continuation's mid-line characters on a line
+  // of their own — a stealth syntax error exactly at the seam. On a newline join the head's own
+  // trailing blank lines are content (a blank line between sections) and must survive.
+  if (separator === '') {
+    while (joinLines.length > 0 && joinLines.at(-1)?.trim() === '') joinLines.pop();
+  }
+
+  const body = (joinLines.join('\n') + separator + contBody).replace(/^\n+/, '');
+  return '```javascript\n' + body + '\n```';
+}
+
+/**
+ * The continuation instruction sent with the partial program as an assistant turn (`04`: prompts
+ * are assembled in one module per concern; this one exists because it is protocol, not persuasion).
+ *
+ * Output-length discipline lives here deliberately: comments and restated instructions are not
+ * content, so the instruction forbids re-emitting them — and forbids repeating code already sent,
+ * which was the failure mode of the old complete-re-ask. The 5-line PLAN/FACTS/... block and the
+ * per-part info text are content and are untouched; this prompt only asks for the REMAINDER of the
+ * program, never for less model.
+ */
+function buildContinuationPrompt(partialProgram: string): string {
+  // Anchor: the last two written lines, so "where it stopped" is unambiguous even though the
+  // assistant turn above carries the whole partial. (Candidates for the seam, not instructions.)
+  const tail = partialProgram
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .slice(-2)
+    .join('\n');
+  return [
+    'Your reply above stopped partway through the program.',
+    'Continue from EXACTLY where it stopped: the first characters you write must be the very next characters of the program — they may complete a line you were in the middle of.',
+    'Do NOT repeat any code written before the cut, do NOT restart the program, do NOT restate your plan or the platform instructions.',
+    'Write ONLY the missing remainder of the program, in one fenced JavaScript block, with no prose before or after it.',
+    'Comments are not content: add none except where a line is genuinely non-obvious, and do not re-emit comment sections you already wrote.',
+    '',
+    'For reference, the program so far ends with these lines:',
+    '```',
+    tail,
+    '```',
+  ].join('\n');
 }
 
 /** Every contracts-schema violation the manifest would 400 on at publish (`ModelManifest`). */
@@ -281,7 +488,31 @@ export async function runPipeline(
         });
       },
     });
-    if (!first.ok) {
+    // The truncation handoff: a stream that died mid-program now ARRIVES as a failure carrying
+    // its partial text (`partialText`, set by the AI client). That partial is real minutes of
+    // provider work — measured as the dominant failure — and the continuation protocol below
+    // spends it instead of discarding it and re-rolling everything.
+    let replyText: string;
+    let replyFinish: string | null;
+    let replyUsage = { promptTokens: 0, completionTokens: 0 };
+    if (first.ok) {
+      replyText = first.text;
+      replyFinish = first.finishReason;
+      replyUsage = first.usage;
+    } else if (
+      first.code === 'truncated' &&
+      typeof first.partialText === 'string' &&
+      first.partialText.trim().length > 0
+    ) {
+      replyText = first.partialText;
+      // A truncated call is still real spend; count it in the run's provider accounting.
+      if (first.usage) {
+        replyUsage = first.usage;
+        providerUsage.promptTokens += first.usage.promptTokens;
+        providerUsage.completionTokens += first.usage.completionTokens;
+      }
+      replyFinish = null;
+    } else {
       return {
         ok: false,
         failure: {
@@ -296,66 +527,144 @@ export async function runPipeline(
     // One call, two jobs: the program is read out of the reply *and* checked against the
     // sandbox rules. The sentence says both, because the learner is waiting through both.
     enter('extract', 'Reading the program the model wrote and checking it against the rules…');
-    let prepared = prepareProgram(first.text, {
+    let prepared = prepareProgram(replyText, {
       apiSurface: apiSurface().qualified,
-      finishReason: first.finishReason ?? undefined,
+      finishReason: replyFinish ?? undefined,
     });
-    // The provider's untouched reply, exactly as received — the repair prompt's assistant turn
-    // and the bundle diagnostics must both point at the program the provider actually wrote.
-    let rawOutput = first.text;
+    // The reply, reassembled as the pipeline will carry it forward — after a cut it is the
+    // stitched program (below), and the repair prompt's assistant turn and the bundle diagnostics
+    // must both point at the same text the provider's work produced.
+    let rawOutput = replyText;
 
-    // Truncation is a named failure and never shipped. One re-ask is allowed: the program may be
-    // complete on a second sample without the full prompt being re-sent (`04`).
-    if (
-      replyLooksCut(first.text, prepared, deps.maxOutputTokens, first.ok ? first.usage : undefined)
+    // ── The continuation protocol (`MAX_CONTINUATION_PASSES`) ────────────────
+    // `replyLooksCut` says the program is incomplete — a cap hit, an unclosed fence, or a syntax
+    // error lying on the last lines. Instead of failing, and instead of re-asking for a COMPLETE
+    // program (same cut probability, full price — the reason every measured failure failed twice),
+    // the partial is sent back as an ASSISTANT turn and the model is asked for ONLY the missing
+    // remainder. Each pass resumes from further along, so the wall becomes an iteration.
+    let continuations = 0;
+    // `lastContinuationComplete`: a continuation that the CLIENT saw end truncated may have been
+    // cut on a statement boundary (invisible to the gate, invisible to `replyLooksCut` — that is
+    // exactly the stealth cut) — but we KNOW the tail never arrived. The loop keeps going until
+    // a continuation ends cleanly; the seam rules absorb whatever echo the next pass adds.
+    let lastContinuationComplete: boolean | null = null;
+    while (
+      replyLooksCut(rawOutput, prepared, deps.maxOutputTokens, replyUsage) ||
+      lastContinuationComplete === false
     ) {
-      deps.sink({
-        type: 'notice',
-        kind: 'warning',
-        message: 'The reply was cut off; asking the model to finish it…',
-        at: nowSec(),
-      });
-      const cutFailure = drainCheck();
-      if (cutFailure) return { ok: false, failure: cutFailure };
-      const retry = await spend({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: wrapTopic(topic) },
-          { role: 'assistant', content: first.text },
-          {
-            role: 'user',
-            content:
-              'Your reply was cut off before the program was complete. Return the COMPLETE program in one fenced block.',
-          },
-        ],
-        temperature: 0.3,
-        signal: deps.signal,
-      });
-      if (!retry.ok) {
-        return { ok: false, failure: { code: mapAiFailure(retry.code), message: retry.message } };
+      // Name the wall once, server-side: cap vs early cut vs unreported tells the operator which
+      // remedy applies (raise the cap / live with the gateway / nothing observable). The provider's
+      // /models data says our cap sits far BELOW what the model permits, so `output_cap` here means
+      // our own ceiling is still the binding constraint.
+      if (continuations === 0) {
+        const wall = classifyTruncationWall(replyUsage, deps.maxOutputTokens);
+        console.warn(
+          `[pipeline] reply truncated (${wall}): reported usage ${replyUsage.promptTokens} prompt / ` +
+            `${replyUsage.completionTokens} completion tokens against a ${deps.maxOutputTokens}-token cap` +
+            `${wall === 'output_cap' ? ' — our cap is the wall' : ''}`,
+        );
       }
-      // The correction call is real money: count it in the bundle's repair accounting.
-      rawOutput = retry.text;
-      prepared = prepareProgram(retry.text, {
-        apiSurface: apiSurface().qualified,
-        finishReason: retry.finishReason ?? undefined,
-      });
-      if (
-        replyLooksCut(
-          retry.text,
-          prepared,
-          deps.maxOutputTokens,
-          retry.ok ? retry.usage : undefined,
-        )
-      ) {
+      if (continuations >= MAX_CONTINUATION_PASSES) {
+        // Bounded, honest end: the seam diagnosis so far plus WHICH wall kept winning — the
+        // remedy differs completely (raise the cap vs gateway death), so say which one it saw.
+        const wall = classifyTruncationWall(replyUsage, deps.maxOutputTokens);
+        const wallLine =
+          wall === 'output_cap'
+            ? `Our output cap (${deps.maxOutputTokens} tokens) is still the binding constraint.`
+            : wall === 'early_stream'
+              ? 'The provider reports usage below the cap yet the program never finished.'
+              : 'The provider died before reporting any usage.';
         return {
           ok: false,
           failure: {
             code: 'upstream_truncated',
-            message: 'The response was cut off before the model was complete. Try again.',
+            message:
+              `The model ran out of writing room ${continuations + 1} times and still could not ` +
+              `finish the program. ${wallLine} Try again — a simpler phrasing of the topic often fits.`,
           },
         };
       }
+      continuations += 1;
+      // Truncation is made VISIBLE here (`notice`), not swallowed: the learner sees the model ran
+      // out of room and that the server is rescuing the work, pass by bounded pass.
+      deps.sink({
+        type: 'notice',
+        kind: 'retry',
+        message:
+          `The model ran out of room partway through; asking it to continue from where it stopped ` +
+          `(pass ${continuations} of ${MAX_CONTINUATION_PASSES})…`,
+        at: nowSec(),
+      });
+      const cutFailure = drainCheck();
+      if (cutFailure) return { ok: false, failure: cutFailure };
+      if (deps.signal?.aborted) {
+        return {
+          ok: false,
+          failure: { code: 'cancelled', message: 'The request was cancelled.' },
+        };
+      }
+      charsWritten = 0;
+      const cont = await spend({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: wrapTopic(topic) },
+          { role: 'assistant', content: rawOutput },
+          { role: 'user', content: buildContinuationPrompt(prepared.code) },
+        ],
+        temperature: 0.2,
+        signal: deps.signal,
+        onProgress: (chars) => {
+          charsWritten = chars;
+          // Same proof-of-life as the model phase, reported against the extract phase the run is
+          // actually in — the phase never rewinds, the bar never moves backwards.
+          deps.sink({
+            type: 'heartbeat',
+            phase: phaseStart.phase,
+            phaseSeconds: (Date.now() - phaseStart.at) / 1000,
+            charsWritten: chars,
+            at: nowSec(),
+          });
+        },
+      });
+      // The continuation itself may be cut (long programs may take two or three continuations —
+      // the point of bounding at three). A cut continuation still carries usable partial text.
+      const contText = cont.ok
+        ? cont.text
+        : cont.code === 'truncated' && cont.partialText && cont.partialText.trim().length > 0
+          ? cont.partialText
+          : null;
+      if (contText === null) {
+        if (cont.ok) throw new Error('unreachable: an ok completion always yields text');
+        return {
+          ok: false,
+          failure: {
+            code: mapAiFailure(cont.code),
+            message: cont.message,
+            ...(cont.retryAfterSeconds ? { retryAfterSeconds: cont.retryAfterSeconds } : {}),
+          },
+        };
+      }
+      lastContinuationComplete = cont.ok;
+      if (cont.ok) {
+        replyUsage = cont.usage;
+        replyFinish = cont.finishReason;
+      } else {
+        // Truncated continuation: count its spend, then loop — `replyLooksCut` below will see the
+        // still-unclosed program and schedule the next pass.
+        if (cont.usage) {
+          replyUsage = cont.usage;
+          providerUsage.promptTokens += cont.usage.promptTokens;
+          providerUsage.completionTokens += cont.usage.completionTokens;
+        }
+        replyFinish = null;
+      }
+      // Stitch: one closed fence back, seam rules per `stitchContinuation`. If the seam lands
+      // badly, the gate fails on the seam lines and the stage-4 repair loop owns the fix.
+      rawOutput = stitchContinuation(rawOutput, contText);
+      prepared = prepareProgram(rawOutput, {
+        apiSurface: apiSurface().qualified,
+        finishReason: replyFinish ?? undefined,
+      });
     }
 
     // ── Stage 4: bounded self-repair ─────────────────────────────────────────

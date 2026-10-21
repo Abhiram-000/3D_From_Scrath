@@ -17,12 +17,15 @@ import {
   GenerateRequest,
   PublishRequest,
   QuizRequest,
+  HEARTBEAT_INTERVAL_MS,
   type ApiError,
   type ErrorCode,
+  type GenerationEvent,
 } from '@edu3d/contracts';
 import type { ServerConfig } from './config/config.ts';
 import { type AiClient } from './services/ai-client.ts';
 import { runPipeline } from './services/pipeline.ts';
+import { describeQueueFailure, type GenerationQueue } from './services/generation-queue.ts';
 import { buildChatPrompt, buildQuizPrompt } from './services/prompts.ts';
 import type { GalleryStore } from './services/gallery-store.ts';
 import { sniffSnapshot, SNAPSHOT_MAX_BYTES } from './services/gallery-store.ts';
@@ -42,6 +45,12 @@ export interface AppState {
   ai: AiClient;
   store: GalleryStore;
   limiters: LimiterSet;
+  /**
+   * The global generation queue, when one is configured. Optional so every existing construction
+   * site (tests, older wiring) keeps compiling without one — absence means the old unbounded
+   * behavior, presence means generation admission is gated by the provider plan's concurrency.
+   */
+  genQueue?: GenerationQueue;
   /** Drain state: flipped by SIGTERM, reported by readiness (`06`). */
   draining: boolean;
   openStreams: number;
@@ -155,6 +164,69 @@ function requireWriteToken(state: AppState, authorization: string | undefined): 
   const a = createHash('sha256').update(provided).digest();
   const b = createHash('sha256').update(writeToken).digest();
   return timingSafeEqual(a, b);
+}
+
+type PipelineResult = Awaited<ReturnType<typeof runPipeline>>;
+
+/**
+ * Run the generation pipeline holding one generation slot when the state carries a queue.
+ *
+ * The provider plan allows a fixed concurrency (often exactly one), generations take minutes, and
+ * an admission gate the request can SEE is the difference between "waiting, honestly" and
+ * "mysteriously hanging". While WAITING this helper emits heartbeats (phase `queued`) and one
+ * explanatory `notice`, so the web client's stall detector — a heartbeat multiple — stays alive
+ * through the queue; `onGranted` stops the interval exactly where the pipeline's own heartbeat
+ * loop takes over. The interval deliberately lives here, not in the queue module: the queue stays
+ * wire-free, and `/api/health` keeps answering immediately (depth is reported, never waited on).
+ * For the non-streaming path the same events are buffered into the discarding sink and simply
+ * never served.
+ */
+async function runWithGenerationSlot(
+  state: AppState,
+  run: () => Promise<PipelineResult>,
+  options: { signal?: AbortSignal; sink?: (event: GenerationEvent) => void },
+): Promise<PipelineResult> {
+  const queue = state.genQueue;
+  if (!queue) return run();
+  const sink = options.sink ?? (() => {});
+  const queuedAt = Date.now();
+  let heartbeats: ReturnType<typeof setInterval> | null = setInterval(() => {
+    sink({
+      type: 'heartbeat',
+      phase: 'queued',
+      phaseSeconds: (Date.now() - queuedAt) / 1000,
+      at: Date.now(),
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+  const stopHeartbeats = () => {
+    if (heartbeats) {
+      clearInterval(heartbeats);
+      heartbeats = null;
+    }
+  };
+  try {
+    return await queue.run(run, {
+      signal: options.signal,
+      onQueued: (position, depth) =>
+        sink({
+          type: 'notice',
+          kind: 'warning',
+          message:
+            `Waiting for a free generation slot — position ${position} of ${depth}. ` +
+            'Your run starts as soon as the current one finishes.',
+          at: Date.now(),
+        }),
+      onGranted: stopHeartbeats,
+    });
+  } catch (error) {
+    // A queue refusal (wait timeout, drain, the learner leaving while queued) must still end the
+    // stream with its proper terminal event — mapped onto the same taxonomy as any pipeline failure.
+    const refusal = describeQueueFailure(error);
+    if (refusal) return { ok: false as const, failure: refusal };
+    throw error;
+  } finally {
+    stopHeartbeats();
+  }
 }
 
 export function buildApp(state: AppState): Hono<AppContext> {
@@ -277,6 +349,8 @@ export function buildApp(state: AppState): Hono<AppContext> {
         ...state.store.announcement.warnings,
       ],
       openGenerationStreams: state.openStreams,
+      // Queue depth, additive and immediate: monitoring pollutes nothing and waits on nothing.
+      ...(state.genQueue ? { generationQueue: state.genQueue.stats() } : {}),
     });
   });
 
@@ -330,15 +404,20 @@ export function buildApp(state: AppState): Hono<AppContext> {
       // separate endpoint (`04`). Internally it is the same pipeline with a discarding sink.
       const events: unknown[] = [];
       const result = await tracked(state, () =>
-        runPipeline(request.topic, request.complexity, {
-          ai: state.ai,
-          sink: (event) => events.push(event),
-          tier: request.tier ?? 'mid',
-          maxOutputTokens: config.ai.maxOutputTokens,
-          // The learner's connection, so a closed tab stops the run instead of letting it spend
-          // up to three more provider calls on work nobody is waiting for (`04`).
-          signal: context.req.raw.signal,
-        }),
+        runWithGenerationSlot(
+          state,
+          () =>
+            runPipeline(request.topic, request.complexity, {
+              ai: state.ai,
+              sink: (event) => events.push(event),
+              tier: request.tier ?? 'mid',
+              maxOutputTokens: config.ai.maxOutputTokens,
+              // The learner's connection, so a closed tab stops the run instead of letting it spend
+              // up to three more provider calls on work nobody is waiting for (`04`).
+              signal: context.req.raw.signal,
+            }),
+          { signal: context.req.raw.signal },
+        ),
       );
       if (!result.ok) {
         const { failure } = result;
@@ -381,14 +460,21 @@ export function buildApp(state: AppState): Hono<AppContext> {
             at: Date.now(),
           });
           const result = await tracked(state, () =>
-            runPipeline(request.topic, request.complexity, {
-              ai: state.ai,
-              sink: write,
-              tier: request.tier ?? 'mid',
-              maxOutputTokens: config.ai.maxOutputTokens,
-              // Same reason as the non-streaming path: the wait is long enough to be abandoned.
-              signal: context.req.raw.signal,
-            }),
+            runWithGenerationSlot(
+              state,
+              () =>
+                runPipeline(request.topic, request.complexity, {
+                  ai: state.ai,
+                  sink: write,
+                  tier: request.tier ?? 'mid',
+                  maxOutputTokens: config.ai.maxOutputTokens,
+                  // Same reason as the non-streaming path: the wait is long enough to be abandoned.
+                  signal: context.req.raw.signal,
+                }),
+              // While queued, this sink carries the waiting notice and the heartbeats that keep
+              // the client's stall detector alive (see runWithGenerationSlot).
+              { signal: context.req.raw.signal, sink: write },
+            ),
           );
           if (result.ok) {
             write({ type: 'ready', bundle: result.bundle, audit: result.audit, at: Date.now() });

@@ -92,6 +92,23 @@ export interface ServerConfig {
       readonly baseUrl: string;
       readonly model: string;
     } | null;
+    /**
+     * How many generations may run against the provider CONCURRENTLY — a property of the plan
+     * being paid for, not a preference. FreeInference's free tier answers
+     * `{"code":"concurrency_limit_exceeded","message":"Too many concurrent requests (limit: 1)"}`
+     * to anything past one, and generations take minutes, so without a queue a second learner
+     * simply got a failed run. Set to the limit the paid plan actually allows
+     * (`AI_MAX_CONCURRENCY`); the generation queue (services/generation-queue.ts) enforces it.
+     */
+    readonly maxConcurrency: number;
+    /**
+     * The bounded wait for a generation slot, milliseconds (`AI_QUEUE_MAX_WAIT_MS`). A wait that
+     * outlives this fails fast and honestly (`rate_limited`, with a retry-after) instead of
+     * parking behind a queue of minute-long provider runs. Default 900 s: at one concurrent
+     * 3–8-minute generation, a 15-minute wait admits a queue of a few — beyond that, failing now
+     * beats failing in half an hour with the tab long gone.
+     */
+    readonly queueMaxWaitMs: number;
   };
 
   readonly storage: {
@@ -135,7 +152,17 @@ const DEFAULTS = {
   host: '127.0.0.1',
   aiBaseUrl: 'https://api.openai.com/v1',
   aiModel: 'gpt-5',
-  maxOutputTokens: 64_000,
+  // 131,072, not a round guess: the provider permits 393,216 on deepseek-v4-flash and 131,072 on
+  // glm-5.3-flash, so this is half the primary's ceiling and exactly the fallback-family ceiling —
+  // the largest cap every cascade-eligible model can honour. The old 64,000 was 6× LESS than the
+  // configured model allows, and the measured truncation class died under it; cost at
+  // $1.32/M-completion is ~8 cents for a full 64k-token program, so headroom is free. A ceiling
+  // that is too low wastes whole calls (a truncated model is refused and continued, never shipped).
+  maxOutputTokens: 131_072,
+  // The provider plan's own property: free tiers typically allow exactly one concurrent request.
+  aiMaxConcurrency: 1,
+  // Bounded queue wait (15 min) — see `queueMaxWaitMs`.
+  aiQueueMaxWaitMs: 900_000,
   dataDir: '.data',
   limits: { api: 600, write: 30, generate: 12, chat: 60, quiz: 30 },
 } as const;
@@ -357,6 +384,11 @@ export function resolveConfig(
       // a confusing 404 from the provider, whereas reusing the configured one always works.
       chatModel: env.AI_CHAT_MODEL?.trim() || env.AI_MODEL?.trim() || DEFAULTS.aiModel,
       maxOutputTokens: parseInteger(env.AI_MAX_OUTPUT_TOKENS, DEFAULTS.maxOutputTokens),
+      // The generation queue's knobs: the plan's concurrency limit and the bounded wait for a slot.
+      // Floor of 1 in both: a zero/nonsense value must mean "the plan's default", never "nobody
+      // may ever generate".
+      maxConcurrency: parseInteger(env.AI_MAX_CONCURRENCY, DEFAULTS.aiMaxConcurrency),
+      queueMaxWaitMs: parseInteger(env.AI_QUEUE_MAX_WAIT_MS, DEFAULTS.aiQueueMaxWaitMs),
       fallback,
     },
 
@@ -408,6 +440,9 @@ export function formatStartupReport(config: ServerConfig): string {
   lines.push(`storage          ${config.storage.backend}`);
   lines.push(
     `ai               ${config.ai.configured ? `${config.ai.model} via ${config.ai.baseUrl}` : 'not configured'}`,
+  );
+  lines.push(
+    `ai concurrency   ${config.ai.maxConcurrency} at a time (queue wait cap ${Math.round(config.ai.queueMaxWaitMs / 1000)}s)`,
   );
   lines.push(`writes           ${config.security.writeToken ? 'token required' : 'OPEN'}`);
   lines.push(`csp              ${config.security.csp}`);

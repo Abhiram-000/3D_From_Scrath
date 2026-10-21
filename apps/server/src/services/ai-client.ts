@@ -58,6 +58,21 @@ export type CompletionResult =
       message: string;
       retryable: boolean;
       retryAfterSeconds?: number;
+      /**
+       * The partial text the provider streamed before dying — only ever present on `truncated`.
+       *
+       * This IS the fix for the dominant generation failure: the measured failure class was a
+       * stream cut mid-program (`upstream_truncated` on every failed battery topic), and asking a
+       * model to re-write the COMPLETE program has the same cut probability the second time while
+       * costing a full re-roll. Instead the pipeline treats the partial as an assistant turn and
+       * asks for only the missing remainder, so the client must HAND OVER what arrived rather than
+       * swallowing it into a bare failure. Deliberately NOT retried inside this client any more:
+       * a client-side retry re-rolls the whole program (same cut odds, full price) — the
+       * continuation in the pipeline is both cheaper and cut-resistant.
+       */
+      partialText?: string;
+      /** The provider's reported usage for the truncated call, when it sent any. */
+      usage?: { promptTokens: number; completionTokens: number };
     };
 
 /** The failure vocabulary, kept local so the mapping to `ErrorCode` lives in one place. */
@@ -92,6 +107,25 @@ const MAX_ATTEMPTS = 3;
 const MODEL_CASCADES: Readonly<Record<string, readonly string[]>> = {
   'freeinference.org': ['deepseek-v4-flash', 'glm-5.1', 'qwen3.6-35b'],
   'generativelanguage.googleapis.com': ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+};
+
+/**
+ * Known per-model OUTPUT ceilings (provider /models data), and the floor below which a model can
+ * never serve a generation-sized call.
+ *
+ * A cascade entry whose ceiling is BELOW the request's max tokens is a guaranteed truncation: the
+ * model stops at its own ceiling mid-program and the run pays full price for a partial. The
+ * measured example: `qwen3.6-35b` allows 8,192 output tokens — no program fits — yet it sat in the
+ * FreeInference cascade as the third hop, so every quota/404 on the first two models advanced a
+ * multi-minute generation request onto a model that structurally cannot answer it. Unknown models
+ * are NOT excluded on suspicion (no data ≠ guilty); known-too-small ones always are.
+ */
+const MODEL_OUTPUT_CEILINGS: Readonly<Record<string, number>> = {
+  // FreeInference (provider /models):
+  'deepseek-v4-flash': 393_216,
+  'glm-5.3-flash': 131_072,
+  'qwen3.6-35b': 8_192,
+  diffusiongemma: 8_192,
 };
 const BASE_BACKOFF_MS = 1_500;
 /**
@@ -236,8 +270,25 @@ export class AiClient {
     }
 
     // The cascade starts with the configured model and continues with models that exist on the
-    // SAME provider (a cross-provider name is a guaranteed 404 — see MODEL_CASCADES).
-    const cascade = this.cascadeFor(this.config.ai.baseUrl);
+    // SAME provider (a cross-provider name is a guaranteed 404 — see MODEL_CASCADES). Cascade hops
+    // whose KNOWN output ceiling cannot hold this request's max tokens are skipped: advancing a
+    // generation onto a model that stops at 8,192 tokens is a paid, guaranteed truncation.
+    const cascade = this.cascadeFor(this.config.ai.baseUrl).filter((model) => {
+      const ceiling = MODEL_OUTPUT_CEILINGS[model];
+      if (ceiling === undefined || ceiling >= request.maxOutputTokens) return true;
+      console.warn(
+        `[ai-client] skipping cascade model ${model}: known ceiling ${ceiling} output tokens < requested ${request.maxOutputTokens}`,
+      );
+      return false;
+    });
+    const configuredCeiling = MODEL_OUTPUT_CEILINGS[this.config.ai.model];
+    if (configuredCeiling !== undefined && configuredCeiling < request.maxOutputTokens) {
+      console.warn(
+        `[ai-client] configured model ${this.config.ai.model} has a known ceiling of ` +
+          `${configuredCeiling} output tokens but the request asks for ${request.maxOutputTokens}; ` +
+          'the provider will stop it mid-program — raise AI_MAX_OUTPUT_TOKENS only within the model’s ceiling.',
+      );
+    }
     const models = [this.config.ai.model, ...cascade.filter((m) => m !== this.config.ai.model)];
     let reported: CompletionResult | null = null;
 
@@ -267,7 +318,19 @@ export class AiClient {
         result.code === 'network');
 
     if (fallback?.apiKey && reported && primaryShaped(reported)) {
-      for (const model of [fallback.model, ...this.cascadeFor(fallback.baseUrl)]) {
+      for (const model of [
+        fallback.model,
+        // Same output-ceiling rule as the primary cascade: a too-small fallback model is a paid
+        // guaranteed truncation, not a resilience hop (see MODEL_OUTPUT_CEILINGS).
+        ...this.cascadeFor(fallback.baseUrl).filter((model) => {
+          const ceiling = MODEL_OUTPUT_CEILINGS[model];
+          if (ceiling === undefined || ceiling >= request.maxOutputTokens) return true;
+          console.warn(
+            `[ai-client] skipping fallback cascade model ${model}: known ceiling ${ceiling} output tokens < requested ${request.maxOutputTokens}`,
+          );
+          return false;
+        }),
+      ]) {
         const crossed = await this.completeWithProvider(
           fallback.baseUrl,
           fallback.apiKey,
@@ -612,10 +675,23 @@ export class AiClient {
       // Text arrived but the stream never reached a terminal event — the socket died mid-program.
       // `00`: "a half-generated model must be detected, refused and retried, never delivered." The
       // gate cannot judge this: it checks structure, not completeness, and a cut landing on a
-      // statement boundary parses happily while being half a model.
+      // statement boundary parses happily while being half a model. Operator diagnostics first:
+      // the reported usage vs the configured cap tells a CAP-HIT (raise AI_MAX_OUTPUT_TOKENS) from
+      // an early stream death (provider/gateway problem) — two different problems that both used
+      // to surface as one opaque `upstream_truncated`.
+      console.warn(
+        `[ai-client] stream truncated from the provider after ${text.length} chars — ` +
+          `reported usage ${usage.promptTokens} prompt / ${usage.completionTokens} completion tokens, configured cap ${request.maxOutputTokens}`,
+      );
       return {
         ok: false,
-        ...failure('truncated', 'The model stopped writing partway through. Try again.', true),
+        ...failure('truncated', 'The model stopped writing partway through. Try again.', false),
+        partialText: text,
+        ...(usage.promptTokens > 0 || usage.completionTokens > 0
+          ? {
+              usage: { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens },
+            }
+          : {}),
       };
     }
 
@@ -639,11 +715,26 @@ export class AiClient {
     // Clean EOF with text but no terminal event: the socket closed before the provider finished
     // its turn. `finish_reason` and the `[DONE]` sentinel are what "the reply ended" MEANS on this
     // wire; absent them, the text is the first half of a program, regardless of how complete it
-    // looks (a cut at a statement boundary parses happily).
+    // looks (a cut at a statement boundary parses happily). The same operator diagnostics as the
+    // abort path: usage-vs-cap distinguishes a token cap from an early stream death.
     if (!sawDone) {
+      console.warn(
+        `[ai-client] stream closed without a terminal event after ${text.length} chars — ` +
+          `reported usage ${usage.promptTokens} prompt / ${usage.completionTokens} completion tokens, configured cap ${request.maxOutputTokens}`,
+      );
+      // Retryable is FALSE on purpose: the client's retry re-rolled the whole program at full price
+      // with the same cut odds — this was the measured 79-minute battery killer. The truncation (and
+      // what arrived of it) is returned to the pipeline, whose continuation protocol asks for only
+      // the missing remainder against the partial program as an assistant turn.
       return {
         ok: false,
-        ...failure('truncated', 'The model stopped writing partway through. Try again.', true),
+        ...failure('truncated', 'The model stopped writing partway through. Try again.', false),
+        partialText: text,
+        ...(usage.promptTokens > 0 || usage.completionTokens > 0
+          ? {
+              usage: { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens },
+            }
+          : {}),
       };
     }
 

@@ -256,5 +256,19 @@ export const HealthResponse = z.object({
   /** Non-fatal configuration complaints, so a deployment can be diagnosed without SSH (`04`). */
   warnings: z.array(shortText(240)).default([]),
   openGenerationStreams: z.number().int().min(0).optional(),
+  /**
+   * Generation-queue depth, when the server runs one (`AI_MAX_CONCURRENCY`):
+   * running/waiting against the configured limit, and the bounded wait. Optional so servers
+   * predating the queue still parse; additive so every existing field keeps its shape. This is
+   * what makes a queued learner's wait observable rather than mysterious (`06`).
+   */
+  generationQueue: z
+    .object({
+      limit: z.number().int().min(1),
+      maxWaitMs: z.number().int().min(1),
+      running: z.number().int().min(0),
+      waiting: z.number().int().min(0),
+    })
+    .optional(),
 });
 export type HealthResponse = z.infer<typeof HealthResponse>;

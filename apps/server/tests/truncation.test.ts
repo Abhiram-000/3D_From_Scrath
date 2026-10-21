@@ -150,7 +150,11 @@ describe('a cut-at-statement-boundary reply', () => {
       });
       expect(result.ok, result.ok ? '' : result.failure.message).toBe(true);
       if (!result.ok) return;
-      expect(result.bundle.rawOutput).toBe(completeReply);
+      // The continuation answer is treated as a REWRITE (it starts with the program's own first
+      // line), so the shipped program is the complete reply — the same contract the old
+      // re-ask satisfied, now reached through the restart seam rule.
+      expect(result.bundle.code).toBe(REFERENCE_MODEL_SOURCE.trim());
+      expect(result.bundle.rawOutput).toContain(REFERENCE_MODEL_SOURCE.trim().slice(0, 80));
     },
   );
 });

@@ -289,7 +289,11 @@ describe('provider call accounting and token visibility', () => {
       });
       expect(result.ok, result.ok ? '' : result.failure.message).toBe(true);
       if (!result.ok) return;
-      expect(result.bundle.rawOutput).toBe(completeReply);
+      // The continuation is treated as a REWRITE when it restates the program (its first line
+      // matches the partial's), so rawOutput is the complete reply re-fenced once — the shipped
+      // program is exactly what the model's second attempt said, never the truncated original.
+      expect(result.bundle.code).toBe(REFERENCE_MODEL_SOURCE.trim());
+      expect(result.bundle.rawOutput).toContain(REFERENCE_MODEL_SOURCE.trim().slice(0, 80));
     },
   );
 });

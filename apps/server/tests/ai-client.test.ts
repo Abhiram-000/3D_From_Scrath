@@ -85,7 +85,10 @@ describe('a stream that dies mid-program', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable — the assertion above must fail first');
     expect(result.code).toBe('truncated');
-    expect(result.retryable).toBe(true);
+    // Deliberately NOT retryable here any more: a client-side retry re-rolls the WHOLE program at
+    // full price with the same cut probability — the measured 79-minute failure mode. The partial
+    // text rides back to the pipeline, whose continuation protocol asks for only the remainder.
+    expect(result.retryable).toBe(false);
   });
 
   it(
@@ -414,6 +417,63 @@ describe('backoff is abortable', () => {
         elapsed,
         `cancelled after the abort must not wait out the backoff (${elapsed} ms)`,
       ).toBeLessThan(5_000);
+    },
+  );
+});
+
+/**
+ * The output-ceiling cascade filter: a model whose KNOWN ceiling cannot hold the request's max
+ * tokens must never be advanced to. Provider /models data: `qwen3.6-35b` allows 8,192 output
+ * tokens — no program fits — and it sat in the FreeInference cascade as the third hop, so every
+ * 404/quota on the first two models advanced a multi-minute generation onto a model that
+ * structurally cannot answer it: a paid, guaranteed truncation.
+ */
+describe('the cascade never advances a generation onto a model that cannot hold it', () => {
+  it(
+    'skips qwen3.6-35b (8,192-token ceiling) for a 131,072-token request, keeps unknown-ceiling models',
+    { timeout: 45_000 },
+    async () => {
+      const freeinference = resolveConfig({
+        AI_API_KEY: 'test-key',
+        AI_BASE_URL: 'https://freeinference.org/v1',
+        AI_MODEL: 'primary-model',
+        AI_MAX_OUTPUT_TOKENS: '131072',
+      });
+      const requestedModels: string[] = [];
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        // Every eligible model 404s (the "retired model" path — retryable, advances the cascade).
+        // The non-streaming reply shape is used: these calls carry no onProgress.
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async (_url: unknown, init: { body: string }) => {
+            requestedModels.push((JSON.parse(init.body) as { model: string }).model);
+            return new Response('{"error":"no such model"}', {
+              status: 404,
+              headers: { 'content-type': 'application/json' },
+            });
+          }),
+        );
+        const result = await new AiClient(freeinference).complete({
+          maxOutputTokens: 131_072,
+          messages: [{ role: 'user', content: 'x' }],
+        });
+        expect(result.ok).toBe(false);
+        // The configured model first, then ONLY the models that can hold 131,072 output tokens.
+        // `qwen3.6-35b` (ceiling 8,192) is skipped with a warning; `glm-5.1` has no known ceiling
+        // so it is NOT excluded on suspicion.
+        expect([...new Set(requestedModels)]).toEqual([
+          'primary-model',
+          'deepseek-v4-flash',
+          'glm-5.1',
+        ]);
+        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('qwen3.6-35b'))).toBe(
+          true,
+        );
+      } finally {
+        warnSpy.mockRestore();
+        vi.unstubAllGlobals();
+      }
     },
   );
 });

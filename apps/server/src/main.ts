@@ -23,6 +23,7 @@ import type { Server as HttpServer } from 'node:http';
 import { resolveConfig, formatStartupReport, shouldRefuseToStart } from './config/config.ts';
 import { buildApp, type AppState } from './app.ts';
 import { AiClient } from './services/ai-client.ts';
+import { createGenerationQueue } from './services/generation-queue.ts';
 import { lifecycle } from './services/lifecycle.ts';
 import { buildLimiters } from './services/rate-limits.ts';
 import { openGalleryStore } from './services/gallery-store.ts';
@@ -71,6 +72,16 @@ async function main(): Promise<void> {
     ai: new AiClient(config),
     store,
     limiters: buildLimiters(config),
+    // The global generation gate: one process-wide queue bounded by the provider plan's
+    // concurrency (`AI_MAX_CONCURRENCY`, default 1 — the observed free-tier hard limit) and a
+    // bounded wait. Built ONCE here, because the limit is a fact about the provider account, not
+    // per-request state; the drain signal is shared so a queued learner gets the terminal
+    // `draining` event, never a severed socket.
+    genQueue: createGenerationQueue({
+      limit: config.ai.maxConcurrency,
+      maxWaitMs: config.ai.queueMaxWaitMs,
+      drainSignal: lifecycle.drainSignal,
+    }),
     draining: false,
     openStreams: 0,
     startedAt: Date.now(),

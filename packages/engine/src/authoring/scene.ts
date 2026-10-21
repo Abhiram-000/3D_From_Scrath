@@ -33,12 +33,24 @@ import {
   type Pedagogy,
   type PhysicsDecl,
   type QuizQuestion,
+  type ScalarSource,
   type ShotDecl,
   type StoryBeat,
+  BodyKind,
+  ColliderShape,
+  EnvironmentDecl as EnvironmentDeclSchema,
+  InteractionDecl as InteractionDeclSchema,
   InteractionKind,
+  JointKind,
+  LightKind,
   MAX_INSTANCES_PER_SET,
   MAX_PARTS,
-  PhysicsDecl as PhysicsDeclSchema,
+  MotionKind,
+  ParameterChannel,
+  PhysicsMaterialName,
+  PhysicsProbeDecl as PhysicsProbeDeclSchema,
+  QuizQuestion as QuizQuestionSchema,
+  ScalarSource as ScalarSourceSchema,
   ShotEasing,
   ShotKind,
   StoryBeat as StoryBeatSchema,
@@ -60,6 +72,123 @@ export class SceneError extends Error {
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 
 /**
+ * Validation-helper rule for this file: **never call a schema at guest-realm runtime.**
+ *
+ * `scene.ts` executes inside the untrusted guest realm, where `@edu3d/sandbox` replaces `Function`
+ * with a thrower and freezes the intrinsics. zod's parse path touches `Function`, so any
+ * `.parse()`/`.safeParse()` here throws `Function is not available inside the model sandbox` — which
+ * is why a `.safeParse` added to this file broke the whole browser authoring path while passing in
+ * `node:vm`, whose realm is not poisoned. Everything below therefore validates structurally
+ * (`typeof`, `Array.isArray`, `Number.isFinite`, membership in a precomputed `Set`) and the closed
+ * vocabularies still come from the contract — read off a schema's `.options`/`.shape` at module
+ * scope, which is a property read. What is forbidden is a schema *parse*:
+ * `ZodType.parse`/`safeParse` build or run a validator that touches `Function`, so neither may appear
+ * on a runtime path in this file. The one schema method still used, `.unwrap()` on a wrapped enum, is
+ * a module-scope property read, not a parse.
+ */
+
+/** True for a finite number — the only numbers a manifest accepts. */
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
+
+/** True for a `Vec3`: exactly three finite numbers. */
+const isVec3 = (value: unknown): value is [number, number, number] =>
+  Array.isArray(value) && value.length === 3 && value.every(isFiniteNumber);
+
+/** Mirrors the contract's `HexColor`; a pattern rather than a schema call, per the rule above. */
+const HEX_COLOR_PATTERN = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/**
+ * The three signals `ScalarSource` accepts, read from the schema's own enum at module scope.
+ *
+ * `.options` is a property read, so it is safe in the guest realm; calling the schema would not be.
+ */
+const SCALAR_SIGNAL_SET: ReadonlySet<string> = new Set(
+  (
+    ScalarSourceSchema.options as ReadonlyArray<{
+      shape: Record<string, { options?: readonly string[] }>;
+    }>
+  ).flatMap((option) => option.shape['signal']?.options ?? []),
+);
+
+/** The signal branch of a `ScalarSource`, derived from the contract type rather than restated. */
+type ScalarSignal = Extract<ScalarSource, { signal: unknown }>['signal'];
+
+const isScalarSignal = (value: unknown): value is ScalarSignal =>
+  typeof value === 'string' && SCALAR_SIGNAL_SET.has(value);
+
+/** The refusal for a malformed authored camera pose; `field` and `reason` name what is wrong. */
+const poseRefusal = (label: string, field: string, reason: string): string =>
+  `${label}: ${field} — ${reason}. A pose is { position: [x, y, z], target?: [x, y, z], fov?: degrees }.`;
+
+/** The refusal for a malformed authored fog block. */
+const fogRefusal = (label: string, field: string, reason: string): string =>
+  `${label}: ${field} — ${reason}. Fog is { color: '#rrggbb', near: metres, far: metres }.`;
+
+/**
+ * A type-guard form of `Array.prototype.includes`, so an enum membership test narrows the value to
+ * the contract's own member type instead of forcing a cast at the copy site.
+ */
+const enumMember = <T extends string>(options: readonly T[], value: string): value is T =>
+  (options as readonly string[]).includes(value);
+
+/**
+ * Refuse an authored value that is not a member of the contract's own enum, naming every legal one.
+ *
+ * `options` is read off the schema that validates the manifest, so the refusal cannot drift from
+ * what validation accepts. The failure this moves: a value that survived authoring, the static gate
+ * and both repair passes only to die as a terminal `Invalid option` sentence, minutes into a paid
+ * generation. The narrowed member is returned, so a call site copies a proven value rather than
+ * casting author input into the manifest.
+ */
+const assertEnum = <T extends string>(
+  value: unknown,
+  options: readonly T[],
+  label: string,
+  what: string,
+): T => {
+  const text = String(value);
+  if (!enumMember(options, text)) {
+    throw new SceneError(
+      `${label} uses '${text}', which is not one of the platform's ${what}. ` +
+        `Supported values: ${options.join(', ')}.`,
+    );
+  }
+  return text;
+};
+
+/**
+ * The scalar a manifest accepts where an interaction or story value is named: a finite number, a
+ * boolean, or a bounded string. Anything else used to ride through as a cast and die at manifest
+ * validation, after the generation had already been paid for.
+ */
+const assertValueScalar = (value: unknown, label: string): number | boolean | string => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string' && value.length <= 64) return value;
+  throw new SceneError(
+    `${label} must be a finite number, a boolean, or a string of at most 64 characters.`,
+  );
+};
+
+/**
+ * The refusal for a scalar that is not one of the contract's four `ScalarSource` shapes.
+ *
+ * Written for the mistake that actually happens — a bare number, or a bare id string, where the
+ * contract wants `{ const }`/`{ param }` — so it names the two likely intents concretely rather than
+ * only reciting the union. `label` names the call site so the repair pass can find it.
+ */
+const scalarSourceRefusal = (label: string, value: unknown): string => {
+  const paramExample = typeof value === 'string' ? `{ param: '${value}' }` : `{ param: 'rpm' }`;
+  const seen = typeof value === 'string' ? `'${value}'` : (JSON.stringify(value) ?? String(value));
+  return (
+    `${label} must be a scalar source — { const: n } | { param: 'id' } | ` +
+    `{ signal: 'time' | 'frame' | 'simTime' } | { probe: 'id' }. ` +
+    `A bare number means a constant; a parameter reference is ${paramExample}. Got ${seen}.`
+  );
+};
+
+/**
  * Camera shots are a documented capability the model is told to copy, so an invented kind used to
  * survive the whole build and die only at manifest validation — minutes into a *paid* generation,
  * as `generation_unrepairable: camera.shots.<id>.kind: Invalid option`, because the repair pass
@@ -70,13 +199,37 @@ const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 const SHOT_KIND_LIST = ShotKind.options.join(', ');
 const SHOT_EASING_LIST = ShotEasing.options.join(', ');
 
+/** Motion kinds a declaration can express: the wire enum minus the two it keeps for compatibility only. */
+const MOTION_KIND_LIST = MotionKind.options.filter(
+  (kind) => kind !== 'follow' && kind !== 'sequence',
+);
+
+/** The rest of the closed vocabularies, each read off the schema that validates the manifest. */
+const LIGHT_KIND_LIST = LightKind.options;
+const PARAMETER_CHANNEL_LIST = ParameterChannel.options;
+const ENVIRONMENT_PRESET_LIST = EnvironmentDeclSchema.shape.preset.unwrap().options;
+const INTERACTION_ON_LIST = InteractionDeclSchema.shape.on.options;
+const QUIZ_DIFFICULTY_LIST = QuizQuestionSchema.shape.difficulty.unwrap().options;
+const BODY_KIND_LIST = BodyKind.options;
+const COLLIDER_SHAPE_LIST = ColliderShape.options;
+const JOINT_KIND_LIST = JointKind.options;
+const PHYSICS_MATERIAL_LIST = PhysicsMaterialName.options;
+const PHYSICS_QUANTITY_LIST = PhysicsProbeDeclSchema.shape.quantity.options;
+
 /** Reflected from the `StoryBeat` schema, so this list cannot drift from what manifest validation accepts. */
 const ViewModeList = StoryBeatSchema.shape.viewMode.unwrap().options;
 
-/** Throw unless the raw authored shot object carries a legal kind and easing. `label` names the call site. */
-const assertShotShape = (label: string, kind: unknown, easing: unknown): void => {
+/**
+ * Throw unless the raw authored shot object carries a legal kind and easing, and hand back the two
+ * proven members. `label` names the call site.
+ */
+const assertShotShape = (
+  label: string,
+  kind: unknown,
+  easing: unknown,
+): { kind: ShotKind; easing: ShotEasing } => {
   const kindText = String(kind ?? 'flyTo');
-  if (!(ShotKind.options as readonly string[]).includes(kindText)) {
+  if (!enumMember(ShotKind.options, kindText)) {
     throw new SceneError(
       `${label} uses shot kind '${kindText}', which is not one of the platform's shot kinds. ` +
         `Supported kinds: ${SHOT_KIND_LIST} ` +
@@ -84,24 +237,324 @@ const assertShotShape = (label: string, kind: unknown, easing: unknown): void =>
     );
   }
   const easingText = String(easing ?? 'easeInOut');
-  if (!(ShotEasing.options as readonly string[]).includes(easingText)) {
+  if (!enumMember(ShotEasing.options, easingText)) {
     throw new SceneError(
       `${label} uses easing '${easingText}', which is not one of the platform's shot curves. ` +
         `Supported easings: ${SHOT_EASING_LIST}.`,
     );
   }
+  return { kind: kindText, easing: easingText };
 };
 
 /** The same refusal for `scene.interaction`'s own kind, which types the interaction, not a camera move. */
-const assertInteractionKind = (partId: string, kind: unknown): void => {
+const assertInteractionKind = (partId: string, kind: unknown): InteractionKind => {
   const kindText = String(kind ?? 'select');
-  if (!(InteractionKind.options as readonly string[]).includes(kindText)) {
+  if (!enumMember(InteractionKind.options, kindText)) {
     throw new SceneError(
       `interaction on part '${partId}' uses kind '${kindText}', which is not one of the ` +
         `platform's interaction kinds. Supported kinds: ${InteractionKind.options.join(', ')} ` +
         `('playShot' takes a shot object; 'custom' takes a handlerId).`,
     );
   }
+  return kindText;
+};
+
+// ── Structural validation of `scene.physics` ────────────────────────────────
+//
+// `scene.physics` runs inside the guest realm, so it cannot use `PhysicsDeclSchema.safeParse`: the
+// sandbox poisons `Function` and zod's parse touches it. These functions validate the declaration by
+// hand, apply the same defaults the schema applies (so an omitted field behaves exactly as it did
+// through zod), and read the closed vocabularies from the contract's enums at module scope. The
+// cross-references to declared parts and parameters are resolved in `SceneBuilder.toManifest`,
+// because a model may declare physics before the parts and parameters it names.
+
+/** Read an authored id against the contract's `AuthoredId` shape. */
+const authoredId = (value: unknown, label: string): string => {
+  if (typeof value !== 'string' || !ID_PATTERN.test(value)) {
+    throw new SceneError(`${label} must be an id like 'bobBody' — [A-Za-z][A-Za-z0-9_.-]*.`);
+  }
+  return value;
+};
+
+/** Read a bounded finite number. */
+const boundedNumber = (
+  value: unknown,
+  label: string,
+  min = -Infinity,
+  max = Infinity,
+  minExclusive = false,
+): number => {
+  const bad = !isFiniteNumber(value) || (minExclusive ? value <= min : value < min) || value > max;
+  if (bad) {
+    const bounds = minExclusive
+      ? `greater than ${min}${Number.isFinite(max) ? ` and at most ${max}` : ''}`
+      : Number.isFinite(min) || Number.isFinite(max)
+        ? `between ${min} and ${max}`
+        : '';
+    throw new SceneError(`${label} must be a finite number${bounds ? ` ${bounds}` : ''}.`);
+  }
+  return value;
+};
+
+/** Read an optional bounded finite number, returning `undefined` when the field is absent. */
+const optionalBoundedNumber = (
+  value: unknown,
+  label: string,
+  min = -Infinity,
+  max = Infinity,
+): number | undefined => (value === undefined ? undefined : boundedNumber(value, label, min, max));
+
+/** Read an integer in an inclusive range. */
+const integerIn = (value: unknown, label: string, min: number, max: number): number => {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new SceneError(`${label} must be an integer between ${min} and ${max}.`);
+  }
+  return value;
+};
+
+/** Read a `Vec3`. */
+const vec3 = (value: unknown, label: string): [number, number, number] => {
+  if (!isVec3(value)) {
+    throw new SceneError(`${label} must be a triple of finite numbers like [0, -9.81, 0].`);
+  }
+  return value;
+};
+
+/** Read a two-number tuple, as a joint's `limits` is declared. */
+const pair = (value: unknown, label: string): [number, number] => {
+  if (!Array.isArray(value) || value.length !== 2 || !value.every(isFiniteNumber)) {
+    throw new SceneError(`${label} must be a pair of finite numbers like [0, 1].`);
+  }
+  return value as [number, number];
+};
+
+/** Read bounded text, as a probe `label` is declared. */
+const boundedText = (value: unknown, label: string, max: number): string => {
+  if (typeof value !== 'string' || value.length < 1 || value.length > max) {
+    throw new SceneError(`${label} must be text of 1 to ${max} characters.`);
+  }
+  return value;
+};
+
+/** Read an optional object field, refusing a present non-object in the declaration's voice. */
+const optionalObject = (
+  value: unknown,
+  label: string,
+  example: string,
+): Record<string, unknown> => {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new SceneError(`${label} must be an object like ${example}.`);
+  }
+  return value as Record<string, unknown>;
+};
+
+const parsePhysicsMaterial = (
+  value: unknown,
+  label: string,
+): PhysicsDecl['bodies'][number]['material'] => {
+  if (value === undefined) return { name: 'custom' };
+  const raw = optionalObject(value, label, "{ name: 'steel', density: 7850 }");
+  return {
+    name: assertEnum(
+      raw.name ?? 'custom',
+      PHYSICS_MATERIAL_LIST,
+      `${label} name`,
+      'physics materials',
+    ),
+    ...(raw.density !== undefined
+      ? { density: boundedNumber(raw.density, `${label} density`, 0, 30000, true) }
+      : {}),
+    ...(raw.friction !== undefined
+      ? { friction: boundedNumber(raw.friction, `${label} friction`, 0, 4) }
+      : {}),
+    ...(raw.restitution !== undefined
+      ? { restitution: boundedNumber(raw.restitution, `${label} restitution`, 0, 1) }
+      : {}),
+    ...(raw.linearDamping !== undefined
+      ? { linearDamping: boundedNumber(raw.linearDamping, `${label} linearDamping`, 0, 20) }
+      : {}),
+    ...(raw.angularDamping !== undefined
+      ? { angularDamping: boundedNumber(raw.angularDamping, `${label} angularDamping`, 0, 20) }
+      : {}),
+  };
+};
+
+const parsePhysicsCollider = (
+  value: unknown,
+  label: string,
+): PhysicsDecl['bodies'][number]['collider'] => {
+  if (value === undefined) return { shape: 'auto', sensor: false };
+  const raw = optionalObject(value, label, "{ shape: 'box', size: [1, 1, 1] }");
+  return {
+    shape: assertEnum(
+      raw.shape ?? 'auto',
+      COLLIDER_SHAPE_LIST,
+      `${label} shape`,
+      'collider shapes',
+    ),
+    ...(raw.size !== undefined ? { size: vec3(raw.size, `${label} size`) } : {}),
+    ...(raw.radius !== undefined
+      ? { radius: boundedNumber(raw.radius, `${label} radius`, 0, Infinity, true) }
+      : {}),
+    ...(raw.halfHeight !== undefined
+      ? { halfHeight: boundedNumber(raw.halfHeight, `${label} halfHeight`, 0, Infinity, true) }
+      : {}),
+    ...(raw.offset !== undefined ? { offset: vec3(raw.offset, `${label} offset`) } : {}),
+    sensor: raw.sensor === true,
+  };
+};
+
+const parsePhysicsBody = (value: unknown, index: number): PhysicsDecl['bodies'][number] => {
+  const label = `scene.physics body ${index + 1}`;
+  const raw = optionalObject(value, label, "{ id: 'bobBody', partId: 'bob' }");
+  return {
+    id: authoredId(raw.id, `${label} id`),
+    partId: authoredId(raw.partId, `${label} partId`),
+    kind: assertEnum(raw.kind ?? 'dynamic', BODY_KIND_LIST, `${label} kind`, 'body kinds'),
+    material: parsePhysicsMaterial(raw.material, `${label} material`),
+    collider: parsePhysicsCollider(raw.collider, `${label} collider`),
+    ...(raw.mass !== undefined
+      ? { mass: boundedNumber(raw.mass, `${label} mass`, 0, 1e9, true) }
+      : {}),
+    ...(raw.centerOfMass !== undefined
+      ? { centerOfMass: vec3(raw.centerOfMass, `${label} centerOfMass`) }
+      : {}),
+    ...(raw.linearVelocity !== undefined
+      ? { linearVelocity: vec3(raw.linearVelocity, `${label} linearVelocity`) }
+      : {}),
+    ...(raw.angularVelocity !== undefined
+      ? { angularVelocity: vec3(raw.angularVelocity, `${label} angularVelocity`) }
+      : {}),
+    ccd: raw.ccd === true,
+    canSleep: raw.canSleep !== false,
+    gravityScale: optionalBoundedNumber(raw.gravityScale, `${label} gravityScale`, -10, 10) ?? 1,
+  };
+};
+
+const parsePhysicsMotor = (
+  value: unknown,
+  label: string,
+): NonNullable<PhysicsDecl['joints'][number]['motor']> => {
+  const raw = optionalObject(value, label, '{ targetVelocity: 3, maxForce: 1000 }');
+  return {
+    ...(raw.targetVelocity !== undefined
+      ? { targetVelocity: boundedNumber(raw.targetVelocity, `${label} targetVelocity`) }
+      : {}),
+    ...(raw.targetPosition !== undefined
+      ? { targetPosition: boundedNumber(raw.targetPosition, `${label} targetPosition`) }
+      : {}),
+    maxForce: optionalBoundedNumber(raw.maxForce, `${label} maxForce`, 0, 1e9) ?? 1e4,
+    ...(raw.stiffness !== undefined
+      ? { stiffness: boundedNumber(raw.stiffness, `${label} stiffness`, 0) }
+      : {}),
+    ...(raw.damping !== undefined
+      ? { damping: boundedNumber(raw.damping, `${label} damping`, 0) }
+      : {}),
+    ...(raw.boundToParameter !== undefined
+      ? { boundToParameter: authoredId(raw.boundToParameter, `${label} boundToParameter`) }
+      : {}),
+  };
+};
+
+const parsePhysicsJoint = (value: unknown, index: number): PhysicsDecl['joints'][number] => {
+  const label = `scene.physics joint ${index + 1}`;
+  const raw = optionalObject(
+    value,
+    label,
+    "{ id: 'arm', kind: 'revolute', bodyA: 'bobBody', bodyB: null }",
+  );
+  return {
+    id: authoredId(raw.id, `${label} id`),
+    kind: assertEnum(raw.kind, JOINT_KIND_LIST, `${label} kind`, 'joint kinds'),
+    bodyA: authoredId(raw.bodyA, `${label} bodyA`),
+    // `null` anchors the joint to the world; the api reference documents `bodyB?`, so an absent
+    // field is the same intent as an explicit null rather than a failure.
+    bodyB:
+      raw.bodyB === undefined || raw.bodyB === null
+        ? null
+        : authoredId(raw.bodyB, `${label} bodyB`),
+    anchorA: raw.anchorA === undefined ? [0, 0, 0] : vec3(raw.anchorA, `${label} anchorA`),
+    anchorB: raw.anchorB === undefined ? [0, 0, 0] : vec3(raw.anchorB, `${label} anchorB`),
+    ...(raw.axis !== undefined ? { axis: vec3(raw.axis, `${label} axis`) } : {}),
+    ...(raw.limits !== undefined ? { limits: pair(raw.limits, `${label} limits`) } : {}),
+    ...(raw.motor !== undefined ? { motor: parsePhysicsMotor(raw.motor, `${label} motor`) } : {}),
+    ...(raw.restLength !== undefined
+      ? { restLength: boundedNumber(raw.restLength, `${label} restLength`, 0) }
+      : {}),
+  };
+};
+
+const parsePhysicsProbe = (value: unknown, index: number): PhysicsDecl['probes'][number] => {
+  const label = `scene.physics probe ${index + 1}`;
+  const raw = optionalObject(
+    value,
+    label,
+    "{ id: 'speed', bodyId: 'bobBody', quantity: 'speed', label: 'Speed' }",
+  );
+  return {
+    id: authoredId(raw.id, `${label} id`),
+    bodyId: authoredId(raw.bodyId, `${label} bodyId`),
+    quantity: assertEnum(
+      raw.quantity,
+      PHYSICS_QUANTITY_LIST,
+      `${label} quantity`,
+      'probe quantities',
+    ),
+    label: boundedText(raw.label, `${label} label`, 64),
+  };
+};
+
+/** Read an optional array of declaration objects, enforcing the schema's element cap. */
+const physicsArray = (value: unknown, label: string, max: number): unknown[] => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new SceneError(`${label} must be an array.`);
+  if (value.length > max) throw new SceneError(`${label} may hold at most ${max} entries.`);
+  return value;
+};
+
+const PHYSICS_WORLD_DEFAULTS: PhysicsDecl['world'] = {
+  gravity: [0, -9.81, 0],
+  stepHz: 120,
+  substeps: 4,
+  deterministic: false,
+  seed: 1,
+  timeScale: 1,
+  grabbable: true,
+};
+
+const parsePhysicsWorld = (value: unknown): PhysicsDecl['world'] => {
+  if (value === undefined) return { ...PHYSICS_WORLD_DEFAULTS };
+  const raw = optionalObject(value, 'scene.physics world', '{ gravity: [0, -9.81, 0] }');
+  return {
+    gravity: raw.gravity === undefined ? [0, -9.81, 0] : vec3(raw.gravity, 'physics world gravity'),
+    stepHz: optionalBoundedNumber(raw.stepHz, 'physics world stepHz', 30, 480) ?? 120,
+    substeps:
+      raw.substeps === undefined ? 4 : integerIn(raw.substeps, 'physics world substeps', 1, 16),
+    deterministic: raw.deterministic === true,
+    seed:
+      raw.seed === undefined
+        ? 1
+        : integerIn(raw.seed, 'physics world seed', 0, Number.MAX_SAFE_INTEGER),
+    timeScale: optionalBoundedNumber(raw.timeScale, 'physics world timeScale', 0.01, 4) ?? 1,
+    grabbable: raw.grabbable !== false,
+  };
+};
+
+/**
+ * Validate a `scene.physics` declaration structurally and return it with the schema's defaults
+ * applied, so the manifest carries exactly what a zod round-trip would have produced.
+ */
+const parsePhysicsDeclaration = (spec: unknown): PhysicsDecl => {
+  if (spec !== undefined && (spec === null || typeof spec !== 'object' || Array.isArray(spec))) {
+    throw new SceneError('scene.physics expects an object like { bodies: [{ id, partId }] }.');
+  }
+  const raw = (spec ?? {}) as Record<string, unknown>;
+  return {
+    world: parsePhysicsWorld(raw.world),
+    bodies: physicsArray(raw.bodies, 'scene.physics bodies', 512).map(parsePhysicsBody),
+    joints: physicsArray(raw.joints, 'scene.physics joints', 256).map(parsePhysicsJoint),
+    probes: physicsArray(raw.probes, 'scene.physics probes', 32).map(parsePhysicsProbe),
+  };
 };
 
 /**
@@ -1105,7 +1558,14 @@ export class SceneBuilder {
         const affects = Array.isArray(spec?.affects)
           ? (spec.affects as Array<Record<string, unknown>>).slice(0, 64).map((entry) => ({
               ...(typeof entry.partId === 'string' ? { partId: entry.partId } : {}),
-              channel: (entry.channel ?? 'transform') as never,
+              // Validated against the contract's own channel enum: a channel no consumer knows
+              // used to reach the manifest as a cast and fail after the generation was paid for.
+              channel: assertEnum(
+                entry.channel ?? 'transform',
+                PARAMETER_CHANNEL_LIST,
+                `parameter '${id}' affects entry`,
+                'parameter channels',
+              ),
             }))
           : [];
 
@@ -1228,16 +1688,25 @@ export class SceneBuilder {
               `Supported kinds: spin, oscillate, orbit, translate, pulse, flowAlongPath.`,
           );
         }
+        // Validated against the contract's own motion enum: only the two unimplementable kinds were
+        // refused before, so any other invented kind rode through to manifest validation.
+        const motionKind = assertEnum(kind, MOTION_KIND_LIST, `motion '${id}'`, 'motion kinds');
         this.motions.push({
           id,
           partId,
-          kind: kind as never,
+          kind: motionKind,
           axis: this.vec3(spec?.axis, 'motion axis', [0, 1, 0]),
-          rate: (spec?.rate ?? { const: 1 }) as never,
-          ...(spec?.amplitude !== undefined ? { amplitude: spec.amplitude as never } : {}),
+          // The live failure this boundary exists for: `rate: 2` and `rate: 'rpm'` are refused (or
+          // coerced) here, where the generator can still fix them, instead of at the audit.
+          rate: this.scalarSource(spec?.rate ?? { const: 1 }, `motion '${id}' rate`),
+          ...(spec?.amplitude !== undefined
+            ? { amplitude: this.scalarSource(spec.amplitude, `motion '${id}' amplitude`) }
+            : {}),
           phase: this.optionalNumber(spec?.phase, 'motion phase') ?? 0,
           ...(spec?.center ? { center: this.vec3(spec.center, 'motion center') } : {}),
-          ...(spec?.pathId ? { pathId: String(spec.pathId) } : {}),
+          ...(spec?.pathId
+            ? { pathId: this.requirePathId(String(spec.pathId), `motion '${id}' pathId`) }
+            : {}),
           runsWhilePaused: spec?.runsWhilePaused === true,
           ...(typeof spec?.reason === 'string' ? { reason: spec.reason.slice(0, 240) } : {}),
         });
@@ -1274,7 +1743,7 @@ export class SceneBuilder {
         const id = this.requireId(spec?.id, 'light.id');
         this.lights.push({
           id,
-          kind: (spec?.kind ?? 'point') as never,
+          kind: assertEnum(spec?.kind ?? 'point', LIGHT_KIND_LIST, `light '${id}'`, 'light kinds'),
           color: (typeof spec?.color === 'string' ? spec.color : '#ffffff') as `#${string}`,
           intensity: clamp(this.optionalNumber(spec?.intensity, 'light intensity') ?? 1, 0, 1000),
           ...(spec?.position ? { position: this.vec3(spec.position, 'light position') } : {}),
@@ -1331,13 +1800,16 @@ export class SceneBuilder {
       /** Register a named cinematic shot, replayable from a story beat or an interaction (`00`). */
       shot: (name: string, spec: Record<string, unknown>): void => {
         const id = this.requireId(name, 'shot name');
-        assertShotShape(`shot '${id}'`, spec?.kind, spec?.easing);
+        // assertShotShape proves kind and easing are contract members and hands them back; the pose
+        // is validated against `CameraPose` rather than trusted as an opaque cast.
+        const { kind, easing } = assertShotShape(`shot '${id}'`, spec?.kind, spec?.easing);
+        const pose = spec?.pose ? this.shotPose(spec.pose, `shot '${id}' pose`) : undefined;
         this.shots.set(id, {
-          kind: (spec?.kind ?? 'flyTo') as never,
+          kind,
           duration: clamp(Number(spec?.duration ?? 1.2), 0, 60),
-          easing: (spec?.easing ?? 'easeInOut') as never,
+          easing,
           ...(spec?.targetPartId ? { targetPartId: String(spec.targetPartId) } : {}),
-          ...(spec?.pose ? { pose: spec.pose as never } : {}),
+          ...(pose ? { pose } : {}),
           ...(spec?.distance !== undefined ? { distance: Number(spec.distance) } : {}),
           ...(spec?.sweep !== undefined ? { sweep: Number(spec.sweep) } : {}),
           ...(spec?.fov !== undefined ? { fov: clamp(Number(spec.fov), 10, 120) } : {}),
@@ -1348,7 +1820,12 @@ export class SceneBuilder {
       /** Set the backdrop and tone. The engine keeps model contrast in both themes (`00`, `08`). */
       environment: (spec: Record<string, unknown>): void => {
         this.environment = {
-          preset: (spec?.preset ?? 'studio') as never,
+          preset: assertEnum(
+            spec?.preset ?? 'studio',
+            ENVIRONMENT_PRESET_LIST,
+            'environment',
+            'presets',
+          ),
           ...(typeof spec?.backgroundDark === 'string'
             ? { backgroundDark: spec.backgroundDark as `#${string}` }
             : {}),
@@ -1357,7 +1834,7 @@ export class SceneBuilder {
             : {}),
           grid: spec?.grid === true,
           exposure: clamp(Number(spec?.exposure ?? 0), -4, 4),
-          ...(spec?.fog ? { fog: spec.fog as never } : {}),
+          ...(spec?.fog ? { fog: this.environmentFog(spec.fog, 'environment fog') } : {}),
         };
       },
 
@@ -1374,27 +1851,32 @@ export class SceneBuilder {
             const entry = (shot ?? {}) as Record<string, unknown>;
             assertShotShape(`story beat '${id}' shot ${index + 1}`, entry.kind, entry.easing);
           }
-          const viewMode = beat?.viewMode;
-          if (
-            viewMode !== undefined &&
-            !(ViewModeList as readonly string[]).includes(String(viewMode))
-          ) {
-            throw new SceneError(
-              `story beat '${id}' uses viewMode '${String(viewMode)}', which is not one of the ` +
-                `platform's view modes. Supported modes: ${ViewModeList.join(', ')}.`,
-            );
+          // The view mode is validated against the `StoryBeat` schema's own union and handed back, so
+          // a mode the schema would reject fails here rather than at manifest validation.
+          const rawViewMode = beat?.viewMode;
+          let viewMode: StoryBeat['viewMode'];
+          if (rawViewMode !== undefined) {
+            const viewModeText = String(rawViewMode);
+            if (!enumMember(ViewModeList, viewModeText)) {
+              throw new SceneError(
+                `story beat '${id}' uses viewMode '${viewModeText}', which is not one of the ` +
+                  `platform's view modes. Supported modes: ${ViewModeList.join(', ')}.`,
+              );
+            }
+            viewMode = viewModeText;
           }
+          const setParameters = this.storySetParameters(beat?.setParameters, id);
           this.story.push({
             id,
             title: this.requireText(beat?.title, `beat '${id}' title`, 120),
             narration: this.requireText(beat?.narration, `beat '${id}' narration`, 1200),
             ...(beat?.targetPartId ? { targetPartId: String(beat.targetPartId) } : {}),
             shots: beatShots as ShotDecl[],
-            ...(beat?.setParameters ? { setParameters: beat.setParameters as never } : {}),
+            ...(setParameters ? { setParameters } : {}),
             ...(beat?.holdSeconds !== undefined
               ? { holdSeconds: clamp(Number(beat.holdSeconds), 1, 60) }
               : {}),
-            ...(beat?.viewMode ? { viewMode: beat.viewMode as never } : {}),
+            ...(viewMode !== undefined ? { viewMode } : {}),
           });
         }
       },
@@ -1440,7 +1922,12 @@ export class SceneBuilder {
               `question '${id}' explanation`,
               800,
             ),
-            difficulty: (question?.difficulty ?? 'application') as never,
+            difficulty: assertEnum(
+              question?.difficulty ?? 'application',
+              QUIZ_DIFFICULTY_LIST,
+              `quiz question '${id}'`,
+              'difficulty levels',
+            ),
             ...(question?.evidencePartId
               ? { evidencePartId: String(question.evidencePartId) }
               : {}),
@@ -1457,18 +1944,30 @@ export class SceneBuilder {
         // A kind the schema rejects used to ride through as `any` and die only at manifest
         // validation — and the documented example itself used 'toggle', which no schema accepts.
         // 'playShot' carries an inline shot, validated with the same refusal as scene.shot.
-        assertInteractionKind(partId, spec?.kind);
-        if (spec?.shot !== undefined && spec.shot !== null) {
-          const shot = spec.shot as Record<string, unknown>;
-          assertShotShape(`interaction shot on part '${partId}'`, shot.kind, shot.easing);
-        }
+        const kind = assertInteractionKind(partId, spec?.kind);
+        // The inline shot reaches the player straight from the authoring pass, so its fields are
+        // validated structurally here rather than copied through as an opaque cast.
+        const shot =
+          spec?.shot !== undefined && spec.shot !== null
+            ? this.interactionShot(
+                spec.shot as Record<string, unknown>,
+                `interaction shot on part '${partId}'`,
+              )
+            : undefined;
         this.interactions.push({
           partId,
-          on: (spec?.on ?? 'click') as never,
-          kind: (spec?.kind ?? 'select') as never,
+          on: assertEnum(
+            spec?.on ?? 'click',
+            INTERACTION_ON_LIST,
+            `interaction on part '${partId}'`,
+            'trigger events',
+          ),
+          kind,
           ...(spec?.targetId ? { targetId: String(spec.targetId) } : {}),
-          ...(spec?.value !== undefined ? { value: spec.value as never } : {}),
-          ...(spec?.shot ? { shot: spec.shot as never } : {}),
+          ...(spec?.value !== undefined
+            ? { value: assertValueScalar(spec.value, `interaction on part '${partId}' value`) }
+            : {}),
+          ...(shot ? { shot } : {}),
           ...(spec?.impulse ? { impulse: this.vec3(spec.impulse, 'interaction impulse') } : {}),
           ...(spec?.handlerId ? { handlerId: String(spec.handlerId) } : {}),
           ...(typeof spec?.hint === 'string' ? { hint: spec.hint.slice(0, 160) } : {}),
@@ -1517,20 +2016,14 @@ export class SceneBuilder {
 
       /** Declare the physics world. Absent means the model animates rather than simulates (`01`). */
       physics: (spec: PhysicsDecl): void => {
-        // Parsed here rather than at the manifest boundary, so a model's physics declaration is
-        // normalised the moment it is made: zod fills the world defaults, and a NaN gravity or a
-        // negative density is refused while the author still gets a usable message. Storing the
-        // spec verbatim meant `bodies` could be absent and every later reader had to defend
-        // against it — one of them (`computeCost`) did not, and the authoring pass crashed outright
-        // for any model that declared a world without listing its bodies by hand.
-        const parsed = PhysicsDeclSchema.safeParse(spec ?? {});
-        if (!parsed.success) {
-          const issue = parsed.error.issues[0];
-          throw new SceneError(
-            `scene.physics: ${issue?.path.join('.') || 'declaration'} — ${issue?.message ?? 'invalid'}.`,
-          );
-        }
-        this.physics = parsed.data;
+        // Validated structurally here rather than through `PhysicsDeclSchema.safeParse`: this runs
+        // inside the guest realm, where the sandbox poisons `Function` and zod's parse touches it, so
+        // a schema call throws `Function is not available inside the model sandbox`. Normalising at
+        // the declaration means every later reader gets the schema's defaults — storing the spec
+        // verbatim left `bodies` absent and crashed `computeCost` outright. References to declared
+        // parts and parameters are resolved in `toManifest`, once the whole program has run, because
+        // a model may declare physics before the parts it names (the physics fixtures do exactly that).
+        this.physics = parsePhysicsDeclaration(spec);
       },
 
       /** Record a non-fatal note for the diagnostics panel. */
@@ -1572,6 +2065,300 @@ export class SceneBuilder {
     };
   }
 
+  // ── Boundary validation for values copied into the manifest ────────────────
+
+  /**
+   * Validate an authored scalar source, accepting a bare finite number as the `{ const }` shorthand.
+   *
+   * The defect this exists for, from a live generation: `scene.motion({ ..., rate: 2 })` — a bare
+   * number where the contract wants a `ScalarSource` — survived the static gate, both repair passes
+   * and the whole audit, and surfaced only as the terminal `motions.rate: Invalid input`, with no
+   * chance to repair. The shorthand is coerced rather than refused because it is what the AI actually
+   * writes and the meaning is unambiguous. Two of the four legal shapes name ids, so `param` and
+   * `probe` are checked against the ids declared *so far*: a dangling parameter or probe is the same
+   * defect class as a dangling part id, and is refused here while the generator can still fix it.
+   */
+  private scalarSource(value: unknown, label: string): ScalarSource {
+    if (isFiniteNumber(value)) return { const: value };
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const source = value as Record<string, unknown>;
+      if ('const' in source) {
+        if (!isFiniteNumber(source.const)) {
+          throw new SceneError(`${label}: const — expected a finite number.`);
+        }
+        return { const: source.const };
+      }
+      if ('param' in source) {
+        if (typeof source.param !== 'string') {
+          throw new SceneError(scalarSourceRefusal(label, value));
+        }
+        if (!this.parameters.has(source.param)) {
+          throw new SceneError(
+            `${label} references parameter '${source.param}', which has not been declared. ` +
+              `Declare it with scene.param({ id: '${source.param}', ... }) before this motion.`,
+          );
+        }
+        return {
+          param: source.param,
+          scale: this.finiteOrDefault(source.scale, 1, `${label} param scale`),
+          offset: this.finiteOrDefault(source.offset, 0, `${label} param offset`),
+        };
+      }
+      if ('signal' in source) {
+        if (!isScalarSignal(source.signal)) {
+          throw new SceneError(
+            `${label}: signal — expected one of ${[...SCALAR_SIGNAL_SET]
+              .map((name) => `'${name}'`)
+              .join(', ')}.`,
+          );
+        }
+        return {
+          signal: source.signal,
+          scale: this.finiteOrDefault(source.scale, 1, `${label} signal scale`),
+        };
+      }
+      if ('probe' in source) {
+        if (typeof source.probe !== 'string') {
+          throw new SceneError(scalarSourceRefusal(label, value));
+        }
+        if (!this.isKnownProbeId(source.probe)) {
+          throw new SceneError(
+            `${label} references probe '${source.probe}', which no declared physics probe publishes. ` +
+              `Declare it in scene.physics({ probes: [{ id: '${source.probe}', bodyId, quantity, label }] }).`,
+          );
+        }
+        return {
+          probe: source.probe,
+          scale: this.finiteOrDefault(source.scale, 1, `${label} probe scale`),
+          offset: this.finiteOrDefault(source.offset, 0, `${label} probe offset`),
+        };
+      }
+    }
+    throw new SceneError(scalarSourceRefusal(label, value));
+  }
+
+  /** Read an optional finite number, falling back to the contract default when the field is absent. */
+  private finiteOrDefault(value: unknown, fallback: number, label: string): number {
+    if (value === undefined) return fallback;
+    if (isFiniteNumber(value)) return value;
+    throw new SceneError(`${label} must be a finite number when present.`);
+  }
+
+  /** Whether a `{ probe }` source names a physics probe the model actually declared (`02` R6). */
+  private isKnownProbeId(probe: string): boolean {
+    return (this.physics?.probes ?? []).some((decl) => decl.id === probe);
+  }
+
+  /** Refuse a motion path id that names no declared `scene.path`, the way a part id is refused. */
+  private requirePathId(value: string, label: string): string {
+    if (!this.paths.has(value)) {
+      const known = [...this.paths.keys()];
+      throw new SceneError(
+        `${label} names path '${value}', which has not been declared. ` +
+          `Declare it with scene.path({ id: '${value}', path: geom.path([...]) }) before this motion.` +
+          (known.length > 0 ? ` Declared paths: ${known.join(', ')}.` : ''),
+      );
+    }
+    return value;
+  }
+
+  /**
+   * Resolve a physics declaration's cross-references once every part and parameter is known.
+   *
+   * Deferred from `scene.physics` because a model may declare physics before the parts and parameters
+   * it names — the platform's own physics fixtures do — so a "declared so far" check there would
+   * refuse legal programs. A dangling reference is the same defect class as a dangling part id:
+   * refused here, at the end of the authoring pass, minutes before the audit would have.
+   */
+  private validatePhysicsReferences(): void {
+    const physics = this.physics;
+    if (!physics) return;
+
+    const bodyIds = new Set(physics.bodies.map((body) => body.id));
+    for (const body of physics.bodies) {
+      if (!this.parts.has(body.partId)) {
+        throw new SceneError(
+          `physics body '${body.id}' targets part '${body.partId}', which does not exist. ` +
+            `Declare it with scene.mesh({ id: '${body.partId}', ... }) before this body.`,
+        );
+      }
+    }
+    for (const joint of physics.joints) {
+      if (!bodyIds.has(joint.bodyA)) {
+        throw new SceneError(
+          `physics joint '${joint.id}' names bodyA '${joint.bodyA}', which no declared body has. ` +
+            `Declare it in scene.physics({ bodies: [...] }) first.`,
+        );
+      }
+      if (joint.bodyB !== null && !bodyIds.has(joint.bodyB)) {
+        throw new SceneError(
+          `physics joint '${joint.id}' names bodyB '${joint.bodyB}', which no declared body has ` +
+            `(use null to anchor the joint to the world).`,
+        );
+      }
+      const boundTo = joint.motor?.boundToParameter;
+      if (boundTo !== undefined && !this.parameters.has(boundTo)) {
+        throw new SceneError(
+          `physics joint '${joint.id}' motor is bound to parameter '${boundTo}', which has not been declared. ` +
+            `Declare it with scene.param({ id: '${boundTo}', ... }) first.`,
+        );
+      }
+    }
+    for (const probe of physics.probes) {
+      if (!bodyIds.has(probe.bodyId)) {
+        throw new SceneError(
+          `physics probe '${probe.id}' names body '${probe.bodyId}', which no declared body has. ` +
+            `Declare it in scene.physics({ bodies: [...] }) first.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Validate an authored camera pose structurally against the contract's partial `CameraPose`. A pose
+   * that survives here is one the realizer can apply; a malformed one used to reach the manifest as a
+   * cast and fail at validation, after the generation was paid for.
+   */
+  private shotPose(value: unknown, label: string): NonNullable<ShotDecl['pose']> {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new SceneError(poseRefusal(label, 'pose', 'expected an object'));
+    }
+    const raw = value as Record<string, unknown>;
+    const pose: NonNullable<ShotDecl['pose']> = {};
+    for (const key of ['position', 'target', 'up'] as const) {
+      const component = raw[key];
+      if (component === undefined) continue;
+      if (!isVec3(component)) {
+        throw new SceneError(poseRefusal(label, key, 'expected three finite numbers'));
+      }
+      pose[key] = component;
+    }
+    if (raw.fov !== undefined) {
+      if (!isFiniteNumber(raw.fov) || raw.fov < 10 || raw.fov > 120) {
+        throw new SceneError(poseRefusal(label, 'fov', 'expected degrees between 10 and 120'));
+      }
+      pose.fov = raw.fov;
+    }
+    return pose;
+  }
+
+  /**
+   * Validate an authored inline shot structurally against the contract's `ShotDecl`, filling the
+   * defaults the schema declares. `kind` and `easing` are proven by `assertShotShape` first, so an
+   * omitted one takes its documented default rather than failing.
+   */
+  private interactionShot(value: Record<string, unknown>, label: string): ShotDecl {
+    const { kind, easing } = assertShotShape(label, value.kind, value.easing);
+    return {
+      kind,
+      duration: this.boundedShotNumber(value.duration, 1.2, 0, 60, label, 'duration'),
+      easing,
+      ...(value.targetPartId !== undefined
+        ? { targetPartId: this.shotId(value.targetPartId, label, 'targetPartId') }
+        : {}),
+      ...(value.pose !== undefined ? { pose: this.shotPose(value.pose, `${label} pose`) } : {}),
+      ...(value.distance !== undefined
+        ? { distance: this.finiteShotNumber(value.distance, label, 'distance') }
+        : {}),
+      ...(value.sweep !== undefined
+        ? { sweep: this.finiteShotNumber(value.sweep, label, 'sweep') }
+        : {}),
+      ...(value.fov !== undefined
+        ? { fov: this.boundedShotNumber(value.fov, 45, 10, 120, label, 'fov') }
+        : {}),
+      margin: this.boundedShotNumber(value.margin, 1.35, 1, 4, label, 'margin'),
+    };
+  }
+
+  /** Read a bounded finite number for an authored shot, or throw naming the field and its range. */
+  private boundedShotNumber(
+    value: unknown,
+    fallback: number,
+    min: number,
+    max: number,
+    label: string,
+    field: string,
+  ): number {
+    if (value === undefined) return fallback;
+    if (!isFiniteNumber(value) || value < min || value > max) {
+      throw new SceneError(
+        `${label}: ${field} — expected a finite number between ${min} and ${max}.`,
+      );
+    }
+    return value;
+  }
+
+  /** Read an unbounded finite number for an authored shot. */
+  private finiteShotNumber(value: unknown, label: string, field: string): number {
+    if (!isFiniteNumber(value)) {
+      throw new SceneError(`${label}: ${field} — expected a finite number.`);
+    }
+    return value;
+  }
+
+  /** Read an authored id for a shot field, matching the contract's `AuthoredId` shape. */
+  private shotId(value: unknown, label: string, field: string): string {
+    if (typeof value !== 'string' || !ID_PATTERN.test(value)) {
+      throw new SceneError(`${label}: ${field} — expected an id like 'partId'.`);
+    }
+    return value;
+  }
+
+  /**
+   * Validate an authored fog block structurally against the contract's `EnvironmentDecl.fog`. The
+   * bounds and the hex pattern mirror the contract rather than restating the schema call.
+   */
+  private environmentFog(
+    value: unknown,
+    label: string,
+  ): NonNullable<ModelManifest['environment']['fog']> {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new SceneError(fogRefusal(label, 'fog', 'expected an object'));
+    }
+    const raw = value as Record<string, unknown>;
+    if (typeof raw.color !== 'string' || !HEX_COLOR_PATTERN.test(raw.color)) {
+      throw new SceneError(fogRefusal(label, 'color', "expected '#rgb' or '#rrggbb'"));
+    }
+    if (!isFiniteNumber(raw.near) || raw.near < 0) {
+      throw new SceneError(fogRefusal(label, 'near', 'expected a non-negative number'));
+    }
+    if (!isFiniteNumber(raw.far) || raw.far < 0) {
+      throw new SceneError(fogRefusal(label, 'far', 'expected a non-negative number'));
+    }
+    return { color: raw.color as `#${string}`, near: raw.near, far: raw.far };
+  }
+
+  /**
+   * Validate a beat's parameter writes: each key must name a declared parameter and each value one
+   * of the scalars the manifest accepts. A dangling key or an object value used to ride through as a
+   * cast and fail at manifest validation, after the generation was paid for.
+   */
+  private storySetParameters(
+    value: unknown,
+    beatId: string,
+  ): Record<string, number | boolean | string> | undefined {
+    if (value === undefined) return undefined;
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new SceneError(
+        `story beat '${beatId}' setParameters must be an object of parameter ids to values.`,
+      );
+    }
+    const result: Record<string, number | boolean | string> = {};
+    for (const [paramId, rawValue] of Object.entries(value as Record<string, unknown>)) {
+      if (!this.parameters.has(paramId)) {
+        throw new SceneError(
+          `story beat '${beatId}' sets parameter '${paramId}', which has not been declared. ` +
+            `Declare it with scene.param({ id: '${paramId}', ... }) first.`,
+        );
+      }
+      result[paramId] = assertValueScalar(
+        rawValue,
+        `story beat '${beatId}' setParameters['${paramId}']`,
+      );
+    }
+    return result;
+  }
+
   // ── Manifest emission ─────────────────────────────────────────────────────
 
   beginTiming(): void {
@@ -1596,6 +2383,11 @@ export class SceneBuilder {
         'The model declared no parts. A scene with no geometry cannot teach anything.',
       );
     }
+
+    // Every part and parameter is now declared, so the physics declaration's cross-references can be
+    // resolved. A dangling one is a hard refusal, not a warning: a body bound to a part that does not
+    // exist is a solver that silently does nothing.
+    this.validatePhysicsReferences();
 
     const nodes = this.order.map((id) => (this.parts.get(id) as PartRecord).node);
 

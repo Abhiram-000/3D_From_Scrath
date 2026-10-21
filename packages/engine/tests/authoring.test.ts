@@ -10,8 +10,26 @@
  * multi-system assemblies to be *ordinary*, so the test that proves the pipeline works should be one.
  */
 import { describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { prepareProgram, describeViolations, createGuard } from '@edu3d/sandbox';
-import { InteractionKind, ModelManifest, ShotEasing, ShotKind } from '@edu3d/contracts';
+import {
+  BodyKind,
+  EnvironmentDecl,
+  InteractionDecl,
+  InteractionKind,
+  LightKind,
+  ModelManifest,
+  MotionKind,
+  ParameterChannel,
+  QuizQuestion,
+  ShotEasing,
+  ShotKind,
+} from '@edu3d/contracts';
 import { apiSurfaceSet, describeApiSurface } from '../src/authoring/api-surface.ts';
 import { API_REFERENCE } from '../src/authoring/api-reference.ts';
 import { authorModel, runFrame } from '../src/authoring/guest.ts';
@@ -20,6 +38,8 @@ import { MINIMAL_MODEL_SOURCE, REFERENCE_MODEL_SOURCE } from '../src/reference/t
 
 /** Run a program the way the server does: extract, gate, instrument. */
 const prepare = (source: string) => prepareProgram(source, { apiSurface: apiSurfaceSet() });
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Author a program the way the browser worker does.
@@ -705,4 +725,381 @@ describe('the cinematic shot vocabulary', () => {
       for (const legal of ShotEasing.options) expect(result.message).toMatch(legal);
     }
   });
+});
+
+/**
+ * The scalar-source and enum boundaries.
+ *
+ * The live generation that motivated these: `scene.motion({ id, partId, kind: 'spin', rate: 2 })`
+ * — a bare number where the contract wants a `ScalarSource` — survived authoring, the static gate,
+ * both repair passes and the whole audit, and died only as the terminal learner-facing
+ * `motions.rate: Invalid input`, after ~55 minutes and several paid provider calls. Nothing refused
+ * it at the boundary, so there was no cheap, actionable failure to repair from. Each test below
+ * pins one such hole shut: authoring must refuse it, name every legal alternative, and — where the
+ * intent is unambiguous, as with a bare number — coerce it instead.
+ */
+describe('scalar sources and enum fields are validated at the authoring boundary', () => {
+  const PROGRAM = (declaration: string) => `
+    scene.describe({ name: 'Boundary', description: 'Boundary checks.', concept: 'x', objectives: ['y'] });
+    scene.param({ id: 'rpm', label: 'Speed', kind: 'number', min: 0, max: 10, default: 2 });
+    scene.mesh({ id: 'a', geometry: geom.box([1, 1, 1]), material: mat.metal({}) });
+    ${declaration}
+  `;
+
+  it('coerces a bare number rate to a constant scalar source', () => {
+    const result = author(
+      PROGRAM(`scene.motion({ id: 'm', partId: 'a', kind: 'spin', rate: 2, reason: 'Because.' });`),
+    );
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    // A bare number is what the AI actually writes and what `{ const }` means: lossless, so it is
+    // normalised rather than refused.
+    expect(result.manifest.motions[0]?.rate).toEqual({ const: 2 });
+  });
+
+  it('accepts a parameter-bound rate unchanged', () => {
+    const result = author(
+      PROGRAM(
+        `scene.motion({ id: 'm', partId: 'a', kind: 'spin', rate: { param: 'rpm', scale: 0.5 }, reason: 'Because.' });`,
+      ),
+    );
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.motions[0]?.rate).toMatchObject({ param: 'rpm', scale: 0.5 });
+  });
+
+  it('refuses a bare id string rate and names the { param } form', () => {
+    const result = author(
+      PROGRAM(
+        `scene.motion({ id: 'm', partId: 'a', kind: 'spin', rate: 'rpm', reason: 'Because.' });`,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/rate/);
+    // The message must name the two likely intents, with the author's own id echoed back.
+    expect(result.message).toMatch(/\{ param: 'rpm' \}/);
+    expect(result.message).toMatch(/\{ const/);
+  });
+
+  it('refuses a parameter reference that was never declared', () => {
+    const result = author(
+      PROGRAM(
+        `scene.motion({ id: 'm', partId: 'a', kind: 'spin', rate: { param: 'absent' }, reason: 'Because.' });`,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/parameter 'absent'/);
+  });
+
+  it('refuses a probe that names no declared physics probe', () => {
+    const result = author(
+      PROGRAM(
+        `scene.motion({ id: 'm', partId: 'a', kind: 'oscillate', amplitude: { probe: 'ghost' }, reason: 'Because.' });`,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/probe 'ghost'/);
+  });
+
+  it('accepts a probe declared in scene.physics', () => {
+    const result = author(
+      PROGRAM(
+        `scene.physics({ bodies: [{ id: 'a', partId: 'a' }], probes: [{ id: 'speedProbe', bodyId: 'a', quantity: 'speed', label: 'Speed' }] });
+         scene.motion({ id: 'm', partId: 'a', kind: 'oscillate', amplitude: { probe: 'speedProbe' }, reason: 'Because.' });`,
+      ),
+    );
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.motions[0]?.amplitude).toMatchObject({ probe: 'speedProbe' });
+  });
+
+  it('applies the schema defaults to a physics declaration', () => {
+    // The structural validator must reproduce what a zod round-trip produced: a bare body still
+    // carries the world gravity, an inferred collider and the named-material/damping defaults.
+    const result = author(PROGRAM(`scene.physics({ bodies: [{ id: 'b', partId: 'a' }] });`));
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    const physics = result.manifest.physics;
+    expect(physics?.world.gravity).toEqual([0, -9.81, 0]);
+    expect(physics?.world.stepHz).toBe(120);
+    expect(physics?.bodies[0]?.kind).toBe('dynamic');
+    expect(physics?.bodies[0]?.material.name).toBe('custom');
+    expect(physics?.bodies[0]?.collider.shape).toBe('auto');
+    expect(physics?.bodies[0]?.collider.sensor).toBe(false);
+    expect(physics?.bodies[0]?.ccd).toBe(false);
+    expect(physics?.bodies[0]?.canSleep).toBe(true);
+    expect(physics?.bodies[0]?.gravityScale).toBe(1);
+    expect(physics?.joints).toEqual([]);
+    expect(physics?.probes).toEqual([]);
+    // And the normalised declaration must satisfy the contract's own schema, or the audit — which
+    // does parse the manifest — would reject what authoring accepted.
+    const parsed = ModelManifest.safeParse(result.manifest);
+    expect(parsed.success, JSON.stringify(parsed.success ? [] : parsed.error.issues)).toBe(true);
+  });
+
+  it('refuses a physics body bound to an undeclared part', () => {
+    const result = author(PROGRAM(`scene.physics({ bodies: [{ id: 'b', partId: 'ghost' }] });`));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/body 'b' targets part 'ghost'/);
+  });
+
+  it('refuses a joint or probe naming an undeclared body', () => {
+    const joint = author(
+      PROGRAM(
+        `scene.physics({ bodies: [{ id: 'b', partId: 'a' }], joints: [{ id: 'j', kind: 'revolute', bodyA: 'ghost' }] });`,
+      ),
+    );
+    expect(joint.ok).toBe(false);
+    if (!joint.ok) expect(joint.message).toMatch(/bodyA 'ghost'/);
+
+    const probe = author(
+      PROGRAM(
+        `scene.physics({ bodies: [{ id: 'b', partId: 'a' }], probes: [{ id: 'p', bodyId: 'ghost', quantity: 'speed', label: 'Speed' }] });`,
+      ),
+    );
+    expect(probe.ok).toBe(false);
+    if (!probe.ok) expect(probe.message).toMatch(/probe 'p' names body 'ghost'/);
+  });
+
+  it('refuses a motor bound to an undeclared parameter', () => {
+    const result = author(
+      PROGRAM(
+        `scene.physics({ bodies: [{ id: 'b', partId: 'a' }], joints: [{ id: 'j', kind: 'revolute', bodyA: 'b', motor: { targetVelocity: 1, boundToParameter: 'absent' } }] });`,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/bound to parameter 'absent'/);
+  });
+
+  it('refuses an unknown physics enum value, naming the legal ones', () => {
+    // 'static' is what the api reference shows; the schema spells the fixed body kind 'fixed', which
+    // is exactly the documentation/schema drift this boundary is meant to catch cheaply.
+    const kind = author(
+      PROGRAM(`scene.physics({ bodies: [{ id: 'b', partId: 'a', kind: 'static' }] });`),
+    );
+    expect(kind.ok).toBe(false);
+    if (!kind.ok) {
+      expect(kind.message).toMatch(/'static'/);
+      for (const legal of BodyKind.options) expect(kind.message).toContain(legal);
+    }
+
+    const quantity = author(
+      PROGRAM(
+        `scene.physics({ bodies: [{ id: 'b', partId: 'a' }], probes: [{ id: 'p', bodyId: 'b', quantity: 'temperature', label: 'T' }] });`,
+      ),
+    );
+    expect(quantity.ok).toBe(false);
+    if (!quantity.ok) expect(quantity.message).toMatch(/'temperature'/);
+  });
+
+  it('refuses a motion pathId that names no declared path', () => {
+    const result = author(
+      PROGRAM(
+        `scene.motion({ id: 'm', partId: 'a', kind: 'flowAlongPath', pathId: 'ghost', rate: 1, reason: 'Because.' });`,
+      ),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/path 'ghost'/);
+  });
+
+  it('accepts an interaction shot that omits kind, defaulting it as the signature documents', () => {
+    // The documented interaction shot has `kind?` optional, and assertShotShape has always defaulted
+    // it to 'flyTo'; the boundary parse must preserve that, not turn documented input into an error.
+    const result = author(
+      PROGRAM(`scene.interaction({ partId: 'a', kind: 'playShot', shot: { targetPartId: 'a' } });`),
+    );
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.interactions[0]?.shot?.kind).toBe('flyTo');
+  });
+
+  /** Each case pairs an authored value the schema rejects with the enum the message must recite. */
+  const ENUM_CASES: Array<{
+    field: string;
+    value: string;
+    declaration: string;
+    legal: readonly string[];
+  }> = [
+    {
+      field: 'light kind',
+      value: 'glow',
+      declaration: `scene.light({ id: 'l', kind: 'glow' });`,
+      legal: LightKind.options,
+    },
+    {
+      field: 'environment preset',
+      value: 'neon',
+      declaration: `scene.environment({ preset: 'neon' });`,
+      legal: EnvironmentDecl.shape.preset.unwrap().options,
+    },
+    {
+      field: 'quiz difficulty',
+      value: 'trivia',
+      declaration: `scene.quiz([{ id: 'q2', question: 'Why this?', options: ['a', 'b'], correctIndex: 0, explanation: 'a is right, and b is the tempting wrong one.', difficulty: 'trivia' }]);`,
+      legal: QuizQuestion.shape.difficulty.unwrap().options,
+    },
+    {
+      field: 'interaction trigger',
+      value: 'scroll',
+      declaration: `scene.interaction({ partId: 'a', kind: 'select', on: 'scroll' });`,
+      legal: InteractionDecl.shape.on.options,
+    },
+    {
+      field: 'parameter channel',
+      value: 'colour',
+      declaration: `scene.param({ id: 'p2', label: 'P2', kind: 'number', min: 0, max: 1, default: 0, affects: [{ channel: 'colour' }] });`,
+      legal: ParameterChannel.options,
+    },
+    {
+      field: 'motion kind',
+      value: 'wobble',
+      declaration: `scene.motion({ id: 'm2', partId: 'a', kind: 'wobble', reason: 'Because.' });`,
+      legal: MotionKind.options.filter((kind) => kind !== 'follow' && kind !== 'sequence'),
+    },
+  ];
+
+  for (const testCase of ENUM_CASES) {
+    it(`refuses a bad ${testCase.field} and names every legal value`, () => {
+      const result = author(PROGRAM(testCase.declaration));
+      expect(result.ok, `${testCase.field} must fail at authoring`).toBe(false);
+      if (result.ok) return;
+      expect(result.message).toMatch(new RegExp(`'${testCase.value}'`));
+      for (const legal of testCase.legal) expect(result.message).toContain(legal);
+    });
+  }
+
+  it('still authors both reference models with the tightened boundary', () => {
+    // The tightening must not make previously-legal authored input illegal: the reference turbofan
+    // (parameter-bound motion, story setParameters, x-ray view mode, three quiz difficulties) and
+    // the minimal pendulum must both build exactly as before.
+    for (const source of [MINIMAL_MODEL_SOURCE, REFERENCE_MODEL_SOURCE]) {
+      const result = author(source);
+      expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    }
+  });
+});
+
+/**
+ * The hardened guest realm.
+ *
+ * The browser guest runs in a realm where `@edu3d/sandbox` has replaced `Function` with a thrower and
+ * frozen the intrinsics (layers 3–4 of the sandbox). zod's parse path touches `Function`, so any
+ * runtime schema call inside `scene.ts` throws `Function is not available inside the model sandbox`
+ * there — even though the identical call passes under `node:vm`, whose realm is not poisoned. A
+ * `.safeParse` added to `scene.ts` once broke the whole browser authoring path this way; these tests
+ * pin that the boundary validation is structural, and that its refusals still fire, with `Function`
+ * poisoned. Spawned in a child process because `harden: true` poisons the real `globalThis`, which
+ * would break every later test in this file — the same harness `host-admission.test.ts` uses.
+ */
+describe('the authoring boundary under the hardened guest realm', () => {
+  const paths = {
+    guest: fileURLToPath(new URL('../src/authoring/guest.ts', import.meta.url)),
+    apiSurface: fileURLToPath(new URL('../src/authoring/api-surface.ts', import.meta.url)),
+    sandbox: fileURLToPath(new URL('../../sandbox/src/index.ts', import.meta.url)),
+  };
+
+  const authorInHardenedRealm = async (
+    source: string,
+  ): Promise<{ ok: boolean; message: string; gateOk: boolean }> => {
+    const script = [
+      'const sandbox = await import(process.env.EDU3D_SANDBOX_PATH);',
+      'const guest = await import(process.env.EDU3D_GUEST_PATH);',
+      'const api = await import(process.env.EDU3D_API_PATH);',
+      'const prepared = sandbox.prepareProgram(process.env.EDU3D_SOURCE, { apiSurface: api.apiSurfaceSet() });',
+      'const verdict = { gateOk: prepared.ok, ok: false, message: "" };',
+      'if (prepared.ok) {',
+      '  const result = guest.authorModel({ code: prepared.instrumented, tier: "mid", seed: 5, harden: true });',
+      '  verdict.ok = result.ok;',
+      '  verdict.message = result.ok ? "" : result.message;',
+      '}',
+      "console.log('PROBE:' + JSON.stringify(verdict));",
+    ].join('\n');
+    const target = await mkdtemp(join(tmpdir(), 'edu3d-realm-probe-'));
+    const file = join(target, 'probe.mjs');
+    await writeFile(file, script);
+    const run = await execFileAsync(process.execPath, ['--experimental-strip-types', file], {
+      env: {
+        ...process.env,
+        EDU3D_SANDBOX_PATH: pathToFileURL(paths.sandbox).href,
+        EDU3D_GUEST_PATH: pathToFileURL(paths.guest).href,
+        EDU3D_API_PATH: pathToFileURL(paths.apiSurface).href,
+        EDU3D_SOURCE: source,
+      },
+      timeout: 30_000,
+    });
+    const line = run.stdout.split('\n').find((entry) => entry.startsWith('PROBE:'));
+    if (!line) throw new Error(`probe produced no verdict: ${run.stdout} ${run.stderr}`);
+    return JSON.parse(line.slice('PROBE:'.length)) as {
+      ok: boolean;
+      message: string;
+      gateOk: boolean;
+    };
+  };
+
+  it('authors the reference model with Function poisoned', async () => {
+    // The built-in reference model is the live trigger: it exercises the scalar-source, enum and
+    // story-value boundaries, so a single runtime schema call anywhere in them fails this test.
+    const verdict = await authorInHardenedRealm(REFERENCE_MODEL_SOURCE);
+    expect(verdict.gateOk).toBe(true);
+    expect(verdict.ok, verdict.message).toBe(true);
+  }, 40_000);
+
+  it('still fires the scalar-source refusal inside the hardened realm', async () => {
+    const verdict = await authorInHardenedRealm(`
+      scene.describe({ name: 'Refusal', description: 'A bare id string where a scalar source belongs.', concept: 'scalar sources', objectives: ['name the legal forms'] });
+      scene.param({ id: 'rpm', label: 'Speed', kind: 'number', min: 0, max: 10, default: 2 });
+      scene.mesh({ id: 'a', geometry: geom.box([1, 1, 1]), material: mat.metal({}) });
+      scene.camera({ position: [2, 2, 2] });
+      scene.motion({ id: 'm', partId: 'a', kind: 'spin', rate: 'rpm', reason: 'Because.' });
+    `);
+    expect(verdict.gateOk).toBe(true);
+    expect(verdict.ok).toBe(false);
+    // The refusal itself must be reachable with Function poisoned, not swallowed by the realm.
+    expect(verdict.message).toMatch(/\{ param: 'rpm' \}/);
+  }, 40_000);
+
+  /**
+   * The physics path is the one this realm test was added for: `scene.physics` used to call
+   * `PhysicsDeclSchema.safeParse` at runtime, so every physics-declaring model failed to load in the
+   * browser with `TypeError: Function is not available inside the model sandbox` while passing in
+   * `node:vm`. The generation prompt now asks for `scene.physics` when the learner should perturb the
+   * motion, so this is the path that had to keep working.
+   */
+  it('authors a physics-declaring model with Function poisoned', async () => {
+    const verdict = await authorInHardenedRealm(`
+      scene.describe({ name: 'Pendulum', description: 'A simulated pendulum.', concept: 'physics', objectives: ['predict the swing'] });
+      scene.param({ id: 'rpm', label: 'Rotor speed', kind: 'number', min: 0, max: 300, default: 60 });
+      scene.mesh({ id: 'bob', geometry: geom.sphere({ radius: 0.2 }), material: mat.metal({}), position: [0, 2, 0] });
+      scene.camera({ position: [4, 2, 6], target: [0, 1, 0] });
+      scene.physics({
+        world: { gravity: [0, -9.81, 0] },
+        bodies: [{ id: 'bobBody', partId: 'bob', kind: 'dynamic', material: { name: 'steel' } }],
+        joints: [{ id: 'arm', kind: 'revolute', bodyA: 'bobBody', bodyB: null, axis: [0, 0, 1] }],
+        probes: [{ id: 'bobSpeed', bodyId: 'bobBody', quantity: 'speed', label: 'Bob speed' }],
+      });
+    `);
+    expect(verdict.gateOk).toBe(true);
+    expect(verdict.ok, verdict.message).toBe(true);
+  }, 40_000);
+
+  it('still fires the physics cross-reference refusal inside the hardened realm', async () => {
+    const verdict = await authorInHardenedRealm(`
+      scene.describe({ name: 'Dangling', description: 'A joint naming no body.', concept: 'physics', objectives: ['o'] });
+      scene.mesh({ id: 'bob', geometry: geom.sphere({ radius: 0.2 }), material: mat.metal({}), position: [0, 2, 0] });
+      scene.camera({ position: [4, 2, 6], target: [0, 1, 0] });
+      scene.physics({
+        bodies: [{ id: 'bobBody', partId: 'bob' }],
+        joints: [{ id: 'arm', kind: 'revolute', bodyA: 'ghostBody', bodyB: null }],
+      });
+    `);
+    expect(verdict.gateOk).toBe(true);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.message).toMatch(/bodyA 'ghostBody'/);
+  }, 40_000);
 });

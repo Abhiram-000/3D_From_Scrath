@@ -36,7 +36,10 @@
  */
 
 import {
+  BodyKind,
   InteractionKind,
+  JointKind,
+  LightKind,
   ShotEasing,
   ShotKind,
   StoryBeat as StoryBeatSchema,
@@ -46,6 +49,21 @@ import {
 const SHOT_KIND_UNION = ShotKind.options.map((kind) => `'${kind}'`).join('|');
 const SHOT_EASING_UNION = ShotEasing.options.map((curve) => `'${curve}'`).join('|');
 const INTERACTION_KIND_UNION = InteractionKind.options.map((kind) => `'${kind}'`).join('|');
+/**
+ * Rendered for the same reason the shot unions are. This one was retyped by hand and drifted: the
+ * signature taught `'area'` — a kind `LightKind` has never accepted — while omitting `ambient`,
+ * `hemisphere` and `rect`, so a model that copied the documentation was refused at authoring (and,
+ * before the authoring boundary learned to refuse it, died minutes later on manifest validation).
+ */
+const LIGHT_KIND_UNION = LightKind.options.map((kind) => `'${kind}'`).join('|');
+/**
+ * The physics vocabularies, rendered for the same reason. This signature taught a body kind
+ * `'static'` that `BodyKind` has never accepted (`fixed` is the word), so a model copying the
+ * documentation could not declare a static body at all — and a wrong enum in the prompt costs a
+ * generation, which is the most expensive bug this table can have.
+ */
+const BODY_KIND_UNION = BodyKind.options.map((kind) => `'${kind}'`).join('|');
+const JOINT_KIND_UNION = JointKind.options.map((kind) => `'${kind}'`).join('|');
 const VIEW_MODE_UNION = StoryBeatSchema.shape.viewMode
   .unwrap()
   .options.map((mode) => `'${mode}'`)
@@ -1253,8 +1271,7 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
       "scene.path({ id: 'flow', path: geom.splinePath([[0, 0, 0], [0.3, 0.1, 0]]), visible: true })",
   },
   'scene.light': {
-    signature:
-      "scene.light({ id: string, kind?: 'point'|'directional'|'spot'|'area', color?: string, intensity?: number, position?: [x,y,z], target?: [x,y,z], angle?: number, penumbra?: number, distance?: number, castShadow?: boolean, boundTo?: string }): void",
+    signature: `scene.light({ id: string, kind?: ${LIGHT_KIND_UNION}, color?: string, intensity?: number, position?: [x,y,z], target?: [x,y,z], angle?: number, penumbra?: number, distance?: number, castShadow?: boolean, boundTo?: string }): void`,
     summary:
       'Add a light to the default rig (never replaces it); castShadow sparingly — it is the most expensive option.',
     example:
@@ -1332,8 +1349,7 @@ scene.place('cap', { id: 'cap1', parentId: 'rig', position: [0.3, 0, 0], params:
     example: "scene.onInteraction('pulse', function (partId) { console.log('pulse', partId); })",
   },
   'scene.physics': {
-    signature:
-      "scene.physics({ world?: { gravity?: [x,y,z], stepHz?, substeps?, timeScale?, grabbable? }, bodies: [{ id, partId, kind?: 'dynamic'|'static'|'kinematic', mass?, centerOfMass?, gravityScale? }], joints: [{ id, kind: 'revolute'|'prismatic'|'fixed'|'spherical'|'rope'|'spring', bodyA, bodyB?: string | null, anchorA?, anchorB?, axis?, limits?, motor?: { targetVelocity?, maxForce?, boundToParameter? } }], probes?: [{ id, bodyId, quantity: 'speed'|'height'|'kineticEnergy'|'potentialEnergy'|'totalEnergy'|'momentum'|'angularSpeed'|'contactForce', label }] }): void",
+    signature: `scene.physics({ world?: { gravity?: [x,y,z], stepHz?, substeps?, timeScale?, grabbable? }, bodies: [{ id, partId, kind?: ${BODY_KIND_UNION}, mass?, centerOfMass?, gravityScale? }], joints: [{ id, kind: ${JOINT_KIND_UNION}, bodyA, bodyB?: string | null, anchorA?, anchorB?, axis?, limits?, motor?: { targetVelocity?, maxForce?, boundToParameter? } }], probes?: [{ id, bodyId, quantity: 'speed'|'height'|'kineticEnergy'|'potentialEnergy'|'totalEnergy'|'momentum'|'angularSpeed'|'contactForce', label }] }): void`,
     summary:
       'Declare real simulation (absent = the model animates, not simulates). Motor targets are retargetable live via ctx.motor; probes surface on ctx.probes.',
     example:

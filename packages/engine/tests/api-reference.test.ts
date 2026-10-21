@@ -16,7 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { prepareProgram, describeViolations } from '@edu3d/sandbox';
-import { InteractionKind, ShotKind } from '@edu3d/contracts';
+import { BodyKind, InteractionKind, JointKind, LightKind, ShotKind } from '@edu3d/contracts';
 import { apiSurfaceSet, describeApiSurface } from '../src/authoring/api-surface.ts';
 import { API_REFERENCE } from '../src/authoring/api-reference.ts';
 import { authorModel } from '../src/authoring/guest.ts';
@@ -186,5 +186,31 @@ describe('the shot-vocabulary weld between the table and the schema', () => {
       (kind) => !(ShotKind.options as readonly string[]).includes(kind),
     );
     expect(invented.sort()).toEqual([]);
+  });
+
+  it('documents every legal light kind in scene.light, and no invented one', () => {
+    // The union was hand-typed here and drifted: the table taught `'area'` — which `LightKind` has
+    // never accepted — while omitting `ambient`, `hemisphere` and `rect`. A model that copied the
+    // documentation was refused at authoring (and, before the authoring boundary learned to refuse
+    // it, died minutes later on manifest validation). Both directions are asserted, because a
+    // missing kind is as damaging as an invented one: the model never learns it may use it.
+    const documented = documentedKinds(API_REFERENCE['scene.light']?.signature ?? '');
+    expect(documented.sort()).toEqual([...LightKind.options].sort());
+  });
+
+  it('documents the physics body and joint vocabularies the contract accepts', () => {
+    // Same defect, one table entry over: the signature taught a body kind `'static'` while
+    // `BodyKind` says `fixed`, so the model could not declare a static body from the documentation.
+    const physics = API_REFERENCE['scene.physics']?.signature ?? '';
+    expect(documentedKinds(physics).sort()).toEqual([...BodyKind.options].sort());
+
+    // The joint kinds are required rather than optional, so the helper (which looks for `kind?:`)
+    // does not see them; read the required union out of the same signature directly.
+    const joints = /kind: ((?:'[a-z]+'\|?)+), bodyA/.exec(physics)?.[1] ?? '';
+    const documentedJoints = joints
+      .split('|')
+      .map((kind) => kind.trim().replaceAll("'", ''))
+      .filter(Boolean);
+    expect(documentedJoints.sort()).toEqual([...JointKind.options].sort());
   });
 });

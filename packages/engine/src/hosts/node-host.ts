@@ -19,7 +19,14 @@
  */
 import { createContext, runInContext, type Context } from 'node:vm';
 import { SANDBOX_LIMITS, type DeviceTier, type ModelManifest } from '@edu3d/contracts';
-import { FORBIDDEN_GLOBALS, GUARD_IDENTIFIER, createGuard, hardeningScript } from '@edu3d/sandbox';
+import {
+  FORBIDDEN_GLOBALS,
+  GUARD_IDENTIFIER,
+  GUEST_SURFACE_KEY,
+  createGuard,
+  hardeningScript,
+  membraneScript,
+} from '@edu3d/sandbox';
 import { SceneBuilder } from '../authoring/scene.ts';
 import { GeometryError } from '../geometry/factory.ts';
 import { MaterialError } from '../materials/factory.ts';
@@ -165,14 +172,30 @@ function describeFailure(error: unknown): { message: string; stack?: string; tim
  * `vm.createContext` starts from a *fresh set of intrinsics* rather than the host's, which is the property that
  * makes this safe to reuse across requests: hardening freezes that context's `Object.prototype`, not the server's.
  * Freezing the server's own intrinsics would break every library in the process.
+ *
+ * The raw capability payload is NOT installed as plain globals — that is what made the realm boundary a
+ * suggestion: hand-wrapped host objects let `fetchedObject.constructor('return process')()` (or any
+ * spelling the gate folds) reach the HOST realm's `Function`. Instead:
+ *
+ *   1. The payload travels under `GUEST_SURFACE_KEY` (one channel, deleted by the membrane before guest
+ *      code can run — a guessed name finds `undefined`, and a failed deletion is a hard abort).
+ *   2. Forbidden globals are seeded as *explicitly undefined*, matching the browser compiler's lexical
+ *      shadowing so `typeof fetch` behaves identically in both hosts.
+ *   3. `hardeningScript()` runs first — with the payload unreadable by guest code until the NEXT script
+ *      runs, hardening's deletions and the listener of the membrane cannot be raced.
+ *   4. `membraneScript()` consumes the payload, fabricates the guest-facing surface inside the GUEST
+ *      realm, deletes the channel, and installs read-only bindings. Guest code then addresses
+ *      `scene`/`geom`/`mat`/`M`/`console`/`random`/`__edu3d_tick` exactly as the browser guest does; the
+ *      objects it touches carry no host internals, and reads of forbidden names on them throw as
+ *      classifiable guest errors.
  */
 function createGuestContext(bindings: Record<string, unknown>): Context {
-  const sandbox: Record<string, unknown> = { ...bindings };
+  const payload: Record<string, unknown> = Object.freeze(bindings);
+  const sandbox: Record<string, unknown> = { [GUEST_SURFACE_KEY]: payload };
 
   // Explicitly undefined rather than merely absent: `typeof fetch` returning `'undefined'` is what the compiled
   // guest's lexical shadowing also produces, so probing behaves identically in both hosts.
   for (const name of FORBIDDEN_GLOBALS) {
-    if (name in sandbox) continue;
     sandbox[name] = undefined;
   }
 
@@ -180,15 +203,17 @@ function createGuestContext(bindings: Record<string, unknown>): Context {
     name: 'edu3d-guest',
     codeGeneration: {
       // Belt over the braces: even if the gate missed an `eval`, the context cannot compile a string. The guest is
-      // already compiled by the time it runs here.
+      // already compiled by the time it runs here. It does NOT block constructing code through a leaked host
+      // object — that hole is what the realm membrane closes.
       strings: false,
       wasm: false,
     },
   });
 
-  // Harden the *guest* realm's intrinsics, not the host's. The script is generated from the same capability lists
-  // the browser guest uses, so the two hosts cannot drift apart.
+  // Harden the *guest* realm's intrinsics first, then assemble the guest surface. The scripts are
+  // generated from the same capability lists the browser guest uses, so the hosts cannot drift apart.
   runInContext(hardeningScript(), context, { timeout: 2000 });
+  runInContext(membraneScript(), context, { timeout: 2000 });
 
   return context;
 }

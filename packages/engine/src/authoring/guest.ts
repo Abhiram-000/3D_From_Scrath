@@ -14,6 +14,24 @@
  *
  * Step 3 after step 2 is the trick: the guest executes in a realm where the very facility used to create it no
  * longer exists (`PLAN.md` §A1).
+ *
+ * **Why this single-realm setup needs no capability membrane.** The guest and the engine live in ONE realm:
+ * `scene`, `geom`, `mat`, `M`, `ctx` and part references are intrinsics of the *same* realm the guest code
+ * compiles against, so every member-walk from a handed object bottoms out at the very intrinsics hardening
+ * poisoned — `(facade).constructor` is this realm's `Function.prototype.constructor`, i.e. the poison, in both
+ * its static and computed spellings (`p['cons'+'tru'+'ctor']` is folded and rejected by the static gate too).
+ * There is no *host* capability set to leak, because there is no separate host: the objects handed in ARE the
+ * guest realm's own frozen structures.
+ *
+ * The `node:vm` audit host cannot share that trick: its fresh intrinsics realm is a genuinely TWO-realm setup
+ * where a handed object's prototype chain still leads to the HOST realm's un-poisoned `Function`. There the
+ * boundary is enforced by the guest-facing *realm membrane* instead — `@edu3d/sandbox`'s `membraneScript()`,
+ * consumed by `hosts/node-host.ts:createGuestContext` — which wraps everything the host hands over inside
+ * the guest realm, deletes the raw payload channel, and throws on forbidden-name reads. The two hosts provide
+ * the same *guarantee* through different mechanisms, which is exactly why `guest.ts` must never grow a second
+ * untested path: the browser path is a single-realm property, and the binding table below
+ * (`__edu3d_tick`, `scene`, `geom`, `mat`, `M`, `console`, `random`) is the same vocabulary the node host's
+ * payload carries, so neither side can gain a capability the other never had.
  */
 import { SANDBOX_LIMITS, type DeviceTier, type ModelManifest } from '@edu3d/contracts';
 import {

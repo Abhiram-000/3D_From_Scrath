@@ -8,6 +8,7 @@
  * closed. That is what "verify it, don't assume it" (`00`) means for a boundary with five layers.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { createContext, runInContext, type Context } from 'node:vm';
 import {
   auditRealm,
   compileGuest,
@@ -15,8 +16,11 @@ import {
   GuestBudgetError,
   GuestTimeoutError,
   hardenRealm,
+  hardeningScript,
   instrumentLoops,
   GUARD_IDENTIFIER,
+  GUEST_SURFACE_KEY,
+  membraneScript,
 } from '../src/index.ts';
 
 describe('loop instrumentation', () => {
@@ -332,5 +336,284 @@ describe('compiled guest — lexical shadowing', () => {
     expect(logged).toEqual([['building', 42]]);
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+describe('guest realm membrane', () => {
+  /**
+   * A `node:vm` realm standing in for exactly what `node-host.ts` assembles: fresh intrinsics, the raw
+   * capability payload parked under the membrane's seed key, hardening first, then the membrane.
+   *
+   * The roomier proofs live in the engine's host-admission suite (behind the real host, with the real
+   * engine objects); this describe proves the membrane script ITSELF — that the stand-ins it installs
+   * answer guest reads with guest-realm values, that every forbidden answer is a throwing *member read*
+   * rather than a silent leak, that the payload channel is consumed with nothing left to guess, and
+   * that it refuses to assemble a surface at all when its own contract is broken. No static gate runs
+   * in this loop on purpose: every escape spelling below is one the gate alone cannot be trusted to
+   * hold (`var keys = ['constructor']; scene[keys[0]]` is the documented blind spot), so the wrapper
+   * getter is the last standing defense and must answer for itself.
+   */
+  const buildRealm = (bindings: Record<string, unknown>): Context => {
+    const sandbox: Record<string, unknown> = { [GUEST_SURFACE_KEY]: Object.freeze(bindings) };
+    const realm = createContext(sandbox, {
+      codeGeneration: { strings: false, wasm: false },
+    });
+    runInContext(hardeningScript(), realm, { timeout: 2000 });
+    runInContext(membraneScript(), realm, { timeout: 2000 });
+    return realm;
+  };
+
+  const runGuest = (code: string, realm: Context) => runInContext(code, realm, { timeout: 2000 });
+
+  /** A fake host surface shaped like the engine's: facades, a frame context, live state. */
+  const makeSurface = () => {
+    const described: Array<Record<string, unknown>> = [];
+    const placed: Array<Record<string, unknown>> = [];
+    const observed: unknown[] = [];
+    const parts = new Map<string, Record<string, unknown>>();
+    let partSequence = 0;
+    const frameContext: Record<string, unknown> = {
+      time: 0,
+      params: { rpm: 42 },
+      part: (id: string) => {
+        let part = parts.get(id) as Record<string, unknown> | undefined;
+        if (!part) {
+          partSequence += 1;
+          part = { id, uid: partSequence };
+          parts.set(id, part);
+        }
+        return part;
+      },
+      bump: () => {
+        frameContext.time = (frameContext.time as number) + 1;
+      },
+    };
+    let bridged: ((frame: unknown) => unknown) | undefined;
+    const scene = {
+      name: 'turbofan',
+      describe: (spec: unknown) => {
+        described.push(spec as Record<string, unknown>);
+      },
+      observe: (callback: unknown) => {
+        bridged = callback as (frame: unknown) => unknown;
+      },
+      place: (spec: unknown) => {
+        placed.push(spec as Record<string, unknown>);
+      },
+      record: (value: unknown) => {
+        observed.push(value);
+      },
+      hurl: () => {
+        const error = new Error('boom geometry');
+        error.name = 'GeometryError';
+        throw error;
+      },
+    };
+    // `palette` is a host ARRAY, the value class the membrane copies rather than wraps: guest writes
+    // must land on the copy, never on the host's own data.
+    return {
+      bindings: { scene, ctx: frameContext, palette: ['#ff0000', '#00ff00'] },
+      described,
+      placed,
+      observed,
+      frameContext,
+      parts,
+      drive: () => {
+        if (bridged) void bridged(frameContext);
+      },
+    };
+  };
+
+  it('installs the surface and leaves nothing of the payload channel to guess', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    expect(runGuest('typeof scene', realm)).toBe('object');
+    expect(runGuest('typeof ctx', realm)).toBe('object');
+    // The seed key is the one name a hostile program could brute-force without ever spelling an API
+    // word — after the membrane runs, a guessed lookup must find nothing.
+    expect(
+      runGuest(`(function (g) { return ${JSON.stringify(GUEST_SURFACE_KEY)} in g; })(this)`, realm),
+    ).toBe(false);
+  });
+
+  it('translates calls both ways: host receives plain specs, guest receives stand-ins', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    runGuest(`scene.describe({ id: 'm', samples: [1, 2] });`, realm);
+    expect(surface.described).toEqual([{ id: 'm', samples: [1, 2] }]);
+  });
+
+  it('frames a stepper so context reads stay live across frames', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    // Live reads, not snapshots: the stepper mutates host time through the membrane, and the follow-up
+    // read of the same property must see the new value. A copied/snapshot ctx would report `false`.
+    runGuest(
+      `scene.observe(function (frame) {
+         var before = frame.time;
+         frame.bump();
+         scene.record('live:' + (frame.time > before));
+       });`,
+      realm,
+    );
+    surface.drive();
+    expect(surface.observed).toEqual(['live:true']);
+    expect(surface.frameContext.time).toBe(1);
+  });
+
+  it('reads fresh context state on every frame, not the first frame only', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    runGuest(`scene.observe(function (frame) { scene.record('time:' + frame.time); });`, realm);
+    surface.frameContext.time = 3.25;
+    surface.drive();
+    surface.frameContext.time = 4;
+    surface.drive();
+    expect(surface.observed).toEqual(['time:3.25', 'time:4']);
+  });
+
+  it('hands the host its own objects back by identity (the twin roundtrip)', () => {
+    // The engine's factories key parts by host object identity; a copied spec carrying a *copy* of a
+    // part reference would key nothing. The unwrap direction must find the twin and hand the host
+    // exactly what it handed out.
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    runGuest(
+      `scene.observe(function (frame) { scene.place({ uid: 'in-frame', ref: frame.part('frame-part') }); });`,
+      realm,
+    );
+    surface.drive();
+    expect(surface.placed).toHaveLength(1);
+    expect(surface.placed[0]?.ref).toBe(surface.parts.get('frame-part'));
+  });
+
+  it('copies host arrays so guest writes never touch host data', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    runGuest(
+      `palette[0] = 'not-red';
+       scene.record(palette[1]);`,
+      realm,
+    );
+    expect(surface.observed).toEqual(['#00ff00']);
+    expect((surface.bindings.palette as string[])[0]).toBe('#ff0000');
+  });
+
+  it('freezes the wrappers and keeps the forbidden names out of the visible surface', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    const surfaceKeys = runGuest(`Object.keys(scene).join(',')`, realm) as string;
+    expect(surfaceKeys).toContain('name');
+    expect(surfaceKeys).toContain('describe');
+    expect(surfaceKeys).not.toMatch(/constructor|prototype|__proto__|process/);
+    expect(runGuest(`Object.isFrozen(scene)`, realm)).toBe(true);
+
+    // A write through the surface throws as a guest TypeError, and the message says what to do
+    // instead — the same contract the diagnostics panel prints. Strict mode is what actually arms
+    // the throw (sloppy mode would ignore the write), so the probe declares it.
+    runGuest(
+      `'use strict'; try { scene.name = 'pwned'; } catch (error) { scene.record(error.name); scene.record(error.message); }`,
+      realm,
+    );
+    expect(surface.observed[0]).toBe('TypeError');
+    expect(surface.observed[1]).toMatch(/read-only|API state/);
+  });
+
+  it('bottoms the prototype chain out at null', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    runGuest(`scene.record(Object.getPrototypeOf(scene) === null);`, realm);
+    expect(surface.observed).toEqual([true]);
+  });
+
+  it('replicates engine errors inside the guest realm with name, message and stack', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    runGuest(
+      `try { scene.hurl(); } catch (error) {
+         scene.record(error.name);
+         scene.record(error.message);
+         scene.record(typeof error.stack);
+         scene.record(error instanceof Error);
+       }`,
+      realm,
+    );
+    expect(surface.observed).toEqual([
+      'GeometryError',
+      'boom geometry',
+      'string',
+      true, // a GUEST-realm Error: the host realm's prototype chain never appears
+    ]);
+  });
+
+  it('blocks every escape spelling on the surface with a classifiable guest error', () => {
+    const surface = makeSurface();
+    const realm = buildRealm(surface.bindings);
+    const attempts: Array<[string, string, RegExp]> = [
+      // Folded computed key — the escaped exploit spelling.
+      [
+        'folded key on the facade',
+        'var F = scene["cons" + "tru" + "ctor"]; var run = F("return 1");',
+        /Accessing "constructor" on the scene surface/,
+      ],
+      // Dotted form on a method wrapper lands in the same blocker.
+      [
+        'dotted constructor on a method wrapper',
+        'var F = scene.describe.constructor;',
+        /Accessing "constructor" on the scene surface/,
+      ],
+      // A forbidden GLOBAL name, folded, on the surface: the global thrower, not the member one.
+      [
+        'folded forbidden global on the surface',
+        'var F = scene["pro" + "cess"];',
+        /"process" is not available inside the model sandbox/,
+      ],
+      // The gate's documented blind spot, with no gate in this loop at all: an un-foldable key parked
+      // in a local array. The wrapper getter is the only defense and must answer.
+      [
+        'un-foldable key parked in a local store',
+        'var keys = ["constructor"]; var F = scene[keys[0]];',
+        /Accessing "constructor" on the scene surface/,
+      ],
+      [
+        '__proto__ read on a wrapper',
+        'void scene.__proto__;',
+        /Accessing "__proto__" on the scene surface/,
+      ],
+      [
+        'prototype read on a part handle',
+        'var F = ctx.part("a")["prototype"];',
+        /Accessing "prototype" on the scene surface/,
+      ],
+      // The poisoned constructor path — reached through an instance the GUEST realm made itself.
+      [
+        'constructor escape through a guest function',
+        'var F = (function probe() {}).constructor; var run = F("return 1 + 1"); void run;',
+        /Function is not available inside the model sandbox/,
+      ],
+      [
+        'global Function poisoned',
+        'var run = Function("return process"); void run;',
+        /Function is not available inside the model sandbox/,
+      ],
+    ];
+    for (const [label, code, pattern] of attempts) {
+      expect(() => runGuest(code, realm), label).toThrow(pattern);
+    }
+  });
+
+  it('fails closed when the payload channel is missing', () => {
+    // An empty sandbox is what a host bug leaves behind; the membrane must refuse to invent a surface.
+    const realm = createContext({});
+    expect(() => runInContext(membraneScript(), realm, { timeout: 2000 })).toThrow(
+      /capability payload missing/,
+    );
+  });
+
+  it('fails closed when the payload channel is not an object', () => {
+    const realm = createContext({ [GUEST_SURFACE_KEY]: 'junk' });
+    expect(() => runInContext(membraneScript(), realm, { timeout: 2000 })).toThrow(
+      /capability payload missing/,
+    );
   });
 });

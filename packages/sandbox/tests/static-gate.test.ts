@@ -153,6 +153,139 @@ describe('static gate — dynamic code escapes', () => {
   });
 });
 
+describe('static gate — folded computed keys', () => {
+  /**
+   * The escape class this describe pins down was live until these tests existed: the gate once checked
+   * only *literal* computed keys, so `scene["cons" + "tru" + "ctor"]` walked straight past it while the
+   * dotted spelling `scene.constructor` was rejected three lines earlier. Folding unifies the spellings:
+   * a key is either resolvable to a string — and then checked like any member name — or it is not, and
+   * then a capability-rooted chain is refused outright (fail closed), because a key the gate cannot read
+   * is exactly where an escape hides.
+   */
+
+  it('rejects a concatenation of literals spelling a forbidden member on the scene surface', () => {
+    // The escaped exploit, verbatim.
+    const result = gate(`scene["cons" + "tru" + "ctor"];`);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('prototype_access');
+    expect(result.violations[0]?.message).toMatch(
+      /folds computed keys|however the property name is spelled/,
+    );
+  });
+
+  it('rejects the same escape assembled from two constant string variables', () => {
+    const result = gate(`var a = 'cons';\nvar b = 'tructor';\nvoid scene[a + b];`);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('prototype_access');
+  });
+
+  it('rejects a single constant variable propagated into the key', () => {
+    const result = gate(`var k = 'constructor';\nvoid scene[k];`);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('prototype_access');
+  });
+
+  it('rejects a key that folds to a forbidden global name', () => {
+    // `scene['process']` must be exactly as illegal as `process` bare: a folded key spelling a
+    // forbidden global checks as the global, whatever object it is read from.
+    const result = gate(`var k = 'process';\nvoid scene[k];`);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('forbidden_global');
+  });
+
+  it('rejects a forbidden global spelled by a folded key even on a pure-local object', () => {
+    const result = gate(`var o = {};\nvoid o['pro' + 'cess'];\nscene.group({ id: 'x' });`);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('forbidden_global');
+  });
+
+  it('rejects template literals with no interpolations spelling the key', () => {
+    const result = gate('void scene[`constructor`];');
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('prototype_access');
+  });
+
+  it('rejects templates with empty interpolation slots — the spelling the exploit actually used', () => {
+    // `` `cons${``}tru${``}ctor` `` reads interleaves empty templates between the chunks; every part
+    // folds, so the gate must join them to 'constructor' rather than give up on the form.
+    const result = gate('void scene[`cons${``}tru${``}ctor`];');
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('prototype_access');
+  });
+
+  it('rejects templates whose slot holds a constant string', () => {
+    const result = gate("var k = 'cons';\nvoid scene[`${k}tructor`];");
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('prototype_access');
+  });
+
+  it('refuses a non-constant key on a capability-rooted chain outright', () => {
+    // Fail closed: a key the gate cannot resolve on the scene surface is refused as a form, with a
+    // message that tells the repair pass what replaces it.
+    const result = gate('var n = 41 + 1;\nvoid scene[`pro${n}cess`];');
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('dynamic_code');
+    expect(result.violations[0]?.message).toMatch(/not a constant/);
+  });
+
+  it('refuses an un-foldable key on a direct scene member the same way', () => {
+    const result = gate(`var ns = ['process'];\nvoid scene[ns[0]];`);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('dynamic_code');
+  });
+
+  it('does not fold a name the program reassigned — and refuses the form instead', () => {
+    // `var k = 'constructor'; k = 'x'` — the fold map must not claim a value the program can change,
+    // so the key becomes un-resolvable and takes the strict capability-rooted policy.
+    const result = gate(`var k = 'constructor';\nk = 'x';\nvoid scene[k];`);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('dynamic_code');
+    expect(kinds(result.violations)).not.toContain('prototype_access');
+  });
+
+  it('does not fold a name shadowed by a second declaration (the for-of hedge)', () => {
+    // Scope-blind folding is only sound if the folded name is bound exactly once. A second binding of
+    // the same word purges the fold: a *wrong* fold would claim 'constructor' where the runtime reads
+    // the shadow — which silently swaps a real check for a fake one.
+    const result = gate(
+      `var k = 'constructor';\nfor (var k of []) { void scene[k]; }\nscene.group({ id: 'x' });`,
+    );
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('dynamic_code');
+    expect(kinds(result.violations)).not.toContain('prototype_access');
+  });
+
+  it('does not fold a name shadowed by a function parameter', () => {
+    // The module-level spelling and the parameter are different bindings; the runtime reads the
+    // parameter. Folding would pre-commit to the outer value, so the hedge applies across binding kinds.
+    const result = gate(`
+      var k = 'constructor';
+      scene.onFrame(function (k, ctx) { void scene[k]; });
+    `);
+    expect(result.ok).toBe(false);
+    expect(kinds(result.violations)).toContain('dynamic_code');
+    expect(kinds(result.violations)).not.toContain('prototype_access');
+  });
+
+  it('allows a folded key that resolves to a benign member on the surface', () => {
+    // Folding is not suspicion — folding to a name the surface legally carries is normal code.
+    const result = gate(`void geom['bo' + 'x'];\nscene.group({ id: 'x' });`);
+    expect(result.ok).toBe(true);
+  });
+
+  it('still allows pure-local numeric indexing with a variable key', () => {
+    // The mesh escape hatch's actual shape: typed arrays indexed in loops. No capability name in
+    // the object subtree, so the strict refusal of dynamic keys must not touch it.
+    const result = gate(`
+      var positions = new Float32Array(9);
+      var i = 4;
+      positions[i] = 1;
+      void positions[i];
+    `);
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe('static gate — module escapes', () => {
   it('rejects a static import', () => {
     const result = gate(`import * as fs from 'node:fs';\nscene.group({ id: 'root' });`);

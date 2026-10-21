@@ -150,8 +150,266 @@ export function runStaticGate(source: string, options: GateOptions): GateResult 
   const checkedNamespaces = options.checkedNamespaces ?? new Set(GUEST_BINDINGS);
   const forbidden = new Set(FORBIDDEN_GLOBALS);
   const forbiddenMembers = new Set(FORBIDDEN_MEMBERS);
+  const dynamicCodeNames = new Set(DYNAMIC_CODE_GLOBALS);
   const apiCalls = new Set<string>();
   let guardedLoops = 0;
+
+  // ── Scope and constant analysis ────────────────────────────────────────────
+  // Hoisted above the member walk because two checks below need resolved bindings: the API-surface
+  // walk needs free references, and the computed-member check needs to know whether an identifier is
+  // a live capability name (`scene`, `globalThis`, …) or merely the program's own word for something
+  // harmless (`const parent = group`).
+  const { freeReferences, maxDepth } = analyzeScopes(program);
+  const freeByName = new Map<string, { node: AnyNode; chain: AnyNode[] }>();
+  for (const reference of freeReferences) {
+    if (!freeByName.has(reference.name)) freeByName.set(reference.name, reference);
+  }
+
+  /**
+   * Every name a destructuring pattern binds (same traversal as `scope.ts:patternNames`, duplicated
+   * here rather than exported because the sandbox package keeps each module's helpers private).
+   */
+  const patternTargets = (node: unknown, out: string[]): void => {
+    if (!node || typeof node !== 'object') return;
+    const candidate = node as AnyNode;
+    switch (candidate.type) {
+      case 'Identifier':
+        out.push(candidate.name as string);
+        return;
+      case 'ObjectPattern':
+        for (const property of candidate.properties as AnyNode[]) {
+          if (property.type === 'RestElement') patternTargets(property.argument, out);
+          else patternTargets(property.value, out);
+        }
+        return;
+      case 'ArrayPattern':
+        for (const element of candidate.elements as (AnyNode | null)[])
+          patternTargets(element, out);
+        return;
+      case 'AssignmentPattern':
+        patternTargets(candidate.left, out);
+        return;
+      case 'RestElement':
+        patternTargets(candidate.argument, out);
+        return;
+      default:
+        return;
+    }
+  };
+
+  /**
+   * Constant strings a program derives from literals, acquired in one pass *before* the member walk.
+   *
+   * The escape that motivated this: `scene.describe['cons' + 'tru' + 'ctor']` walks past a gate that
+   * only inspects literal keys, and the same trick hides a key in a variable (`const k = 'cons' +
+   * 'tru' + 'ctor'; scene.describe[k]`). Folding concatenations, template literals with no
+   * interpolations and — through this map — variables that were exactly that, turns all three spellings
+   * into the same checked string. A name is folded only while its single declaration initialises it
+   * from a foldable expression *and* nothing ever assigns it: the moment a variable is written anywhere
+   * it is dropped, so folding can never claim to know a value the program could have changed.
+   */
+  const reassigned = new Set<string>();
+  const recordAssignmentTargets = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return;
+    const candidate = node as AnyNode;
+    if (candidate.type === 'Identifier') {
+      reassigned.add(candidate.name as string);
+      return;
+    }
+    for (const key of ['elements', 'properties', 'left', 'argument'] as const) {
+      const part = candidate[key];
+      if (Array.isArray(part)) {
+        for (const item of part) recordAssignmentTargets(item);
+      } else if (part) {
+        recordAssignmentTargets(part);
+      }
+    }
+  };
+
+  /** Names initialised from an expression that involves the capability surface (see below). */
+  const apiFlowed = new Set<string>();
+
+  /**
+   * `const`-bound strings a program derives from literals.
+   *
+   * Declared before the walks that fill and read it: the declarator pass writes entries here, and the
+   * member walk below reads the *complete* map, so a key hidden a few lines away from its definition
+   * still folds. Function-declaration hoisting makes `foldConstantString` callable before this point.
+   */
+  const constStrings = new Map<string, string>();
+
+  /**
+   * Names the guest *does* receive. A computed key whose object chain mentions one of these — or a
+   * forbidden or dynamic-code global — is where an un-resolvable key could hide a capability reach,
+   * so the gate refuses the form there while leaving plain program-local indexing (`positions[i]`)
+   * alone: local data cannot carry the host into the picture, and refusing it would reject the
+   * typed-array loops the API's escape hatch exists for.
+   */
+  const capabilityNames = new Set<string>([...GUEST_BINDINGS, ...forbidden, ...dynamicCodeNames]);
+
+  /** True when the subtree reads a capability: a free capability name, or a local fed from one. */
+  const referencesCapability = (root: AnyNode): boolean => {
+    let found = false;
+    full(root, (node) => {
+      if (found) return;
+      const candidate = node as unknown as AnyNode;
+      if (candidate.type !== 'Identifier') return;
+      const name = candidate.name as string;
+      if (capabilityNames.has(name) && freeByName.has(name)) found = true;
+      else if (apiFlowed.has(name)) found = true;
+    });
+    return found;
+  };
+
+  /**
+   * Bindings the program declares — every declarator target, destructuring pattern, parameter,
+   * caught error and class/function name — counted by name.
+   *
+   * The fold below is scope-blind: it keeps one map of "this word means this string", with no notion
+   * of nested scopes. That is sound only if a folded name cannot be rebound by a shadowing
+   * declaration — `const k = 'constructor'` above a `for (const k of …)` that shadows it, with
+   * `scene.describe[k]` inside the loop, would otherwise fold with the *outer* spelling while the
+   * runtime reads the *shadow*, and a wrong fold is worse than no fold: it would short-circuit the
+   * strict computed-key rejection the gate leans on for capability objects. Counting every binding
+   * and dropping names bound more than once makes the fold fail closed — a dropped entry is an
+   * un-foldable key, which takes the strict policy below.
+   */
+  const declaredCount = new Map<string, number>();
+  const countBindTargets = (target: AnyNode | null | undefined): void => {
+    if (!target) return;
+    const names: string[] = [];
+    patternTargets(target, names);
+    for (const name of names) declaredCount.set(name, (declaredCount.get(name) ?? 0) + 1);
+  };
+  const countFunctionBindings = (node: unknown): void => {
+    const candidate = node as AnyNode & { id?: AnyNode; params?: AnyNode[] };
+    countBindTargets(candidate.id);
+    for (const parameter of candidate.params ?? []) countBindTargets(parameter);
+  };
+
+  /** `foldConstantString` reads `constStrings`; hoisted so the declarator pass may call it. */
+  function foldConstantString(node: AnyNode): string | undefined {
+    switch (node.type) {
+      case 'Literal':
+        return typeof node.value === 'string' ? (node.value as string) : undefined;
+      case 'TemplateLiteral': {
+        const quasis = node.quasis as AnyNode[];
+        const expressions = node.expressions as AnyNode[];
+        if (quasis.length === 0) return undefined;
+        // A template folds when *every* part folds: no-interpolation templates fold by definition,
+        // and `` `cons${``}tru${``}ctor` `` — the spelling the exploit actually used — is interpolations
+        // of empty templates, so each expression folds recursively and the chunks join to the same
+        // string. `cooked` is null for templates with invalid escape sequences; those stay un-foldable.
+        const firstValue = (quasis[0] as AnyNode | undefined)?.value as
+          { cooked?: string | null } | undefined;
+        let folded = firstValue?.cooked;
+        if (typeof folded !== 'string') return undefined;
+        for (let i = 0; i < expressions.length; i += 1) {
+          const part = foldConstantString(expressions[i] as AnyNode);
+          if (part === undefined) return undefined;
+          const nextValue = (quasis[i + 1] as AnyNode | undefined)?.value as
+            { cooked?: string | null } | undefined;
+          const next = nextValue?.cooked;
+          if (typeof next !== 'string') return undefined;
+          folded += part + next;
+        }
+        return folded;
+      }
+      case 'Identifier': {
+        if (reassigned.has(node.name as string)) return undefined;
+        const known = constStrings.get(node.name as string);
+        return known === undefined ? undefined : known;
+      }
+      case 'BinaryExpression':
+        if (node.operator === '+') {
+          const left = foldConstantString(node.left as AnyNode);
+          const right = foldConstantString(node.right as AnyNode);
+          if (left !== undefined && right !== undefined) return left + right;
+        }
+        return undefined;
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * `objectRootName` — for violation snippets: the leftmost identifier of a member/call chain,
+   * so `scene[names[0]]` reports as `scene[<non-constant key>]` rather than dumping an AST type name.
+   */
+  const objectRootName = (node: AnyNode): string => {
+    let current: AnyNode | undefined = node;
+    while (current) {
+      if (current.type === 'Identifier') return current.name as string;
+      if (current.type === 'MemberExpression') {
+        current = current.object as AnyNode;
+        continue;
+      }
+      if (current.type === 'CallExpression' || current.type === 'NewExpression') {
+        current = current.callee as AnyNode;
+        continue;
+      }
+      break;
+    }
+    return '<expression>';
+  };
+
+  /**
+   * One analysis pass: what the program binds, what it writes, and what its locals are fed from.
+   *
+   * The visitors run in source order, so `const g = geom.box(...)` taints `g` before a later
+   * `const alias = g` checks that same set — aliasing propagates by construction.
+   */
+  simple(program, {
+    VariableDeclarator(node) {
+      const declarator = node as unknown as AnyNode;
+      const { id, init } = declarator as unknown as { id?: AnyNode; init?: AnyNode };
+      countBindTargets(id);
+      if (!id || id.type !== 'Identifier' || !init) return;
+      const name = id.name as string;
+      const folded = foldConstantString(init);
+      if (folded !== undefined && !reassigned.has(name)) constStrings.set(name, folded);
+      // A local whose initialiser touches the capability surface is one a later computed key could
+      // use to reach it — `const g = geom.box(...); g[mysteryKey]` — so the object-side check below
+      // counts the name as capability-tainted, in the direction of rejecting rather than allowing.
+      if (referencesCapability(init)) apiFlowed.add(name);
+    },
+    // `let p; p = ctx.part('a'); p[k]` reaches the surface without any initialiser, so the assignment
+    // has to mark its targets tainted by the same reject-not-allow logic as the declarator above.
+    AssignmentExpression(node) {
+      const expression = node as unknown as AnyNode;
+      const left = expression.left as AnyNode;
+      recordAssignmentTargets(left);
+      if (referencesCapability(expression.right as AnyNode)) {
+        const names: string[] = [];
+        patternTargets(left, names);
+        for (const name of names) apiFlowed.add(name);
+      }
+    },
+    UpdateExpression(node) {
+      recordAssignmentTargets((node as unknown as AnyNode).argument as AnyNode);
+    },
+    FunctionDeclaration(node) {
+      countFunctionBindings(node);
+    },
+    FunctionExpression(node) {
+      countFunctionBindings(node);
+    },
+    ArrowFunctionExpression(node) {
+      countFunctionBindings(node);
+    },
+    ClassDeclaration(node) {
+      countBindTargets((node as unknown as AnyNode).id as AnyNode | undefined);
+    },
+    CatchClause(node) {
+      countBindTargets((node as unknown as AnyNode).param as AnyNode | undefined);
+    },
+  });
+
+  // The shadow hedge, applied once after the walk so a `const k` seen before its shadow (in source
+  // order) is still purged: any name bound in more than one place keeps no folded string.
+  for (const [name, count] of declaredCount) {
+    if (count > 1) constStrings.delete(name);
+  }
 
   // ── Reserved identifier namespace ───────────────────────────────────────────
   // A `full` walk rather than a `simple` one with an `Identifier` visitor: acorn-walk dispatches
@@ -281,43 +539,60 @@ export function runStaticGate(source: string, options: GateOptions): GateResult 
           ),
         );
       }
-      // Computed access with a literal key hides the same reach behind brackets.
-      if (
-        member.computed &&
-        property.type === 'Literal' &&
-        typeof property.value === 'string' &&
-        forbiddenMembers.has(property.value as string)
-      ) {
-        violations.push(
-          violation(
-            'prototype_access',
-            `Accessing \`${property.value as string}\` is not allowed, including through bracket notation.`,
-            member,
-            String(property.value),
-          ),
-        );
-      }
-      if (
-        member.computed &&
-        property.type === 'Literal' &&
-        typeof property.value === 'string' &&
-        forbidden.has(property.value as string)
-      ) {
-        violations.push(
-          violation(
-            'forbidden_global',
-            `\`${property.value as string}\` is not available in the sandbox, including through bracket notation.`,
-            member,
-            String(property.value),
-          ),
-        );
+      // Computed access with a *foldable* key hides the same reach behind brackets — and, since the
+      // key may be spelled as a concatenation of literals, a template literal with no interpolations,
+      // or a constant string variable, every spelling must be folded to the string it evaluates to
+      // before this check can answer. The individual cases that motivated the fold:
+      //   `scene.describe['cons' + 'tru' + 'ctor']` — the escaped exploit that motivated this file's change;
+      //   `scene.describe[`cons${``}tru${``}ctor`]`;
+      //   `const k = 'constructor'; scene.describe[k]` — no reassignments, so k *is* its initialiser.
+      if (member.computed) {
+        const folded = foldConstantString(property);
+        if (folded !== undefined) {
+          if (forbiddenMembers.has(folded)) {
+            violations.push(
+              violation(
+                'prototype_access',
+                `Accessing \`${folded}\` is not allowed, however the property name is spelled: the sandbox folds computed keys before checking them.`,
+                member,
+                folded,
+              ),
+            );
+          }
+          if (forbidden.has(folded)) {
+            violations.push(
+              violation(
+                'forbidden_global',
+                `\`${folded}\` is not available in the sandbox, including through a computed key that folds to it.`,
+                member,
+                folded,
+              ),
+            );
+          }
+        } else if (referencesCapability(member.object as AnyNode)) {
+          // A key the gate cannot resolve, on a chain rooted in the capability surface: the very
+          // shape a runtime escape takes (`scene[names[i]]`, `ctx.part('a')[k]`). The platform's own
+          // API is addressed by dotted names, so a dynamic key here has no legitimate use — rejecting
+          // the form outright is the deliberate choice, and the message tells the repair pass what
+          // replaces it. Residual risk accepted and documented: a locally-held value *obtained from*
+          // the surface (`const p = ctx.part('a'); p[k]`) still has an un-resolvable key on a pure
+          // local `p`, which the gate cannot see — that hole is what the node:vm realm's guest-facing
+          // membrane closes at runtime (`compile.ts` / `hosts/node-host.ts`).
+          violations.push(
+            violation(
+              'dynamic_code',
+              `A computed property key that is not a constant is not allowed on the scene API or globals: the sandbox cannot tell what it would read. Address the documented API by name (for example geom.box(...)), or index only plain program-local arrays with numbers (positions[i]).`,
+              member,
+              `${objectRootName(member.object as AnyNode)}[<non-constant key>]`,
+            ),
+          );
+        }
+        // Un-foldable key on a chain with no capability reference: program-local data indexing.
       }
     },
   });
 
   // ── Free references: the capability check ───────────────────────────────────
-  const { freeReferences, maxDepth } = analyzeScopes(program);
-
   if (maxDepth > MAX_AST_DEPTH) {
     violations.push(
       violation(
@@ -336,8 +611,10 @@ export function runStaticGate(source: string, options: GateOptions): GateResult 
    * Ordering matters because the violation kind drives the repair instruction: telling the model
    * "`eval` is not available in the sandbox" invites it to look for another way to evaluate a string,
    * whereas "the sandbox forbids constructing code at runtime" tells it the whole approach is wrong.
+   * The set itself is declared once near the top of the gate (alongside `forbidden` and
+   * `forbiddenMembers`) so the computed-member capability check and this loop share one definition —
+   * declaring it twice is exactly how two overlapping lists drift apart.
    */
-  const dynamicCodeNames = new Set(DYNAMIC_CODE_GLOBALS);
   /**
    * Language intrinsics a guest legitimately names.
    *

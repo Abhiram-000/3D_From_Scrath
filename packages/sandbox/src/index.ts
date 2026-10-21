@@ -36,6 +36,9 @@ export {
   createGuard,
   GuestBudgetError,
   GuestTimeoutError,
+  MembraneError,
+  GUEST_SURFACE_KEY,
+  membraneScript,
   type CompiledGuest,
   type GuardHandle,
 } from './compile.ts';

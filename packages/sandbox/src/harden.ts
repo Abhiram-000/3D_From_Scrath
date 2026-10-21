@@ -73,6 +73,23 @@ const isPoisoned = (value: unknown): boolean =>
 export function hardenRealm(scope: Record<string, unknown>): HardeningReport {
   const report: HardeningReport = { deleted: [], poisoned: [], frozen: [], resisted: [] };
 
+  /**
+   * The poison target is captured HERE, before the deletion loop below, and on purpose: module code
+   * reached this way resolves `Function` through the very global this function is about to strip in
+   * step 1 (`delete scope['Function']`), so a `Function.prototype` reference in step 2 — if written
+   * after the deletions — can literally read `ReferenceError: Function is not defined`, get caught, and
+   * silently downgrade to `resisted`. On Node 25 that exact sequence let `F('return process')` escape
+   * the hardened browser path; capturing the prototype first makes the poisoning target exist
+   * independent of the global binding's fate.
+   *
+   * The capture goes through a function *instance* rather than the global name: a host that pre-seeds
+   * the realm (`node-host` seeds forbidden globals as `undefined` before `createContext`) shadows the
+   * global `Function` with `undefined`, and then even a first-line `Function.prototype` reference
+   * would read `undefined.prototype` and abort the whole hardening. An instance's `constructor` is
+   * carried by the intrinsic prototype chain, which no global seeding can touch.
+   */
+  const functionPrototype = function yieldRealmFunction() {}.constructor.prototype;
+
   // ── 1. Remove reachable capabilities ──────────────────────────────────────
   for (const name of REALM_DELETIONS) {
     if (!(name in scope)) continue;
@@ -102,7 +119,6 @@ export function hardenRealm(scope: Record<string, unknown>): HardeningReport {
   // `Function` cannot simply be deleted: it is the prototype's `constructor`, and every function object
   // reaches it. Poisoning the constructor property is what closes `(function(){}).constructor('…')`.
   try {
-    const functionPrototype = Function.prototype as unknown as Record<string, unknown>;
     Object.defineProperty(functionPrototype, 'constructor', {
       value: poison('Function'),
       writable: false,
@@ -153,6 +169,13 @@ export function hardenRealm(scope: Record<string, unknown>): HardeningReport {
     report.resisted.push('GeneratorFunction');
   }
 
+  try {
+    Object.freeze(functionPrototype);
+    report.frozen.push('Function.prototype');
+  } catch {
+    report.resisted.push('Function.prototype');
+  }
+
   // ── 3. Freeze intrinsics ──────────────────────────────────────────────────
   // Not to protect the guest from itself, but to protect the *next* guest: the Node audit host reuses a
   // realm across builds, and a model that patched `Array.prototype.map` would silently change how every
@@ -194,6 +217,16 @@ export function hardeningScript(): string {
   var intrinsics = ${JSON.stringify(FROZEN_INTRINSICS)};
   var brand = Symbol.for(${JSON.stringify(POISON_BRAND_KEY)});
 
+  // The poison target is captured before the deletions, for the same reason as in hardenRealm: this
+  // script itself deletes scope.Function below, and a later Function.prototype reference would
+  // resolve through the just-stripped global and throw — the poison would silently downgrade to
+  // "resisted" and the escape class behind F('return process') would stay open.
+  // The capture goes through a function instance rather than the global name on purpose: node-host
+  // seeds forbidden globals as undefined before createContext, so in this realm even a first-line
+  // Function.prototype would read undefined.prototype and abort the script. An instance's constructor
+  // is carried by the intrinsic prototype chain, which no global seeding can touch.
+  var functionPrototype = (function yieldRealmFunction() {}).constructor.prototype;
+
   function poison(name) {
     var thrower = function forbiddenCapability() {
       throw new TypeError(name + ' is not available inside the model sandbox.');
@@ -222,7 +255,7 @@ export function hardeningScript(): string {
   // 2. Poison the dynamic-code path. Function is reachable from every function object's constructor, so the
   //    property is replaced rather than the global alone.
   try {
-    Object.defineProperty(Function.prototype, 'constructor', {
+    Object.defineProperty(functionPrototype, 'constructor', {
       value: poison('Function'),
       writable: false,
       enumerable: false,
@@ -251,7 +284,9 @@ export function hardeningScript(): string {
     Object.defineProperty(generatorCtor, 'constructor', { value: poison('GeneratorFunction'), configurable: false });
   } catch (error) { void error; }
 
-  // 3. Freeze intrinsics last: freezing Object first would prevent the deletions above.
+  // 3. Freeze intrinsics last: freezing Object first would prevent the deletions above. The captured
+  //    Function.prototype is frozen here too — its Function binding may be gone by this point, but the
+  //    prototype itself is a real object and a fresh model must not be able to patch it for the next one.
   for (var k = 0; k < intrinsics.length; k++) {
     var intrinsic = scope[intrinsics[k]];
     if (!intrinsic) continue;
@@ -260,6 +295,7 @@ export function hardeningScript(): string {
       Object.freeze(intrinsic);
     } catch (error) { void error; }
   }
+  try { Object.freeze(functionPrototype); } catch (error) { void error; }
 })(this);`;
 }
 

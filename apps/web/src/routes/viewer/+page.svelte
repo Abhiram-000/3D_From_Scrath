@@ -432,6 +432,10 @@
             galleryOpen = generateOpen = settingsOpen = false;
           } else if (activeMode !== 'none') {
             activeMode = 'none';
+          } else if (placingNote) {
+            // A note being placed is a mode too, and Escape has to leave it: otherwise the next click
+            // on the model pins a note the learner had stopped wanting.
+            placingNote = false;
           } else {
             selectedPart = null;
             setViewMode('normal');
@@ -621,6 +625,18 @@
     if (draftAnnotation?.id === id) draftAnnotation = null;
     annotationStore?.remove(id);
     syncNotes();
+  }
+
+  /**
+   * The layer asks for a note's current text when it opens an input.
+   *
+   * The layer owns its own editing UI (input, Enter/blur, Escape), so the page has nothing to do
+   * with the request today. The prop is answered with a named function rather than an inline arrow
+   * because a function prop's identity is a dependency of whatever reads it — see the story-mode
+   * freeze this codebase already paid for.
+   */
+  function answerNoteRequest(): void {
+    // Intentionally empty: the layer's own state is the source of the text it is editing.
   }
 
   // ── Export and recording (`03` R8) ────────────────────────────────────────
@@ -1960,7 +1976,7 @@
         }}
         onremove={deleteNote}
         onedit={saveNote}
-        onrequesttext={() => {}}
+        onrequesttext={answerNoteRequest}
       />
 
       <!-- Tooltip -->

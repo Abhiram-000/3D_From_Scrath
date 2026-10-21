@@ -127,6 +127,54 @@ Graded from the live run, from the code audit against `Build_Docs`, and from the
 
 `pnpm verify` on the committed tree: secret scan, config, compositor, formatting, lint, typecheck, unit (714 tests) and build all **pass**; **E2E fails** with 3 failures and 14 skips of 50. The failures are `travels the camera to the part the learner selects` (desktop + phone — M12, where the fix removes the need for a frame-rate skip) and `a paused model still answers parameters` (phone — B1). The 14 skips are all `requireRealFrameRate`, which is why the story freeze shipped.
 
+### Found late, and the biggest one
+
+**Physics had never run in a browser, on any device (M16).** With a live model that
+declares `scene.physics`, the status bar read "Unavailable" — and, before this run's status-bar
+work, it would have read "On" while only a toast admitted otherwise. The reason string blamed the
+device; the real cause was ordering. `hardenRealm` deletes `WebAssembly` (PLAN §A1 layer 4), and
+`PhysicsWorld.create` called `RAPIER.init()` during a load — after hardening. The compile therefore
+never happened, and `02` R1's degraded path disguised a dead feature as a weak device.
+
+Verified by making the failure say what it was (`Physics could not start: WebAssembly is not
+defined.`), then fixed by warming the runtime at worker boot and **awaiting it before
+`initRenderer` hardens the realm**. Because `ready` now arrives one compile later, messages that
+arrive mid-boot are deferred: the host sends `init` and `load` back to back, and a `load` that
+overtook boot hit `if (!state) return` and vanished — a viewer that loaded nothing, silently.
+
+Verified live afterwards: a model declaring a world, a body and a speed probe reports
+`Physics 0.1–0.2 ms` in the status bar and the solver steps (`live/21-physics-running.png`).
+
+### Verified live after the final rebuild
+
+Panels reachable at 390×844 · story opens, advances to `2 / 5`, closes, console empty · Reset returns
+4800 rpm _and_ the authored camera (9.9 m → 4.8 m) · the parts list survives a selection (35 buttons)
+· `x` toggles X-ray · a note pins to a world point, renders, and persists under
+`edu3d.annotations.Two-spool turbofan` with its `partId` · the quality pin reaches the ladder and the
+status bar · Physics reports solver time for a declared world · no console errors anywhere (the only
+noise is zod's `Function('')` probe tripping report-only CSP).
+
+### Commits
+
+`7f772f4` verification artifacts out of the gates · `9947bf5` physics compiled before hardening ·
+`3440064` structural authoring validation + API-table enums · `c30f781` physics reachable + v1 prompt
+rules · `8b1a91a` real streaming chat · `7746549` settings, narration, quality pin · `dcee3ba` QR,
+thumbnails, gallery honesty · `7b2ba6d` notes, export, honest physics read-out, Reset · `c39d9e3`
+viewer pass (panels, reset, story, status, shortcuts) · `592a42f` docs and codemaps.
+
+### Still open
+
+- **E2E coverage.** 14 of 50 tests skip themselves below 10 fps (`requireRealFrameRate`), which is
+  how the story freeze shipped. Making those assertions renderer-independent (dispatch events
+  directly; widen windows in proportion to measured frame rate) is the next test-quality job.
+- **The deployed container** is an image from 2026-10-13 and serves a build eight days old; it must
+  be rebuilt for the deployment to match `main`.
+- Streaming chat, notes and export are verified in unit/integration tests and by hand at the DOM
+  level, but they have no E2E assertion yet.
+- The `live/` screenshots and `.playwright-mcp/` snapshots are evidence, git-ignored on purpose.
+
+## Order of work
+
 ### v1 parity worth porting (format-free)
 
 - Real QR encoder; annotations; multi-resolution export; audio SFX; honest client watchdog wording.

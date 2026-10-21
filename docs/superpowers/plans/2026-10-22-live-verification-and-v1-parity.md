@@ -169,8 +169,17 @@ provider's terminal event but only exits its read loop when the provider _closes
 provider sends its terminal chunk then holds the connection open — so no terminal event was ever
 written, `chatStream` never settled, and the panel's `finally` never ran. A learner could ask exactly
 one question per page load. Fixed at the transport (exit on the provider's terminal event, release the
-reader), which is the same hang class the generation path could hit. Not re-verified live: the fix
-landed after this run's last browser session.
+reader), which is the same hang class the generation path could hit.
+
+**Re-verified after the fix, by replaying the endpoint in the page:** a fresh chat request streamed 22
+NDJSON events and _ended itself_ — `done` at 3.48 s, body closed, no client intervention. So the
+terminal event now depends on the provider's own `finish_reason`, not on the socket closing. The
+heavier request the panel made (the full turbofan context, ~40 parts) did not reach a terminal event
+within several minutes of observation: its answer streamed in and then the provider went quiet. That
+is provider latency on a large prompt rather than a transport defect — the client is correct to wait,
+and its attempt timeout (330 s, the same one the generation path uses) bounds the wait — but it is
+worth a follow-up: chat has no heartbeat, so a learner watching that wait has nothing to read, and a
+chat-specific ceiling would be kinder than the generation one.
 
 ### Commits
 

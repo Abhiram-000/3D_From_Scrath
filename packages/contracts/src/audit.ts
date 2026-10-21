@@ -9,7 +9,23 @@
 import { z } from 'zod';
 import { shortText } from './primitives.ts';
 
-/** The scoring dimensions, taken directly from `01`'s audit section. */
+/**
+ * The scoring dimensions, taken directly from `01`'s audit section.
+ *
+ * The boundary of this list matters as much as its contents, because the platform's differentiator
+ * claim — "a physics teacher won't call the model wrong" — is honest only if it names what is
+ * verified. What the audit CAN measure from a manifest plus a headless dry run: controls that
+ * change nothing (parameterLeverage), read-outs that never move (information's read-out liveness),
+ * dangling identifiers in the teaching content (completeness), motion-representing shapes
+ * (representationFidelity), cost (budget, detailEconomics), and the presence proxies of the
+ * remaining dimensions. What it CANNOT: textbook accuracy — whether a constant is real, a
+ * proportion is right, a causal arrow points the way reality points, a formula is true — and
+ * plain-language understandability. There is deliberately no `accuracy` or `understandability`
+ * dimension: a dimension this list does not carry cannot masquerade as verified in a score. Those
+ * two live in the generation prompt's self-check rubric (`apps/server/src/services/prompts.ts`),
+ * which states plainly that it is a broader rubric than this audit and names which of its lines
+ * these dimensions back.
+ */
 export const AuditDimension = z.enum([
   'cleanliness',
   'attractiveness',

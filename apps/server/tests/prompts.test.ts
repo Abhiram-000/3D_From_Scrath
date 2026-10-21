@@ -49,7 +49,9 @@ const REFERENCE_FRAMING = [
   'the teaching bar never scales down',
   'Scale the ambition to the requested complexity',
   'be as ambitious as the topic deserves',
-  'AMBITIOUS: the model is as ambitious as the topic deserves',
+  // The AMBITIOUS rubric line, with the audit-mapping tag the v7+ prompt carries: the rubric states
+  // plainly which audit dimensions back each line, per the honesty boundary in contracts/audit.ts.
+  'AMBITIOUS: [audit: representationFidelity + detailEconomics + attractiveness]',
 ] as const;
 
 describe('the generation prompt', () => {

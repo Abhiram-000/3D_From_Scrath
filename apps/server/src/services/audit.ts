@@ -9,6 +9,32 @@
  * values); liveliness is counted frames, not a vibe. Every dimension score below is computed from
  * a proxy the dry run can measure, per `01`'s "scored by proxy signals the audit can measure".
  *
+ * Three measure families extend that discipline to claims the audit used to let pass:
+ *
+ *  - **Read-out liveness** (the sweep's evidence discipline, applied to published metrics): a
+ *    declared read-out whose quantised value never differs across any sweep point — or that is
+ *    never published at all — is a lying number, the same defect class `parameterLeverage` catches
+ *    for sliders. Scored and reported under `information` (read-outs are information surfaces);
+ *    deliberately not under `parameterLeverage`, because the pipeline harvests *that* dimension's
+ *    subjectIds into `unboundParameterIds` and a metric id must never travel as a parameter id.
+ *  - **Referential integrity**: story targets, story `setParameters`, shot targets, quiz evidence
+ *    ids, `affects.partId` entries, motion `pathId`s and interaction targetIds are captured
+ *    verbatim by the authoring pass with no resolution check (unlike `motion.partId` and
+ *    `interaction.partId`, which `scene.ts` throws on at authoring time). A dangling id is a
+ *    broken lesson — the learner taps "show me the evidence" and nothing happens — so every
+ *    declared id must resolve, scored under `completeness`.
+ *  - **Unit discipline on physical controls**: a number parameter that supplies a declared motion's
+ *    rate/amplitude or feeds the physics solver, declared with no unit (or an empty one), is not
+ *    quantitative — `00`'s hard contract demands real units. Severity is deliberately `minor`:
+ *    dimensionless factors are legitimate, so the finding instructs rather than accuses, and a
+ *    minor never triggers the paid refinement pass.
+ *
+ * What the audit deliberately does **not** claim, because a manifest cannot carry the evidence:
+ * whether a constant is real, a proportion is right, a causal direction is correct or a formula is
+ * true — textbook *accuracy* has no machine-checkable dimension here and lives in the prompt's
+ * self-check rubric (see `packages/contracts/src/audit.ts`); neither does plain-language
+ * understandability. `prompts.ts` states that boundary rather than implying otherwise.
+ *
  * Deficiencies are written *for the generator that will fix them* — imperative and specific — because
  * `04` sends them straight back as the refinement prompt and "a finding without an actionable
  * instruction is a complaint".
@@ -170,6 +196,49 @@ export function auditModel(input: AuditInput): AuditOutcome {
     }
   }
 
+  // ── Read-out evidence: quantised metric values observed at every sweep point ──
+  //
+  // The sweep runs the guest's parameterChange + frame callbacks at sampled parameter values and
+  // times; whatever `ctx.metric(id, …)` published during each point is recorded. A declared
+  // read-out is judged live by the SAME discipline as a parameter — value change across sweep
+  // points, never the mere presence of a publish call, which a frame callback makes every frame
+  // regardless. Two inherited limits are stated, not hidden: effects below the 3-decimal sweep
+  // quantum or appearing only after t = 1 s read as dead (the sweep's false-dead direction), and a
+  // guest-side closure that drifts on its own (an accumulating counter) would read live without
+  // tracking anything factual — the check proves the number moves, not that it tells the truth.
+  const SWEEP_QUANTUM_DECIMALS = 3;
+  const quantiseValue = (value: number): number => {
+    const scaled = Math.round(value * 10 ** SWEEP_QUANTUM_DECIMALS) / 10 ** SWEEP_QUANTUM_DECIMALS;
+    return Object.is(scaled, -0) ? 0 : scaled;
+  };
+  const metricValueHistory = new Map<string, Set<number>>();
+  const observeMetrics = (): void => {
+    for (const [id, value] of Object.entries(builder.currentMetrics())) {
+      const values = metricValueHistory.get(id) ?? new Set<number>();
+      values.add(quantiseValue(value));
+      metricValueHistory.set(id, values);
+    }
+  };
+  // Build-time published values first: a metric computed once at authoring and never again shows
+  // up here as one constant repeated through the baseline of every later point.
+  observeMetrics();
+
+  // A budget/timeout failure while the audit drives guest callbacks is an audit OUTCOME (a
+  // repairable build failure the pipeline routes to repair), never an exception that escapes.
+  const budgetFailure = (error: unknown, during: string) => {
+    const detail =
+      error instanceof GuestBudgetError || error instanceof GuestTimeoutError
+        ? ((error as { message?: string }).message ?? 'compute budget exhausted')
+        : error && typeof error === 'object' && 'message' in error
+          ? String((error as { message: unknown }).message)
+          : String(error);
+    return {
+      ok: false as const,
+      message: `The model exceeded its compute budget while the audit ${during} (${detail}). Reduce per-frame loop work so the model can be measured reliably.`,
+      timedOut: true,
+    };
+  };
+
   for (const parameter of manifest.parameters) {
     const values = sweepValuesFor(parameter);
     // The sweep runs guest frame callbacks whose loop guard is still armed with the BUILD's
@@ -181,23 +250,16 @@ export function auditModel(input: AuditInput): AuditOutcome {
     let sweepError: unknown = null;
     try {
       for (const time of SWEEP_TIMES) {
-        for (const value of values) builder.sweepParameter(parameter.id, value, time);
+        for (const value of values) {
+          builder.sweepParameter(parameter.id, value, time);
+          observeMetrics();
+        }
       }
     } catch (error) {
       sweepError = error;
     }
     if (sweepError !== null) {
-      const detail =
-        sweepError instanceof GuestBudgetError || sweepError instanceof GuestTimeoutError
-          ? ((sweepError as { message?: string }).message ?? 'compute budget exhausted')
-          : sweepError && typeof sweepError === 'object' && 'message' in sweepError
-            ? String((sweepError as { message: unknown }).message)
-            : String(sweepError);
-      return {
-        ok: false,
-        message: `The model exceeded its compute budget while the audit swept its parameters (${detail}). Reduce per-frame loop work so the model can be measured reliably.`,
-        timedOut: true,
-      };
+      return budgetFailure(sweepError, 'swept its parameters');
     }
     const points = builder.sweepStates.get(parameter.id) ?? [];
     const changedInSlice = SWEEP_TIMES.some((time) => {
@@ -224,6 +286,75 @@ export function auditModel(input: AuditInput): AuditOutcome {
   // Hand back the model as it was built: the manifest this audit returns is the one that ships,
   // and it must not carry the last sweep point's parameter values and poses.
   builder.endParameterSweep();
+
+  // A model with no parameters never ran a frame above (the sweep is how frames get driven), so
+  // its read-outs have no observations yet. Two probe frames at the sweep's own sample times give
+  // the time dimension of the evidence; parameter responsiveness is unjudgeable here by
+  // construction — there is nothing to sweep — and is not claimed.
+  if (manifest.parameters.length === 0 && manifest.metrics.length > 0) {
+    let probeError: unknown = null;
+    try {
+      for (const time of SWEEP_TIMES) {
+        builder.runFrame(time, 1 / 60);
+        observeMetrics();
+      }
+    } catch (error) {
+      probeError = error;
+    }
+    if (probeError !== null) {
+      return budgetFailure(probeError, 'ran its frame callbacks');
+    }
+  }
+
+  // ── Read-out liveness: a dead read-out is a defect, not a decoration ───────
+  //
+  // `00` promises "numbers on screen and motion on screen always agree". The audit cannot read
+  // formulas, but it can observe values: a declared read-out that never published (no number
+  // behind the panel at all) or published one quantised value across every sweep point of every
+  // parameter at both sample times (a number no control or motion moves) fails the promise.
+  // Scored under `information` — read-outs are learner-facing information surfaces. Deliberately
+  // NOT under `parameterLeverage`: the pipeline collects that dimension's subjectIds into
+  // `unboundParameterIds` for the topic battery, and a metric id must never travel as a parameter
+  // id. `source: 'physics'` read-outs are exempt from the variation judgement: their values come
+  // from solver probes the headless pass cannot step, so judging them here would flag every
+  // honest physical-simulation model.
+  const metricEvidence: string[] = [];
+  let deadMetrics = 0;
+  for (const metric of manifest.metrics) {
+    if (metric.source === 'physics') {
+      metricEvidence.push(`'${metric.id}': physics-sourced; measured by the runtime solver`);
+      continue;
+    }
+    const values = metricValueHistory.get(metric.id);
+    if (values === undefined || values.size === 0) {
+      deadMetrics += 1;
+      deficiencies.push({
+        dimension: 'information',
+        severity: 'major',
+        finding: `Read-out '${metric.id}' ('${metric.label}') is declared but the model never publishes a value for it — the panel shows a read-out with no number behind it.`,
+        instruction: `Publish it every frame with ctx.metric('${metric.id}', value) inside onFrame, computed from the same parameters that drive the motion it summarizes — or remove the declaration if it has no live source.`,
+        subjectId: `metric:${metric.id}`,
+      });
+      continue;
+    }
+    if (values.size === 1) {
+      deadMetrics += 1;
+      const published = [...values][0];
+      deficiencies.push({
+        dimension: 'information',
+        severity: 'major',
+        finding: `Read-out '${metric.id}' published ${published} and never changed across the audit's sweep of every parameter at both sample times — a number on screen that no control or motion moves.`,
+        instruction: `Derive ctx.metric('${metric.id}', …) from the parameters or motion behind what it labels, so number and motion share a source. If it is genuinely constant (a physical constant), replace the live read-out with static info facts on a part.`,
+        subjectId: `metric:${metric.id}`,
+      });
+      continue;
+    }
+    metricEvidence.push(`'${metric.id}': value changed across the sweep`);
+  }
+  if (manifest.metrics.length > 0 && metricEvidence.length === 0) {
+    // Unreachable in practice, but evidence must never be asserted from silence.
+    metricEvidence.push(`${manifest.metrics.length} read-outs declared`);
+  }
   const parameterFraction =
     manifest.parameters.length === 0 ? 0 : liveParameters / manifest.parameters.length;
   dimensions.push(
@@ -251,14 +382,83 @@ export function auditModel(input: AuditInput): AuditOutcome {
     });
   }
 
-  // ── Information: named parts with info text ───────────────────────────────
+  // ── Information: named parts with info text, live read-outs, stated units ─
   const informational = manifest.parts.filter((part) => part.info && part.kind !== 'group');
   const infoFraction = movableParts === 0 ? 0 : informational.length / movableParts;
-  dimensions.push(
-    score('information', infoFraction, [
-      `${informational.length}/${movableParts} parts carry info text`,
-    ]),
-  );
+
+  // Unit discipline: physical controls must state what their number means.
+  //
+  // The line drawn deliberately: only where the platform FIXES the meaning does a missing unit
+  // have an evidence-backed answer. A motion rate is rad/s, m/s or Hz per `MotionDecl`; the
+  // physics layer is defined in SI units. Everywhere else — transform channels can drive
+  // dimensionless scale factors (the reference model's bypass ratio is honestly unitless), some
+  // read-outs are ratios — a unit cannot be demanded without a dimensional-analysis engine the
+  // audit refuses to invent. All findings here are `minor`: dimensionless factors are legitimate,
+  // so the finding instructs rather than accuses, and a minor never starts the paid refinement
+  // pass. `minor` therefore costs diagnostics, never API money, on a false positive.
+  let unitIssues = 0;
+  const flagUnit = (subjectId: string, finding: string, instruction: string): void => {
+    unitIssues += 1;
+    deficiencies.push({
+      dimension: 'information',
+      severity: 'minor',
+      finding,
+      instruction,
+      subjectId,
+    });
+  };
+  for (const parameter of manifest.parameters) {
+    const declared = parameter.unit?.trim();
+    if (declared !== undefined && declared === '') {
+      flagUnit(
+        parameter.id,
+        `Parameter '${parameter.id}' declares an empty unit, which renders as no unit at all.`,
+        `State the real unit — the value is read as a quantity — or remove the unit field if the control genuinely has none.`,
+      );
+      continue;
+    }
+    if (declared !== undefined || parameter.kind !== 'number') continue;
+    if (motionBoundParams.has(parameter.id)) {
+      flagUnit(
+        parameter.id,
+        `Parameter '${parameter.id}' drives a declared motion's rate or amplitude but states no unit.`,
+        `Declare what its number means — spin/orbit rates are rad/s, translation m/s, oscillation Hz — or, if it is a dimensionless factor, say so explicitly (unit: '×').`,
+      );
+    } else if (
+      manifest.physics &&
+      parameter.affects.some((affect) => affect.channel === 'physics')
+    ) {
+      flagUnit(
+        parameter.id,
+        `Parameter '${parameter.id}' feeds the physics solver without a unit.`,
+        `The physics layer is defined in SI units: declare the parameter's unit (kg, N, m/s, Pa, …), or 'ratio' if it is a dimensionless factor.`,
+      );
+    }
+  }
+  for (const metric of manifest.metrics) {
+    if (metric.unit !== undefined && metric.unit.trim() === '') {
+      flagUnit(
+        `metric:${metric.id}`,
+        `Read-out '${metric.id}' declares an empty unit, which renders as no unit at all.`,
+        `State the real unit for the read-out's value (kN, m/s, K, …) or remove the unit field.`,
+      );
+    }
+  }
+
+  const unitPenalty = Math.min(0.15, unitIssues * 0.05);
+  const readOutPenalty = Math.min(0.3, deadMetrics * 0.15);
+  const informationFraction = Math.max(0, infoFraction - unitPenalty - readOutPenalty);
+  const informationEvidence = [
+    `${informational.length}/${movableParts} parts carry info text`,
+    ...metricEvidence,
+  ];
+  if (unitIssues > 0) {
+    informationEvidence.push(`${unitIssues} physical controls without a stated unit`);
+  }
+  dimensions.push(score('information', informationFraction, informationEvidence));
+  // The deficiency condition reads the RAW fraction: dead read-outs and missing units already
+  // produce their own specific findings, and a penalised composite must not also emit a misleading
+  // "parts carry no info text" complaint.
   if (infoFraction < 0.5) {
     deficiencies.push({
       dimension: 'information',
@@ -269,18 +469,150 @@ export function auditModel(input: AuditInput): AuditOutcome {
     });
   }
 
+  // ── Referential integrity: every declared id must resolve ──────────────────
+  //
+  // `scene.motion` and `scene.interaction` throw on a missing partId at authoring time, so those
+  // never reach the audit. Everything else is captured verbatim with no resolution check: story
+  // targets, story `setParameters`, shot targets (in `camera.shots` and inside beat `shots`),
+  // quiz evidence ids, `affects.partId` entries, motion `pathId`s and interaction `targetId`s. A
+  // dangling id is a broken lesson — the learner taps "show me the evidence" and nothing happens,
+  // or a beat sets a parameter that is not there — so it scores under completeness: the declared
+  // teaching surface is not whole.
+  const partIds = new Set(manifest.parts.map((part) => part.id));
+  const parameterIds = new Set(manifest.parameters.map((parameter) => parameter.id));
+  const pathIds = new Set(manifest.paths.map((path) => path.id));
+  const dangling: Array<{ source: string; missingId: string; instruction: string }> = [];
+  const claimPart = (partId: string | undefined, source: string, instruction: string): void => {
+    if (partId !== undefined && !partIds.has(partId)) {
+      dangling.push({ source, missingId: partId, instruction });
+    }
+  };
+  for (const beat of manifest.story) {
+    claimPart(
+      beat.targetPartId,
+      `story beat '${beat.id}'`,
+      `point the beat's targetPartId at a real part id (scene.mesh / scene.instances / scene.place) or drop the target — the camera move silently skips a missing part.`,
+    );
+    for (const key of Object.keys(beat.setParameters ?? {})) {
+      if (!parameterIds.has(key)) {
+        dangling.push({
+          source: `story beat '${beat.id}'`,
+          missingId: key,
+          instruction: `setParameters must name declared parameter ids — '${key}' is not one; declare it with scene.param or drop the assignment.`,
+        });
+      }
+    }
+    for (const shot of beat.shots) {
+      claimPart(
+        shot.targetPartId,
+        `story beat '${beat.id}' shot`,
+        `set the shot's targetPartId to a real part id, or drop it.`,
+      );
+    }
+  }
+  for (const question of manifest.quiz) {
+    if (
+      question.evidencePartId !== undefined &&
+      !partIds.has(question.evidencePartId) &&
+      !parameterIds.has(question.evidencePartId)
+    ) {
+      dangling.push({
+        source: `quiz question '${question.id}'`,
+        missingId: question.evidencePartId,
+        instruction: `evidencePartId must name a part or parameter the learner can inspect to verify the answer themselves.`,
+      });
+    }
+  }
+  for (const motion of manifest.motions) {
+    if (motion.pathId !== undefined && !pathIds.has(motion.pathId)) {
+      dangling.push({
+        source: `motion '${motion.id}'`,
+        missingId: motion.pathId,
+        instruction: `declare the path with scene.path('${motion.pathId}', geom.path([...])) or drop the motion — a flow with no path flows nowhere.`,
+      });
+    }
+  }
+  for (const parameter of manifest.parameters) {
+    for (const affect of parameter.affects) {
+      claimPart(
+        affect.partId,
+        `parameter '${parameter.id}'`,
+        `an affects entry's partId must name a real part — a claim about a part that does not exist verifies nothing.`,
+      );
+    }
+  }
+  for (const [shotId, shot] of Object.entries(manifest.camera.shots)) {
+    claimPart(
+      shot.targetPartId,
+      `camera shot '${shotId}'`,
+      `set the shot's targetPartId to a real part id, or drop it.`,
+    );
+  }
+  for (const interaction of manifest.interactions) {
+    if (
+      interaction.kind === 'setParameter' &&
+      interaction.targetId !== undefined &&
+      !parameterIds.has(interaction.targetId)
+    ) {
+      dangling.push({
+        source: `interaction on '${interaction.partId}' (${interaction.on})`,
+        missingId: interaction.targetId,
+        instruction: `setParameter's targetId must name a declared parameter id.`,
+      });
+    }
+    if (
+      interaction.kind === 'toggleVisibility' &&
+      interaction.targetId !== undefined &&
+      !partIds.has(interaction.targetId)
+    ) {
+      dangling.push({
+        source: `interaction on '${interaction.partId}' (${interaction.on})`,
+        missingId: interaction.targetId,
+        instruction: `toggleVisibility's targetId must name a real part id.`,
+      });
+    }
+  }
+  // Bound the finding list: 64 deficiencies is the schema's ceiling and refinement reads them as
+  // numbered instructions — the first eight name their subject; any rest aggregate into one line.
+  const MAX_DANGLING_FINDINGS = 8;
+  for (const ref of dangling.slice(0, MAX_DANGLING_FINDINGS)) {
+    deficiencies.push({
+      dimension: 'completeness',
+      severity: 'major',
+      finding: `${ref.source} references '${ref.missingId}', which does not exist in the manifest — that part of the lesson silently does nothing.`,
+      instruction: ref.instruction,
+      subjectId: ref.missingId,
+    });
+  }
+  if (dangling.length > MAX_DANGLING_FINDINGS) {
+    deficiencies.push({
+      dimension: 'completeness',
+      severity: 'major',
+      finding: `${dangling.length} declared references do not resolve (${new Set(dangling.map((ref) => ref.missingId)).size} distinct missing ids); the first ${MAX_DANGLING_FINDINGS} are listed individually.`,
+      instruction: `Fix every reference in the story, quiz, shots, motions and parameter declarations so each names a declared part, parameter or path.`,
+      subjectId: dangling[MAX_DANGLING_FINDINGS]?.missingId,
+    });
+  }
+  const danglingPenalty = Math.min(0.4, new Set(dangling.map((ref) => ref.missingId)).size * 0.1);
+
   // ── Completeness: structure exists, no orphan single-child chains ──────────
   const completenessEvidence: string[] = [
     `root parts: ${manifest.parts.filter((p) => p.parentId === null).length}`,
   ];
   const hasHero = manifest.parts.some((part) => part.hero);
   if (hasHero) completenessEvidence.push('hero part declared');
+  if (danglingPenalty > 0) {
+    completenessEvidence.push(
+      `${new Set(dangling.map((ref) => ref.missingId)).size} dangling reference(s)`,
+    );
+  }
   const completeness =
     0.4 +
     (hasHero ? 0.2 : 0) +
     Math.min(0.2, manifest.parts.length / 150) +
     (manifest.parameters.length > 0 ? 0.1 : 0) +
-    (manifest.motions.length > 0 ? 0.1 : 0);
+    (manifest.motions.length > 0 ? 0.1 : 0) -
+    danglingPenalty;
   dimensions.push(score('completeness', completeness, completenessEvidence));
   if (!hasHero) {
     deficiencies.push({

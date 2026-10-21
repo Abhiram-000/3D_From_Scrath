@@ -8,10 +8,10 @@
  * battery's measured weaknesses (thin parameters averaging 2, textbook accuracy unverified,
  * understandability unguided). The techniques, each with its evidence:
  *
- *  1. **A complete, correct exemplar** (v2–v5; replaced in v6). Models imitate structure they have
- *     seen far more faithfully than rules they have read. v5 removed the pendulum exemplar because
- *     its small part count anchored what a generated model aims for; v6 ships something at the
- *     platform's real ambition instead — see the v6 note below.
+ *  1. **A complete, correct exemplar** (v2–v4; removed in v5, restored in v6). Models imitate
+ *     structure they have seen far more faithfully than rules they have read. v5 removed the pendulum
+ *     exemplar because its small part count anchored what a generated model aims for; v6 restored a
+ *     complete example at the platform's real ambition instead — see the v6 note below.
  *  2. **Role separation with a domain-scientist pass** (`00`: "separate the expert personas —
  *     domain scientist (what is true), instructional designer (what teaches), 3D engineer (what
  *     builds)"). v3 makes the scientist pass explicit: name the real quantities, real units, real
@@ -25,10 +25,19 @@
  *  5. **The API as a copyable reference table** (generated, never hand-written) and **negative
  *     examples from observed failures** (v2, kept — every NEVER line is a real live mistake).
  *  6. **Plan-first scaffolding**, extended with a FACTS line the scientist pass fills in.
- *  7. **A rubric-anchored self-check**: the model grades its own draft on the six dimensions the
- *     platform's audit scores (RUNNABLE, ACCURATE, UNDERSTANDABLE, ALIVE, COMPLETE and — since v6 —
- *     AMBITIOUS), and fixes anything below standard before answering. Rubric-anchored
- *     self-evaluation measurably outperforms bare checklists.
+ *  7. **A rubric-anchored self-check**: the model grades its own draft on a six-line rubric
+ *     (RUNNABLE, ACCURATE, UNDERSTANDABLE, ALIVE, COMPLETE, AMBITIOUS) and fixes anything below
+ *     standard before answering. Rubric-anchored self-evaluation measurably outperforms bare
+ *     checklists. The rubric is deliberately BROADER than the audit, and the prompt now says so in
+ *     exactly those terms: ALIVE is the audit's liveliness + parameterLeverage dimensions; COMPLETE
+ *     is completeness + information + pedagogy; AMBITIOUS is representationFidelity +
+ *     detailEconomics + attractiveness (with material and color semantics); RUNNABLE is enforced
+ *     earlier and harder, by the static gate and the headless build. ACCURATE and UNDERSTANDABLE
+ *     have NO machine-checkable audit dimension — nothing in a manifest can prove a constant is
+ *     real, a proportion is right, a causal direction is correct or a formula is true, and no
+ *     proxy can prove a sentence is plain — so those two lines are prompt-only assertions, and
+ *     every claim the platform makes about *verification* names only what the audit actually
+ *     measures (see `packages/contracts/src/audit.ts`, which documents the same boundary).
  *
  * v5 removes the hand-written example model from every prompt. The battery's measured part count
  * (39 average against a requested 60–150) suggests the exemplar anchored how big a generated model
@@ -341,7 +350,9 @@ ${DOMAIN_GRAMMARS.map((row) => `  - ${row.domain}: ${row.entities}; moves by: ${
 
 HARD CONTRACT:
 1. scene.describe({...}) first, with concept, objectives, principles, honest simplifications.
-2. Real units: metres, kilograms, seconds. Declare any exaggeration in simplifications.
+2. Real units: metres, kilograms, seconds. Every parameter that drives a motion rate or a physics
+   quantity declares its unit (rad/s, m/s, Hz, rpm, kg/s, N, …); a dimensionless factor says so
+   explicitly (unit: '×' or 'ratio'). Declare any exaggeration in simplifications.
 3. Every parameter visibly changes behavior, and no two parameters produce the same visible
    change (the battery showed 2 thin parameters average — this model needs ${COMPLEXITY_GUIDANCE[options.complexity]}).
 4. Repeated structure is instanced (scene.instances + geom.pattern.*) or a component
@@ -353,18 +364,27 @@ HARD CONTRACT:
 9. Set the opening camera: scene.camera({ position, target, fov }).
 10. Triangle budget for this run: ${budget}
 
-BEFORE YOU ANSWER — grade your draft against this rubric and fix anything that fails:
-[ ] RUNNABLE: starts with scene.describe; every call matches the reference table's argument names;
-    no imports or host globals; ids unique.
-[ ] ACCURATE: entities, proportions, causal directions, constants and formulas are textbook-true;
-    exaggerations declared. Would a subject teacher sign it?
-[ ] UNDERSTANDABLE: every info summary and story beat is plain language, one idea per sentence;
-    a teenager could restate the concept after playing.
-[ ] ALIVE: the model moves by default; every parameter produces a distinct visible change; metrics
-    track the motion.
-[ ] COMPLETE: story, quiz with a real misconception distractor, camera set, info on every part.
-[ ] AMBITIOUS: the model is as ambitious as the topic deserves — real hierarchy, repetition
-    instanced, shapes whose behaviour is right — and never a lazy six-box version.
+BEFORE YOU ANSWER — grade your draft against this rubric and fix anything that fails. This rubric is
+wider than the machine audit: lines marked [audit] are the parts the audit measures and can send back
+as refinement instructions; the others only you can check, and the platform does not claim otherwise.
+[ ] RUNNABLE: harder than a rubric line — the platform's static gate refuses the program before it
+    is ever scored: starts with scene.describe; every call matches the reference table's argument
+    names; no imports or host globals; ids unique.
+[ ] ACCURATE: [rubric only — no machine audit can read a constant, a proportion, a causal arrow or a
+    formula; you are the only check this draft gets] entities, proportions, causal directions,
+    constants and formulas are textbook-true; exaggerations declared. Would a subject teacher sign it?
+[ ] UNDERSTANDABLE: [rubric only] every info summary and story beat is plain language, one idea per
+    sentence; a teenager could restate the concept after playing.
+[ ] ALIVE: [audit: liveliness + parameterLeverage] the model moves by default; every parameter
+    produces a distinct visible change; every metric you declared is published from onFrame each
+    frame and its value changes when the model does — the audit flags a read-out that never moves.
+[ ] COMPLETE: [audit: completeness + information + pedagogy] story, quiz with a real misconception
+    distractor, camera set, info on every part; every story target, story setParameters key, quiz
+    evidence id, motion pathId and parameter affects partId names a declared id — dangling
+    references are flagged as broken lessons.
+[ ] AMBITIOUS: [audit: representationFidelity + detailEconomics + attractiveness] the model is as
+    ambitious as the topic deserves — real hierarchy, repetition instanced, shapes whose behaviour is
+    right — and never a lazy six-box version.
 Output ONE fenced JavaScript block containing the complete, self-contained program.`;
 }
 

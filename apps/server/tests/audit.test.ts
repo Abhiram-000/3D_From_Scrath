@@ -208,6 +208,240 @@ describe('representation fidelity — moving parts that are static-shape lookali
   });
 });
 
+describe('read-out liveness — a lying number', () => {
+  it('flags a declared metric that is never published', () => {
+    // The prompt promises "numbers on screen and motion on screen always agree". A metric declared
+    // but never published has no number at all — the panel shows a read-out with nothing behind it.
+    // Nothing checked this before: `callbacks.metricComputers` records the declaration, not a value.
+    const result = audit(`
+      scene.describe({ name: 'Dead readout', description: 'A metric with nothing behind it.',
+        concept: 'read-outs must be live', objectives: ['watch the read-out'] });
+      scene.param({ id: 'flow', kind: 'number', label: 'Flow', min: 0, max: 10, default: 5,
+        affects: [{ channel: 'metric' }] });
+      scene.metric({ id: 'output', label: 'Output force', unit: 'N' });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.onFrame(function (ctx) {
+        ctx.part('p').setPosition(ctx.params.flow, 0, 0);
+      });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const dead = deficienciesFor(result, 'information')?.find(
+      (d) => d.subjectId === 'metric:output',
+    );
+    expect(dead, "metric 'output' is declared but never published — must be flagged").toBeDefined();
+    expect(dead?.severity).toBe('major');
+  });
+
+  it('flags a published metric that never changes across the sweep', () => {
+    // The lying number: a read-out whose value is a constant. The motion follows the slider, the
+    // number does not move — exactly the disagreement the prompt forbids. Evidence discipline is
+    // the sweep's own: causality by VALUE CHANGE across sweep points, never by the presence of a
+    // ctx.metric call (which a frame callback makes every frame regardless).
+    const result = audit(`
+      scene.describe({ name: 'Frozen readout', description: 'A read-out that never moves.',
+        concept: 'numbers must track the motion', objectives: ['compare number and motion'] });
+      scene.param({ id: 'flow', kind: 'number', label: 'Flow', min: 0, max: 10, default: 5,
+        affects: [{ channel: 'metric' }, { channel: 'transform' }] });
+      scene.metric({ id: 'output', label: 'Output force', unit: 'N', formula: 'F = m x a' });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.onFrame(function (ctx) {
+        ctx.part('p').setPosition(ctx.params.flow, 0, 0);
+        ctx.metric('output', 42);
+      });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const frozen = deficienciesFor(result, 'information')?.find(
+      (d) => d.subjectId === 'metric:output',
+    );
+    expect(frozen, "metric 'output' is published but constant — must be flagged").toBeDefined();
+    expect(frozen?.severity).toBe('major');
+    expect(frozen?.instruction).toMatch(/ctx\.metric/);
+  });
+
+  it('credits a metric published from onFrame as a function of a parameter', () => {
+    // The false-positive guard: a read-out derived from the parameters it summarizes is exactly
+    // what the prompt asks for, and must pass untouched.
+    const result = audit(`
+      scene.describe({ name: 'Live readout', description: 'A read-out that tracks the control.',
+        concept: 'numbers track the motion', objectives: ['compare number and motion'] });
+      scene.param({ id: 'flow', kind: 'number', label: 'Flow', min: 0, max: 10, default: 5,
+        affects: [{ channel: 'metric' }, { channel: 'transform' }] });
+      scene.metric({ id: 'output', label: 'Output force', unit: 'N' });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.onFrame(function (ctx) {
+        ctx.part('p').setPosition(ctx.params.flow, 0, 0);
+        ctx.metric('output', ctx.params.flow * 1.2);
+      });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    expect(
+      (result.report.deficiencies ?? []).filter((d) => d.subjectId === 'metric:output'),
+      'a read-out derived from a live parameter is not a defect',
+    ).toEqual([]);
+  });
+});
+
+describe('referential integrity — every declared id must resolve', () => {
+  it('flags dangling quiz, story, setParameters and affects references', () => {
+    // Verified unchecked upstream: `scene.motion` and `scene.interaction` throw on a missing
+    // partId at authoring time, but story targets, story setParameters, shot targets, quiz
+    // evidence ids, motion pathIds, affects partIds and interaction targetIds are all captured
+    // verbatim. The learner taps "show me the evidence" and nothing happens.
+    const result = audit(`
+      scene.describe({ name: 'Broken lesson', description: 'References that point nowhere.',
+        concept: 'ids must resolve', objectives: ['find the evidence'] });
+      scene.param({ id: 'speed', kind: 'number', label: 'Speed', min: 0, max: 10, default: 5,
+        affects: [{ partId: 'ghostTarget', channel: 'visibility' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.shot('ghostShot', { kind: 'flyTo', targetPartId: 'ghostShotTarget', duration: 1 });
+      scene.story([
+        { id: 'b1', title: 'Ghost', narration: 'This beat points at parts that do not exist.',
+          targetPartId: 'ghostPart', setParameters: { ghostParam: 2 },
+          shots: [{ kind: 'flyTo', targetPartId: 'ghostBeatTarget' }] },
+      ]);
+      scene.quiz([
+        { id: 'q1', question: 'Where is the evidence?', options: ['A', 'B'], correctIndex: 0,
+          explanation: 'A is right because it is; B is wrong because it is not.',
+          evidencePartId: 'ghostEvidence' },
+      ]);
+      scene.motion({ id: 'drift', partId: 'p', kind: 'flowAlongPath', pathId: 'ghostPath',
+        reason: 'Flows along an undeclared path.' });
+      scene.onFrame(function (ctx) {
+        ctx.part('p').setPosition(ctx.params.speed, 0, 0);
+      });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const dangling = deficienciesFor(result, 'completeness') ?? [];
+    const missing = new Set(dangling.map((d) => d.subjectId));
+    for (const id of [
+      'ghostPart',
+      'ghostParam',
+      'ghostBeatTarget',
+      'ghostEvidence',
+      'ghostPath',
+      'ghostTarget',
+      'ghostShotTarget',
+    ]) {
+      expect(missing.has(id), `dangling reference '${id}' must be flagged`).toBe(true);
+    }
+    expect(dangling[0]?.severity === 'major').toBe(true);
+    // The completeness score must actually suffer, not just record findings.
+    const completeness = result.report.dimensions.find((d) => d.dimension === 'completeness');
+    expect(completeness && completeness.score < 100).toBe(true);
+  });
+
+  it('accepts a model whose ids all resolve', () => {
+    // The false-positive guard: real ids, declared before use, must not be flagged.
+    const result = audit(`
+      scene.describe({ name: 'Intact lesson', description: 'Every id resolves.',
+        concept: 'ids resolve', objectives: ['find the evidence'] });
+      scene.param({ id: 'speed', kind: 'number', label: 'Speed', min: 0, max: 10, default: 5,
+        affects: [{ partId: 'p', channel: 'visibility' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.cylinder({ radius: 0.2, height: 0.1, segments: 12 }),
+        material: m });
+      scene.shot('closeup', { kind: 'flyTo', targetPartId: 'p', duration: 1 });
+      scene.story([
+        { id: 'b1', title: 'Real', narration: 'This beat points at a part that exists.',
+          targetPartId: 'p', setParameters: { speed: 2 },
+          shots: [{ kind: 'flyTo', targetPartId: 'p' }] },
+      ]);
+      scene.quiz([
+        { id: 'q1', question: 'Where is the evidence?', options: ['A', 'B'], correctIndex: 0,
+          explanation: 'A is right because it is; B is wrong because it is not.',
+          evidencePartId: 'p' },
+      ]);
+      scene.motion({ id: 'spin', partId: 'p', kind: 'spin', axis: [0, 0, 1],
+        rate: { param: 'speed' }, reason: 'The learner sets the speed.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    expect(deficienciesFor(result, 'completeness'), 'every id resolves — nothing to flag').toEqual(
+      [],
+    );
+  });
+});
+
+describe('unit discipline — quantitative claims on physical controls', () => {
+  it('flags a motion-rate parameter declared without a unit', () => {
+    // `MotionDecl` fixes what a rate means per kind (rad/s, m/s, Hz); a parameter that supplies a
+    // rate cannot leave it unstated and still be quantitative. `00`'s hard contract demands real
+    // units; nothing enforced them on the declaration.
+    const result = audit(`
+      scene.describe({ name: 'Unitless rate', description: 'A speed with no unit.',
+        concept: 'rates carry units', objectives: ['read the unit'] });
+      scene.param({ id: 'speed', kind: 'number', label: 'Speed', min: 0, max: 10, default: 5,
+        affects: [{ channel: 'motionRate' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'wheel', name: 'Wheel',
+        geometry: geom.cylinder({ radius: 0.3, height: 0.06, segments: 24 }), material: m });
+      scene.motion({ id: 'spin', partId: 'wheel', kind: 'spin', axis: [0, 0, 1],
+        rate: { param: 'speed' }, reason: 'The learner sets the turning speed.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const unitless = deficienciesFor(result, 'information')?.find((d) => d.subjectId === 'speed');
+    expect(
+      unitless,
+      "parameter 'speed' drives a motion rate with no unit — must be flagged",
+    ).toBeDefined();
+    expect(unitless?.severity).toBe('minor');
+  });
+
+  it('flags an empty declared unit, and never flags a parameter that declares one', () => {
+    const result = audit(`
+      scene.describe({ name: 'Empty unit', description: 'unit: "" is not a unit.',
+        concept: 'units must be stated', objectives: ['read the unit'] });
+      scene.param({ id: 'speed', kind: 'number', label: 'Speed', min: 0, max: 10, default: 5,
+        unit: '   ', affects: [{ channel: 'motionRate' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'wheel', name: 'Wheel',
+        geometry: geom.cylinder({ radius: 0.3, height: 0.06, segments: 24 }), material: m });
+      scene.motion({ id: 'spin', partId: 'wheel', kind: 'spin', axis: [0, 0, 1],
+        rate: { param: 'speed' }, reason: 'The learner sets the turning speed.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const empty = deficienciesFor(result, 'information')?.find((d) => d.subjectId === 'speed');
+    expect(empty, 'an empty unit declaration is not quantitative — must be flagged').toBeDefined();
+  });
+
+  it('does not flag a rate parameter that declared its unit — the reference pattern', () => {
+    const result = audit(`
+      scene.describe({ name: 'Declared rate', description: 'rpm, stated.',
+        concept: 'rates carry units', objectives: ['read the unit'] });
+      scene.param({ id: 'rpm', kind: 'number', label: 'Speed', min: 0, max: 10, default: 5,
+        unit: 'rpm', affects: [{ channel: 'motionRate' }] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'wheel', name: 'Wheel',
+        geometry: geom.cylinder({ radius: 0.3, height: 0.06, segments: 24 }), material: m });
+      scene.motion({ id: 'spin', partId: 'wheel', kind: 'spin', axis: [0, 0, 1],
+        rate: { param: 'rpm' }, reason: 'The learner sets the turning speed.' });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    expect(
+      deficienciesFor(result, 'information')?.find((d) => d.subjectId === 'rpm'),
+    ).toBeUndefined();
+  });
+});
+
 describe('the reference turbofan — the regression guard', () => {
   it('audits clean on parameter leverage: every control, including cutaway, provably drives something', () => {
     // The flagship must survive the stricter audit. Before the cutaway toggle was implemented
@@ -231,5 +465,19 @@ describe('the reference turbofan — the regression guard', () => {
     expect(deficienciesFor(result, 'representationFidelity')).toEqual([]);
     const fidelity = result.report.dimensions.find((d) => d.dimension === 'representationFidelity');
     expect(fidelity?.score, 'gear + helix + sdf bonuses must survive the stricter check').toBe(100);
+  });
+
+  it('scores 91 with zero deficiencies — the read-out, reference and unit checks must not fire on the flagship', () => {
+    // The controller's rule: "a stricter audit that rejects the flagship is wrong, not the model."
+    // The reference publishes all three of its metrics from onFrame as functions of the parameters
+    // they summarize, declares a unit on its rate parameter (rpm), is deliberately dimensionless
+    // where reality is (bypass ratio), and every id it names resolves. Score 91 is the published
+    // baseline; a change here means a check fired where no defect exists.
+    const result = audit(REFERENCE_MODEL_SOURCE);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.report.deficiencies).toEqual([]);
+    expect(result.report.score).toBe(91);
   });
 });

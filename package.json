@@ -10,6 +10,8 @@
   "packageManager": "pnpm@10.28.2",
   "scripts": {
     "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "dev:all": "./dev.sh",
+    "dev:all:db": "./dev.sh --db postgres",
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r typecheck && tsc -p scripts/tsconfig.json",
     "lint": "eslint .",

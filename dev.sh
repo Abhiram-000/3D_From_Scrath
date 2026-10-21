@@ -12,6 +12,7 @@
 #   ./dev.sh --force-port     reclaim the port even from a process that is NOT ours (careful)
 #   ./dev.sh --alt-port       take the next free port instead of reclaiming
 #   ./dev.sh --no-open        do not launch a browser
+#   ./dev.sh --no-prompt      never ask for an API key interactively
 #
 # Port policy: a busy port is diagnosed, not silently avoided. If the holder is one of our own
 # leftovers — a previous run, `pnpm dev`, an orphaned watcher — it is stopped and the port is
@@ -38,6 +39,7 @@ DB="auto"            # auto | postgres | file
 PORT="${PORT:-8899}"
 WEB_PORT="${WEB_PORT:-5173}"
 OPEN_BROWSER=1
+NO_PROMPT=0
 FRESH=0
 OPEN_WRITES=0
 FORCE_PORT=0
@@ -57,7 +59,8 @@ while [ $# -gt 0 ]; do
     --alt-port)     ALT_PORT=1 ;;
     --reset-data)   RESET_DATA=1 ;;
     --no-open)      OPEN_BROWSER=0 ;;
-    -h|--help)      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --no-prompt)    NO_PROMPT=1 ;;
+    -h|--help)      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)              echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -298,6 +301,30 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 AI_KEY="$(env_value "$ENV_FILE" AI_API_KEY)"
 AI_MODEL="$(env_value "$ENV_FILE" AI_MODEL)"
+
+# A missing key is the one thing that makes a fully-launched platform look broken: everything comes
+# up, the reference model renders, and then generation answers 503 forever. So ask once, here, and
+# write it where the server reads it. The value is passed through the environment rather than argv so
+# it never appears in a process listing, and it is gitignored (`.env`, never `.env.example`).
+if [ -z "$AI_KEY" ] && [ "$NO_PROMPT" = "0" ] && [ -t 0 ] && [ "$FRESH" != "1" ]; then
+  printf '\n  %s!%s AI_API_KEY is not set — generation would answer 503 while everything else works.\n' "$Y" "$N"
+  printf '  Paste an API key to unlock generation, or press Enter to continue without one:\n  > '
+  read -r AI_KEY_INPUT || true
+  if [ -n "${AI_KEY_INPUT:-}" ]; then
+    AI_KEY_INPUT="$AI_KEY_INPUT" node -e '
+      const fs = require("node:fs");
+      const file = process.argv[1];
+      const value = process.env.AI_KEY_INPUT;
+      const re = /^AI_API_KEY=.*$/m;
+      let text = fs.readFileSync(file, "utf8");
+      text = re.test(text) ? text.replace(re, "AI_API_KEY=" + value) : text.trimEnd() + "\nAI_API_KEY=" + value + "\n";
+      fs.writeFileSync(file, text);
+    ' "$ENV_FILE"
+    AI_KEY="$(env_value "$ENV_FILE" AI_API_KEY)"
+    ok "wrote AI_API_KEY to apps/server/.env ${DIM}(gitignored)${N}"
+  fi
+fi
+
 if [ -n "$AI_KEY" ]; then
   ok "AI_API_KEY is set ${DIM}(${AI_MODEL:-provider default}) — generation unlocked${N}"
 else
@@ -321,6 +348,9 @@ if [ "$DB" = "postgres" ]; then
   if ! port_free "$PG_PORT"; then
     note "postgres port $PG_PORT is busy — asking docker for a free one"
     PG_PORT="$(settle_port "$PG_PORT" "local postgres")"
+  fi
+  if ! docker image inspect postgres:16-alpine >/dev/null 2>&1; then
+    note "pulling postgres:16-alpine (once; ~40MB)"
   fi
   note "starting postgres:16-alpine on 127.0.0.1:$PG_PORT (removed on exit)"
   if ! docker run -d --rm --name "$PG_NAME" \

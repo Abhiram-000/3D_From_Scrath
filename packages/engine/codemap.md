@@ -7,6 +7,7 @@
 ## Design
 
 - Three package exports, three audiences: `.` → `src/index.ts` (the barrel everything but the server host imports), `./authoring` → `src/authoring/index.ts`, `./node-host` → `src/hosts/node-host.ts`.
+- The `authoring/` boundary validates the guest's declarations **structurally, never through zod at runtime**: the same `scene.ts` executes inside the poisoned guest realm (`@edu3d/sandbox` replaces `Function` with a thrower), and zod's `parse`/`safeParse` touches `Function`, so a schema call there throws `Function is not available inside the model sandbox` — a browser-only failure that `node:vm` (unpoisoned) never sees. Closed vocabularies are still the contract's: enums are read off a schema's `.options` (a property read, safe) at module scope, and `api-reference.ts` renders its prompt unions from those same enums so the documentation cannot teach an illegal value.
 - `scripts.typecheck` is `tsc --noEmit`; devDeps are `@types/node` 26.4.1, `@types/three` 0.185.4, `typescript` 6.0.3.
 
 ## Flow

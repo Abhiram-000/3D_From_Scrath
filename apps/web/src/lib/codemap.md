@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-Browser-side helpers shared by the three routes: the ambient cursor/theme system, two decorative three.js page backgrounds (landing wireframe polyhedra, loading neural points), the compile-time-gated dev console, and the landing input gate. `core/` and `engine/` have their own codemaps; this file covers the root modules.
+Browser-side helpers shared by the three routes: the ambient cursor/theme system, two decorative three.js page backgrounds (landing wireframe polyhedra, loading neural points), the compile-time-gated dev console, and the landing input gate. `core/`, `engine/` and `annotations/` have their own codemaps; this file covers the root modules.
 
 ## Design
 
@@ -18,4 +18,4 @@ Browser-side helpers shared by the three routes: the ambient cursor/theme system
 
 ## Integration
 
-Depends on `@edu3d/contracts` (`THEME_STORAGE_KEY` only, in `ambient.ts`) and `three` (the two backgrounds). Consumed by all three route pages; `dev-console.ts` is consumed by `lib/engine/sandbox-host.ts`, `lib/engine/sandbox-worker.ts` and `components/generate-dialog.svelte`. `components/panel-branch.ts` and `styles/` live here but belong to the components lane.
+Depends on `@edu3d/contracts` (`THEME_STORAGE_KEY` only, in `ambient.ts`) and `three` (the two backgrounds). Consumed by all three route pages; `dev-console.ts` is consumed by `lib/engine/sandbox-host.ts`, `lib/engine/sandbox-worker.ts` and `components/generate-dialog.svelte`. `annotations/` (per-model pinned notes) and `components/` (the viewer's leaf UI) are separate lanes documented by their own maps; `components/panel-branch.ts` and `styles/` live here but belong to the components lane.

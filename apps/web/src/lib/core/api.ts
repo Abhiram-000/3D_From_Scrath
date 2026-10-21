@@ -11,6 +11,7 @@ import {
   COMPLEXITY_IDS,
   STALL_HEARTBEATS,
   HEARTBEAT_INTERVAL_MS,
+  CLIENT_TOTAL_BACKSTOP_MS,
   type ComplexityPreference,
   type GenerationEvent,
   type HealthResponse,
@@ -41,8 +42,17 @@ export const API_BASE =
 
 /** The server sends a heartbeat every ~10s; 4 missed beats is a stall, not a slow provider (`04`). */
 export const STALL_TIMEOUT_MS = STALL_HEARTBEATS * HEARTBEAT_INTERVAL_MS;
-/** An absolute ceiling: progress or not, no run outlives this (`04` idle watchdog complement). */
-export const TOTAL_TIMEOUT_MS = 6 * 60_000;
+
+/**
+ * The backstop, not the limiter: the plain 6-minute ceiling this once was fired long before the
+ * server's own (previously nonexistent) overall bound could speak, so every long-but-alive
+ * generation died as "the model stopped responding" — a lie about a slow run. It is now DERIVED
+ * from the shared contract (`CLIENT_TOTAL_BACKSTOP_MS`): the server's bounded queue wait + the
+ * server's overall pipeline deadline + a teardown margin, so the server ALWAYS sends a terminal
+ * event before this fires. The stall detector above — refresh by every event, heartbeats
+ * included — stays exactly as it is: that one is the hang detector, and it works.
+ */
+export const TOTAL_TIMEOUT_MS = CLIENT_TOTAL_BACKSTOP_MS;
 
 export interface GenerateOptions {
   topic: string;
@@ -81,7 +91,14 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
   const stallTimer = setInterval(() => {
     if (Date.now() - lastEventAt > STALL_TIMEOUT_MS) controller.abort();
   }, HEARTBEAT_INTERVAL_MS);
-  const totalTimer = setTimeout(() => controller.abort(), TOTAL_TIMEOUT_MS);
+  // Which timer fired must remain knowable at the catch below — a self-abort for silence and a
+  // self-abort for sheer length are different truths with different words, and an unattributed
+  // AbortError folds them into one (the bug that made every long generation "a stall").
+  let totalFired = false;
+  const totalTimer = setTimeout(() => {
+    totalFired = true;
+    controller.abort();
+  }, TOTAL_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${API_BASE}/generate`, {
@@ -171,13 +188,26 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
     );
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
-      return options.signal?.aborted
-        ? { ok: false, code: 'aborted', message: 'Generation was cancelled.' }
-        : {
-            ok: false,
-            code: 'stalled',
-            message: 'The model stopped responding. Try again in a moment.',
-          };
+      // Three distinct realities, in attribution order: the caller's own cancel, the backstop
+      // (the server missed its deadline — a server fault, never a silent model), and genuine
+      // silence. One shared 'stalled' sentence used to cover the last two.
+      if (options.signal?.aborted) {
+        return { ok: false, code: 'aborted', message: 'Generation was cancelled.' };
+      }
+      if (totalFired) {
+        return {
+          ok: false,
+          code: 'run_overrun',
+          message:
+            'This generation ran far longer than the server allows without reporting. ' +
+            'Try again in a moment.',
+        };
+      }
+      return {
+        ok: false,
+        code: 'stalled',
+        message: 'The model stopped responding. Try again in a moment.',
+      };
     }
     return {
       ok: false,

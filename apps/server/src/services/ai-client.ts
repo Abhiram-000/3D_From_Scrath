@@ -16,6 +16,7 @@
  * its own `draining` failure — never as a fake timeout, and never retried.
  */
 import type { ServerConfig } from '../config/config.ts';
+import { HEARTBEAT_INTERVAL_MS, PIPELINE_ATTEMPT_TIMEOUT_MS } from '@edu3d/contracts';
 import { lifecycle } from './lifecycle.ts';
 
 /** What the pipeline asks a model for. */
@@ -129,14 +130,14 @@ const MODEL_OUTPUT_CEILINGS: Readonly<Record<string, number>> = {
 };
 const BASE_BACKOFF_MS = 1_500;
 /**
- * Per-call timeout for generation-sized requests. 330 s, not "the client's 360 s +": the web
- * client gives up at 360 s total (`apps/web/src/lib/core/api.ts:25`), and honest runs have been
- * measured at 182 s and 449 s — a server-side bound of 330 s guarantees the server can still
- * report its diagnosis (upstream_failed / upstream_truncated) before the web client's own timer
- * blanks it into a generic network error, with a 30 s margin for teardown. The 449 s run dies
- * under EITHER bound today; per-model timeouts big enough to cover it are the long-term follow-up.
+ * Per-call timeout for generation-sized requests, DEFINED from the shared contract's per-attempt
+ * bound (330 s) rather than restated — `@edu3d/contracts` carries the full deadline invariant:
+ * the server's overall deadline (`PIPELINE_DEADLINE_MS`) is sized from these per-attempt ceilings,
+ * and the server ALWAYS sends a terminal event before any client timer fires. A per-model timeout
+ * big enough to cover the measured 449 s run remains a long-term follow-up; the overall deadline
+ * is what bounds the multiplicative worst case (cascade × retries × continuations) meanwhile.
  */
-const REQUEST_TIMEOUT_MS = 330_000;
+const REQUEST_TIMEOUT_MS = PIPELINE_ATTEMPT_TIMEOUT_MS;
 
 /** A rough status → failure mapping. Everything unrecognised is `status` and retryable at this layer. */
 function classifyStatus(status: number): AiFailure {
@@ -209,13 +210,20 @@ const failure = (
  * Sleep with a dangling-timer escape: a learner abort or a drain abort resolves the wait early,
  * and the next loop iteration's pre-attempt checks refuse the spend. Without this a cancelled
  * request held its slot for the full provider-dictated (or exponential) backoff.
+ *
+ * `tick` makes a long wait prove life: called immediately and then every `HEARTBEAT_INTERVAL_MS`
+ * until the wait ends. The pipeline's own heartbeat timer happened to cover these waits — that
+ * coupling was accidental; now the wait itself proves the server is alive to the learner when a
+ * provider's retry-after (60 s of the quota kind) would otherwise read as silence.
  */
-const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+const sleep = (ms: number, signal?: AbortSignal, tick?: () => void): Promise<void> =>
   new Promise((resolve) => {
     if (signal?.aborted) {
       resolve();
       return;
     }
+    tick?.();
+    const ticker = tick ? setInterval(tick, HEARTBEAT_INTERVAL_MS) : undefined;
     const timer = setTimeout(() => {
       cleanup();
       resolve();
@@ -226,6 +234,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     };
     const cleanup = () => {
       clearTimeout(timer);
+      if (ticker) clearInterval(ticker);
       signal?.removeEventListener('abort', onAbort);
     };
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -372,11 +381,22 @@ export class AiClient {
     request: CompletionRequest,
   ): Promise<CompletionResult> {
     const stopWait = this.stopWaitSignal(request);
+    // The running char count, so a wait that overlaps streamed work can report "still at N chars"
+    // instead of resetting the learner's counter to zero.
+    let lastChars = 0;
+    const tracked: CompletionRequest = {
+      ...request,
+      onProgress: (chars: number) => {
+        lastChars = chars;
+        request.onProgress?.(chars);
+      },
+    };
+    const proveAlive = request.onProgress ? () => request.onProgress?.(lastChars) : undefined;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      const result = await this.attempt(model, request, attempt === MAX_ATTEMPTS, baseUrl, apiKey);
+      const result = await this.attempt(model, tracked, attempt === MAX_ATTEMPTS, baseUrl, apiKey);
       if (result.ok) return result;
       if (!result.retryable || attempt === MAX_ATTEMPTS) return result;
-      await sleep(BASE_BACKOFF_MS * 2 ** (attempt - 1), stopWait);
+      await sleep(BASE_BACKOFF_MS * 2 ** (attempt - 1), stopWait, proveAlive);
     }
     throw new Error('unreachable');
   }
@@ -386,19 +406,31 @@ export class AiClient {
     request: CompletionRequest,
   ): Promise<CompletionResult> {
     const stopWait = this.stopWaitSignal(request);
+    // Same streamed-char memory as `completeWithProvider`: the backoff tick reports the last
+    // known count, never a silent minute and never a fake reset to zero.
+    let lastChars = 0;
+    const tracked: CompletionRequest = {
+      ...request,
+      onProgress: (chars: number) => {
+        lastChars = chars;
+        request.onProgress?.(chars);
+      },
+    };
+    const proveAlive = request.onProgress ? () => request.onProgress?.(lastChars) : undefined;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      const result = await this.attempt(model, request, attempt === MAX_ATTEMPTS);
+      const result = await this.attempt(model, tracked, attempt === MAX_ATTEMPTS);
       if (result.ok) return result;
 
       // Non-retryable, or the final attempt: the failure stands for this model.
       if (!result.retryable || attempt === MAX_ATTEMPTS) return result;
 
       // A quota backoff is dictated by the provider; anything else is exponential. Both are
-      // abortable: a cancelled run or a drain must not hold its slot through the wait.
+      // abortable: a cancelled run or a drain must not hold its slot through the wait — and both
+      // are ALIVE: `proveAlive` ticks the caller's progress through the wait itself.
       const backoff = result.retryAfterSeconds
         ? result.retryAfterSeconds * 1000
         : BASE_BACKOFF_MS * 2 ** (attempt - 1);
-      await sleep(backoff, stopWait);
+      await sleep(backoff, stopWait, proveAlive);
     }
     // Unreachable: the loop returns on its last iteration.
     throw new Error('unreachable');

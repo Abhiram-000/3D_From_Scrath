@@ -153,3 +153,74 @@ export const HEARTBEAT_INTERVAL_MS = 10_000;
 
 /** Heartbeats missed before the client declares a stall and offers a retry (`07`, stall vs failure). */
 export const STALL_HEARTBEATS = 4;
+
+// ── The deadline invariant ─────────────────────────────────────────────────────────────────────
+//
+// THE DEADLINE INVARIANT: the server ALWAYS sends a terminal event before any client timer fires.
+// Two client timers exist and must stay distinguishable (`STALL_HEARTBEATS × HEARTBEAT_INTERVAL_MS`
+// measures true silence; the client's TOTAL is only a backstop), so the server's numbers are sized
+// from the run's actual budgeted worst case — never inherited from a client constant:
+//
+//   client stall window .......... 40 s of true silence (liveness, heartbeats included)
+//   server overall deadline ...... GENERATION_QUEUE_MAX_WAIT_MS + PIPELINE_DEADLINE_MS + detection
+//   client backstop .............. CLIENT_TOTAL_BACKSTOP_MS  (strictly greater, see the arithmetic)
+//
+//   queue wait (≤ 900 s, AI_QUEUE_MAX_WAIT_MS default)
+// + pipeline deadline (max 7 paid calls × 330 s per call + 60 s grace) = 2_370 s
+// + deadline detection (≤ 1 s tick) + abort propagation + terminal write
+// < client backstop = 900 + 2_370 + 120 = 3_390 s
+//
+// — so even a run that consumes its entire budget with the queue fully waited is still TOLD by the
+// server before the client's backstop fires. The client's OWN aborts are then attributable: the
+// stall detector means the model stopped responding; the backstop means the server broke THIS
+// invariant, not that the feed went silent.
+
+/**
+ * Per-attempt provider timeout. The server's ai-client imports THIS constant (`REQUEST_TIMEOUT_MS`
+ * is defined from it) so the per-attempt bound cannot drift from the deadline arithmetic above.
+ */
+export const PIPELINE_ATTEMPT_TIMEOUT_MS = 330_000;
+
+/**
+ * The most paid provider calls ONE pipeline run may budget, by design:
+ * 1 generation + 3 continuation passes + 2 repair passes + 1 refinement pass = 7.
+ * (The ai-client's model-cascade retries can multiply any ONE of these; the overall deadline is
+ * what bounds that product — see the invariant above.)
+ */
+export const PIPELINE_MAX_PAID_CALLS = 7;
+
+/**
+ * Slack past the last paid call budget for extraction, gating, the audit's headless build and the
+ * terminal write — stages that are bounded but not per-call.
+ */
+export const PIPELINE_DEADLINE_GRACE_MS = 60_000;
+
+/**
+ * The server's single OVERALL pipeline deadline: `PIPELINE_MAX_PAID_CALLS` budgets taken at their
+ * per-attempt ceiling plus the bounded non-provider stages. 7 × 330 s + 60 s = 2_370 s (39.5 min).
+ * `runPipeline` enforces this on its own wall clock and terminates the run — including aborting an
+ * in-flight provider call — with a terminal error that names the deadline.
+ */
+export const PIPELINE_DEADLINE_MS =
+  PIPELINE_MAX_PAID_CALLS * PIPELINE_ATTEMPT_TIMEOUT_MS + PIPELINE_DEADLINE_GRACE_MS;
+
+/**
+ * The bounded generation-queue wait the server also enforces before the pipeline starts
+ * (mirrors the `AI_QUEUE_MAX_WAIT_MS` default in `apps/server/src/config/config.ts`; an env
+ * override shifts it server-side only — the client backstop must stay above it under defaults).
+ */
+export const GENERATION_QUEUE_MAX_WAIT_MS = 900_000;
+
+/**
+ * Margin between the server's last possible terminal moment and the client's backstop: deadline
+ * detection (1 s tick), abort propagation through the provider fetch, and the final socket write.
+ */
+export const CLIENT_BACKSTOP_MARGIN_MS = 120_000;
+
+/**
+ * The client's TOTAL backstop: queue wait + the server's overall deadline + margin. Strictly above
+ * every server-side bound under default configuration — which is what makes the deadline invariant
+ * above checkable: if this ever fires, the server, not the model, failed to report.
+ */
+export const CLIENT_TOTAL_BACKSTOP_MS =
+  GENERATION_QUEUE_MAX_WAIT_MS + PIPELINE_DEADLINE_MS + CLIENT_BACKSTOP_MARGIN_MS;

@@ -477,3 +477,49 @@ describe('the cascade never advances a generation onto a model that cannot hold 
     },
   );
 });
+
+/**
+ * A provider-dictated wait must prove liveness while it runs. The 429 retry-after carries the
+ * provider's number (60s) — until the wait itself emitted, that whole minute was silence for the
+ * learner, kept alive only by the pipeline's heartbeat timer coupling, which was accidental.
+ */
+describe('a provider-dictated backoff', () => {
+  it(
+    'announces itself as progress — a long wait is liveness, not silence',
+    { timeout: 20_000 },
+    async () => {
+      vi.useFakeTimers();
+      // Every attempt answers immediately with the 429; the only time that passes is the
+      // backoff the provider dictated (60s, three attempts → two waits).
+      let attempts = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          attempts += 1;
+          return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+            status: 429,
+            headers: { 'content-type': 'application/json' },
+          });
+        }),
+      );
+      const progress = vi.fn();
+      const pending = new AiClient(config).complete({
+        maxOutputTokens: 4096,
+        messages: [{ role: 'user', content: 'x' }],
+        onProgress: progress,
+      });
+
+      // 200 fake seconds: attempt(0s) → wait(60s) → attempt(60s) → wait(120s) → attempt(120s).
+      await vi.advanceTimersByTimeAsync(200_000);
+      const result = await pending;
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.code).toBe('quota');
+      expect(attempts).toBe(3);
+      // The two 60-second waits emitted their own proof of life — more progress calls than
+      // attempts, which is only possible if the waits themselves ticked.
+      expect(progress).toHaveBeenCalled();
+      expect(progress.mock.calls.length).toBeGreaterThan(attempts);
+    },
+  );
+});

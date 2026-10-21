@@ -13,6 +13,7 @@
  */
 import {
   HEARTBEAT_INTERVAL_MS,
+  PIPELINE_DEADLINE_MS,
   REFINEMENT_THRESHOLD,
   ModelManifest,
   type AuditReport,
@@ -92,6 +93,9 @@ export interface PipelineDeps {
   /**
    * The learner's connection. Checked before every AI call and forwarded to the provider fetch, so a
    * closed tab stops the run rather than letting it burn three more calls for nobody.
+   *
+   * The run's provider calls are signalled with `AbortSignal.any([deps.signal, deadline])`, so the
+   * overall deadline (`PIPELINE_DEADLINE_MS`) aborts in-flight provider work too.
    */
   signal?: AbortSignal;
   /**
@@ -131,6 +135,36 @@ export interface PipelineFailure {
 export interface ProviderUsage {
   promptTokens: number;
   completionTokens: number;
+}
+
+/**
+ * The terminal failure for a run that outlived the server's OVERALL deadline
+ * (`PIPELINE_DEADLINE_MS` in `@edu3d/contracts`, with the invariant written next to the numbers).
+ *
+ * The code is the taxonomy's `upstream_failed` — a run that dies to stacked provider latency and
+ * retries IS an upstream death — but the MESSAGE must name itself: "the model stopped responding"
+ * is false here, and so is a bare internal fault. The learner gets the deadline and the remedy.
+ */
+export function deadlineFailure(): PipelineFailure {
+  return {
+    code: 'upstream_failed',
+    message:
+      `This generation ran past the server's overall time limit (${PIPELINE_DEADLINE_MS / 60_000} ` +
+      'minutes) and was stopped. Try again — a shorter or simpler topic usually finishes sooner.',
+  };
+}
+
+/**
+ * The marker the deadline machinery throws once the wall is exceeded. `runPipeline` never lets it
+ * escape — its catch converts it to `deadlineFailure()` — but throwing is what lets the deadline
+ * cut through every stage (paid calls, their backoffs, phase boundaries) without each one having
+ * to know the shape of the terminal failure.
+ */
+class PipelineDeadlineElapsedError extends Error {
+  constructor() {
+    super('the overall pipeline deadline elapsed');
+    this.name = 'PipelineDeadlineElapsedError';
+  }
 }
 
 const nowSec = () => Date.now();
@@ -387,6 +421,22 @@ export async function runPipeline(
   const lifecycle = deps.lifecycle ?? defaultLifecycle;
   lifecycle.beginGeneration();
 
+  // ── The overall deadline: the server ALWAYS terminates before any client timer fires ────────
+  // The invariant and its arithmetic live with the numbers (`PIPELINE_DEADLINE_MS` in
+  // `@edu3d/contracts`). The old shape had no overall wall at all — only per-attempt bounds — so a
+  // run's multiplicative worst case (cascades × retries × continuations × repairs) was many times
+  // the client's timer, and the client always gave up first, blanking the server's diagnosis. The
+  // deadline is enforced on this run's own wall clock; hitting it aborts the in-flight provider
+  // work through `runSignal` and the error is converted to `deadlineFailure()` in the catch below.
+  const deadlineAt = started + PIPELINE_DEADLINE_MS;
+  const deadlineController = new AbortController();
+  const runSignal = deps.signal
+    ? AbortSignal.any([deps.signal, deadlineController.signal])
+    : deadlineController.signal;
+  const deadlineTimer = setInterval(() => {
+    if (Date.now() >= deadlineAt) deadlineController.abort();
+  }, 1_000);
+
   // ── Heartbeat loop: the thing that makes silence diagnostic (`04` stage 5) ──────────────
   let heartbeatsStopped = false;
   const phaseStart = { phase: 'queued' as GenerationPhase, at: Date.now() };
@@ -410,6 +460,7 @@ export async function runPipeline(
   const stopHeartbeats = () => {
     heartbeatsStopped = true;
     clearInterval(heartbeatTimer);
+    clearInterval(deadlineTimer);
     lifecycle.endGeneration(); // mirrored to finish(): no double release
   };
 
@@ -424,7 +475,6 @@ export async function runPipeline(
   const spend = async (request: {
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
     temperature: number;
-    signal?: AbortSignal;
     onProgress?: (chars: number) => void;
   }): Promise<CompletionResult> => {
     providerCalls += 1;
@@ -432,18 +482,35 @@ export async function runPipeline(
       messages: request.messages,
       maxOutputTokens: deps.maxOutputTokens,
       temperature: request.temperature,
-      signal: request.signal,
+      // `runSignal`, not the learner's bare signal: the deadline must reach the provider fetch and
+      // its backoff sleeps too, or an in-flight call would pin the stream past the client timers.
+      signal: runSignal,
       onProgress: request.onProgress,
     });
     if (result.ok) {
       providerUsage.promptTokens += result.usage.promptTokens;
       providerUsage.completionTokens += result.usage.completionTokens;
     }
+    // Post-call deadline gate. The deadline abort surfaces from the client as its own non-retryable
+    // 'cancelled' classification; the deadline outranks that translation — the honest terminal
+    // failure is the one that names the wall. (The learner's own abort still maps to 'cancelled'.)
+    if (deps.signal?.aborted) return result;
+    if (Date.now() >= deadlineAt) {
+      deadlineController.abort();
+      throw new PipelineDeadlineElapsedError();
+    }
     return result;
   };
 
   /** The drain checks the shutdown contract promised (`06`): before each paid call and phase. */
   const drainCheck = (): PipelineFailure | null => {
+    // Phase boundaries are the deadline's second checkpoint: between two paid calls, where the
+    // post-call gate in `spend` does not apply. Throwing is safe here — every call site sits
+    // inside runPipeline's try, and the catch reads the deadline failure, never this throw.
+    if (Date.now() >= deadlineAt) {
+      deadlineController.abort();
+      throw new PipelineDeadlineElapsedError();
+    }
     if (!lifecycle.draining) return null;
     return { code: 'draining', message: 'The server is restarting — the run stopped mid-stream.' };
   };
@@ -474,7 +541,6 @@ export async function runPipeline(
         { role: 'user', content: wrapTopic(topic) },
       ],
       temperature: 0.4,
-      signal: deps.signal,
       onProgress: (chars) => {
         charsWritten = chars;
         // Immediate sink on progress: the heartbeat interval is 10s, but a learner staring at a
@@ -612,7 +678,6 @@ export async function runPipeline(
           { role: 'user', content: buildContinuationPrompt(prepared.code) },
         ],
         temperature: 0.2,
-        signal: deps.signal,
         onProgress: (chars) => {
           charsWritten = chars;
           // Same proof-of-life as the model phase, reported against the extract phase the run is
@@ -693,7 +758,6 @@ export async function runPipeline(
           { role: 'user', content: buildRepairPrompt(prepared.code, errors) },
         ],
         temperature: 0.2,
-        signal: deps.signal,
       });
       if (!repaired.ok) {
         return {
@@ -756,7 +820,6 @@ export async function runPipeline(
           { role: 'user', content: buildRepairPrompt(prepared.code, [reason.message]) },
         ],
         temperature: 0.2,
-        signal: deps.signal,
       });
       if (!fixed.ok) {
         return {
@@ -879,7 +942,6 @@ export async function runPipeline(
           },
         ],
         temperature: 0.3,
-        signal: deps.signal,
       });
       if (refined.ok) {
         const reprepared = prepareProgram(refined.text, {
@@ -956,6 +1018,8 @@ export async function runPipeline(
   } catch (error) {
     // Every exception becomes an audit outcome the route can send as a terminal event — a guest
     // loop-budget overrun or an unexpected fault never escapes the pipeline again.
+    if (error instanceof PipelineDeadlineElapsedError)
+      return { ok: false, failure: deadlineFailure() };
     return { ok: false, failure: classifyEscape(error) };
   } finally {
     stopHeartbeats();

@@ -1,7 +1,10 @@
 # EDU-3D — the easy deploy.
 #
-#   docker compose up          → http://localhost:8787, everything works, no login, no setup.
-#   AI keys in .env            → generation works too.
+#   Fill EDU3D_WRITE_TOKEN in deploy.env (required in production), then:
+#   docker compose up          → http://localhost:8787: browsing, viewing and generating work
+#                                with no other setup; publishing needs the token (the Share
+#                                modal prompts for it once).
+#   AI_API_KEY in .env         → generation works too.
 #   DATABASE_URL commented     → file store on a named volume (survives restarts and redeploys).
 #                                Uncomment the postgres block to go durable, zero other changes.
 #
@@ -17,7 +20,11 @@ services:
     ports:
       - '8787:8787'
     env_file:
-      # Create from deploy.env.example; only AI_API_KEY is ever required to unlock generation.
+      # Create from deploy.env.example. EDU3D_WRITE_TOKEN is required: in production the server
+      # refuses to start without it (or without EDU3D_ALLOW_OPEN_WRITES=true set here), and its
+      # write guard fails closed to 401s even if the boot refusal were bypassed — the deployment
+      # no longer defaults to open writes, after an anonymous caller could publish and delete by
+      # default.
       - path: ./deploy.env
         required: false
     environment:
@@ -28,12 +35,10 @@ services:
       # (config.ts would otherwise refuse in production). Swap in Postgres below to upgrade.
       EDU3D_ALLOW_EPHEMERAL_STORE: 'true'
       EDU3D_DATA_DIR: /data
-      # Publish/delete are open on this path, accepted explicitly for the same reason as the store
-      # above: this file is the "see it working in one command" deploy. Production mode refuses to
-      # start without a write token or this acknowledgement, and the compose set NODE_ENV=production
-      # without providing either — so `docker compose up` used to exit with a config error before
-      # serving anything. For a real deployment set EDU3D_WRITE_TOKEN in deploy.env and drop this.
-      EDU3D_ALLOW_OPEN_WRITES: 'true'
+      # Publish/delete protection comes from EDU3D_WRITE_TOKEN in deploy.env. It is deliberately
+      # NOT defaulted open here any more: an accepted-unauthenticated default let every visitor
+      # publish and delete. Set the token in deploy.env, or — for an actual sandbox where open
+      # writes are the point — add `EDU3D_ALLOW_OPEN_WRITES: 'true'` below and own the choice.
       # One proxy hop in front of most hosting platforms; keeps per-client rate limits honest.
       TRUST_PROXY: 1
     volumes:

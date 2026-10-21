@@ -1,9 +1,12 @@
-# EDU-3D production image — one container, one port, no required configuration.
+# EDU-3D production image — one container, one port.
 #
 # Stage 1 builds the static frontend; stage 2 builds/hosts the API server and serves the built
 # site from the same origin (apps/server/src/services/static-pages.ts). The result deploys with
-# `docker run -p 8787:8787 -e AI_API_KEY=… edu3d` and works: no CORS, no DATABASE_URL required
-# (the file store persists to a mounted volume), no login, no setup page.
+# `docker run -p 8787:8787 -e AI_API_KEY=… -e EDU3D_WRITE_TOKEN=… edu3d` and works: no CORS, no
+# DATABASE_URL required (the file store persists to a mounted volume). EDU3D_WRITE_TOKEN guards
+# publish/delete — required in production unless a deploy explicitly sets
+# EDU3D_ALLOW_OPEN_WRITES=true; without either the server refuses to start, and its request guard
+# fails closed to 401s even if some later configuration change slips past the boot check.
 #
 # Node slim (not alpine: native deps like pg's build path are happier on glibc) with corepack
 # providing the pinned pnpm.
@@ -57,13 +60,20 @@ VOLUME /data
 
 # Single-container defaults, overridable at `docker run` with -e. They encode the deliberate
 # deployment decisions for this shape: file-store persistence to /data (explicitly accepted —
-# the volume makes it durable across redeploys on the same host), open writes while the platform
-# is young (no login by design; set EDU3D_WRITE_TOKEN when it matters), and one proxy hop
-# (the norm on every hosting platform). With these, a bare `docker run -p 8787:8787 edu3d`
-# starts and works with zero configuration.
+# the volume makes it durable across redeploys on the same host) and one proxy hop (the norm on
+# every hosting platform).
+#
+# What is deliberately NOT defaulted: EDU3D_ALLOW_OPEN_WRITES is gone. Publishing and deleting are
+# capability-gated — in production the server refuses to boot without EDU3D_WRITE_TOKEN (set it at
+# `docker run -e EDU3D_WRITE_TOKEN=…`), and its write guard fails closed to 401s even when the
+# boot refusal is somehow bypassed. The previously baked-in open-writes default answered every
+# anonymous POST /api/gallery with a 201 and let the same anonymous caller delete the gallery.
+# Writing "open while the platform is young" as a default flag meant the operator never made that
+# choice; setting it explicitly is one line in this file when a sandbox deployment wants it.
+#
+# After these, a deploy with a key and a token starts and works with zero other configuration.
 ENV EDU3D_DATA_DIR=/data \
     EDU3D_ALLOW_EPHEMERAL_STORE=true \
-    EDU3D_ALLOW_OPEN_WRITES=true \
     TRUST_PROXY=1 \
     HOST=0.0.0.0
 

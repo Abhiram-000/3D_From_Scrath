@@ -8,6 +8,7 @@
  */
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { bodyLimit } from 'hono/body-limit';
 import {
   DEFAULT_ERROR_MESSAGE,
   ERROR_STATUS,
@@ -55,6 +56,58 @@ const newRequestId = (): string =>
   Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
 /**
+ * The request-body ceiling. 8 MiB dominates the largest legitimate request several times over —
+ * the biggest publish payload any client legitimately sends is a bundle plus a snapshot image
+ * capped at SNAPSHOT_MAX_BYTES (4 MiB, gallery-store.ts) — while bounding what one request can
+ * buffer. A constant, not an env var: no legitimate deployment wants an unbounded request body,
+ * and a ceiling every deployment can silently raise to `none` is not a ceiling.
+ */
+const BODY_LIMIT_BYTES = 8 * 1024 * 1024;
+
+/**
+ * The content-security policies, per response surface.
+ *
+ * EMPIRICAL grounding (Playwright/chromium, real HTTP, no CDP injection): under a single policy
+ * with `script-src 'self' 'unsafe-inline'`, `new Function` throws EvalError BOTH in an inline
+ * document script and inside the sandbox worker — because CSP is a per-response header, and the
+ * worker's response carried the document policy. The comment that used to live here claimed
+ * "Guests render in a worker, so the policy never constrains model code" — that was the false
+ * premise that shipped the production blocker: the policy constrained model code precisely.
+ *
+ * So there are two policies:
+ *
+ * - `DOCUMENT_POLICY` — unchanged from the shipped default, stays strict. No `'unsafe-eval'`:
+ *   the page chrome never compiles string JS. What it gives up in defense depth is nothing this
+ *   app needs; what it keeps is the blast-radius limit if some page-level script injection
+ *   happens. (Verified: the model build path never evaluates in the document; the viewer builds
+ *   through the worker.)
+ * - `WORKER_POLICY` — the document policy with ONE permissive addition: `'unsafe-eval'` added to
+ *   `script-src`, granted only to responses whose URL is a built worker chunk. Why it must exist:
+ *   `packages/sandbox/src/compile.ts` (the hosted `new Function` at the realm boundary) compiles
+ *   the guest model with `new Function(...)` inside the sandbox worker — string-to-function compilation is the
+ *   product. Without the allowance every enforced-CSP production deployment dies with
+ *   EvalError before a single triangle renders. What is given up: code inside that worker can
+ *   compile and run arbitrary string JS without browser-level gating — which is the platform's
+ *   own intent (the guest is supposed to run), so the actual safety gate remains the sandbox's
+ *   static source checker, not eval absence; the strictness of the document surface is preserved.
+ */
+const WORKER_CHUNK_PREFIX = '/_app/immutable/workers/';
+export const DOCUMENT_POLICY =
+  "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+  "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
+  "worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'";
+export const WORKER_POLICY = DOCUMENT_POLICY.replace(
+  "script-src 'self' 'unsafe-inline'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+);
+
+/** The policy for one response surface: built worker chunks get the compiler's allowance. */
+export function cspPolicy(pathname: string): string {
+  const isWorkerChunk = pathname.startsWith(WORKER_CHUNK_PREFIX) && pathname.endsWith('.js');
+  return isWorkerChunk ? WORKER_POLICY : DOCUMENT_POLICY;
+}
+
+/**
  * The one error shape every endpoint returns (`04`, `06`): a code the client branches on, a message
  * written for a learner, a request id — never a stack, never provider internals.
  */
@@ -74,14 +127,26 @@ export function apiError(
   };
 }
 
-/** Guard a write endpoint with the bearer token, compared in constant time (`06`). */
+/**
+ * Guard a write endpoint with the bearer token, compared in constant time (`06`).
+ *
+ * Fails closed. With NO token configured, writes are refused in production unless the operator
+ * explicitly accepted open writes (`EDU3D_ALLOW_OPEN_WRITES=true`). The old guard returned `true`
+ * whenever no token was set, so the boot-time refusal was the ONLY line of defense for anonymous
+ * publishes and deletes — any reload of the same posture (an entrypoint that resolves env late, a
+ * config edit mistimed mid-boot) served `POST /api/gallery` to the internet with a 201. The other
+ * half of the same defect: a token-CONFIGURED server refused the browser's anonymous publish with
+ * 401, and the share modal had no way to send one — the fix lives in share-modal.svelte, which
+ * prompts for the token once, stores it, and sends `Authorization: Bearer`.
+ */
 function requireWriteToken(state: AppState, authorization: string | undefined): boolean {
-  if (!state.config.security.writeToken) return true; // Opt-in by default for local use.
+  const { writeToken, allowOpenWrites } = state.config.security;
+  if (!writeToken) return allowOpenWrites || !state.config.isProduction;
   const provided = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (!provided) return false;
   // Hash both sides then timingSafeEqual: naive === leaks length and prefix (`06`).
   const a = createHash('sha256').update(provided).digest();
-  const b = createHash('sha256').update(state.config.security.writeToken).digest();
+  const b = createHash('sha256').update(writeToken).digest();
   return timingSafeEqual(a, b);
 }
 
@@ -119,19 +184,40 @@ export function buildApp(state: AppState): Hono<AppContext> {
     // CSP, resolved in config and — before this middleware existed — printed in the startup
     // banner and then dropped. `enforce` ships a locked-down default (the platform is fully
     // self-contained: no external scripts, frames or forms); `report-only` observes without
-    // breaking anything so deployments can test before they flip. Guests render in a worker, so
-    // the policy never constrains model code — only the page chrome around it.
+    // breaking anything so deployments can test before they flip. The policy is selected PER
+    // RESPONSE SURFACE (see `cspPolicy`): documents stay strict, built worker chunks carry the
+    // one allowance the sandbox compiler requires — the shipped single-policy version broke
+    // every model build in production with EvalError (verified in the browser; RED evidence in
+    // tests/app.test.ts).
     if (config.security.csp !== 'off') {
-      const policy =
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
-        "img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; " +
-        "worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'";
+      const policy = cspPolicy(new URL(context.req.url).pathname);
       // Violations surface in the browser console; no report sink means no report noise and no
       // endpoint for a misconfigured client to spray.
       context.header('content-security-policy-report-only', policy);
       if (config.security.csp === 'enforce') context.header('content-security-policy', policy);
     }
   });
+
+  // ── Request-body ceiling ─────────────────────────────────────────────────
+  // Registered after the request id exists and BEFORE CORS and any limiter: an oversized body is
+  // refused before it is parsed, before it spends a rate-limit bucket, and before anything reads
+  // it into memory. Without this middleware one request could buffer an arbitrary body — every
+  // byte of a publish request lands in RAM before validation has a say.
+  app.use(
+    '*',
+    bodyLimit({
+      maxSize: BODY_LIMIT_BYTES,
+      onError: (context) =>
+        context.json(
+          apiError(
+            'too_large',
+            DEFAULT_ERROR_MESSAGE.too_large,
+            context.get('requestId') ?? 'unknown',
+          ),
+          413,
+        ),
+    }),
+  );
 
   // ── CORS: allow-list, never * in production (`06`) ────────────────────────
   app.use(
@@ -142,9 +228,23 @@ export function buildApp(state: AppState): Hono<AppContext> {
       allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     }),
   );
+  // Note on CORS preflights and the limiter: hono's cors middleware answers an OPTIONS preflight
+  // itself and never calls `next`, so middleware registered after it — including the /api/*
+  // limiter below — never observes them, and they consume no budget. That is the desired shape:
+  // for a cross-origin deployment every learner fetch would otherwise pay double (preflight +
+  // request), and a browser refused on a preflight reports the failure as opaque network noise
+  // rather than a 429 it could message. Preflights are cheap, carry nothing to protect, and rate
+  // limiting them would only penalize real browsers.
 
-  // ── General API limiter on everything; health exempt by not going through it ──
+  // ── API limiter: everything under /api, with the health pair exempt ───────
   app.use('/api/*', async (context, next) => {
+    // Health and readiness are exempt explicitly. The old comment claimed they were exempt "by
+    // not going through it" — false: they are registered inside /api/* and paid for every
+    // monitoring poll out of the same bucket, so a kubectl-watching classroom locked the service
+    // out of its own budgets (`06`: monitoring must never do that). Exact matches, not prefixes,
+    // so a hostile `/api/healthX` path still pays.
+    if (context.req.path === '/api/health' || context.req.path === '/api/ready')
+      return await next();
     const guard = limitWith(state.limiters.api, config.trustProxy, state.remoteAddress);
     const result = await guard(context, next);
     if (result) return result;
@@ -548,12 +648,22 @@ export function buildApp(state: AppState): Hono<AppContext> {
     return context.json({ ok: true, requestId });
   });
 
-  // Snapshots: served with immutable caching from their own path, off the API budget (`06`, `04`).
+  // Snapshots: served with immutable caching from their own path (`06`, `04`). They are registered
+  // inside /api and DO pay the API limiter — the old comment here claimed they sat "off the API
+  // budget", which was never true; the immutable cache header keeps the cost bounded because a
+  // browser that has the image rarely asks again.
   app.get('/api/snapshots/:id', async (context) => {
     const id = context.req.param('id');
     // Allow the file extension the fallback store appends, but reject path traversal outright.
     const safe = id.replace(/[^a-zA-Z0-9.-]/g, '');
-    const snapshot = await state.store.getSnapshot(safe.split('.')[0] ?? safe);
+    // Per-backend id shapes: the file store wrote `${uuid}.${ext}` to disk and keys lookups by
+    // that whole name, so it gets the extension back; Postgres keys snapshot rows by the bare
+    // uuid it minted. Without this translation the file-backed deployment — the zero-config
+    // gallery — 404'd on every snapshot its own publish minted, because the route stripped the
+    // extension single-mindedly.
+    const snapshotId =
+      state.store.announcement.backend === 'postgres' ? (safe.split('.')[0] ?? safe) : safe;
+    const snapshot = await state.store.getSnapshot(snapshotId);
     if (!snapshot)
       return context.json(
         apiError('not_found', DEFAULT_ERROR_MESSAGE.not_found, context.get('requestId')),

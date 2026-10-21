@@ -4,7 +4,10 @@
  * `06` fixes the shape: "a general API limiter (generous — one model load makes several calls), a
  * tighter write limiter (writes are rarer and more consequential), and per-endpoint limiters for the
  * expensive AI paths... because a classroom behind one NAT address is one IP". Health checks are
- * exempt from every bucket — "monitoring must never lock the service out of its own buckets".
+ * exempt from the general bucket — "monitoring must never lock the service out of its own buckets" —
+ * and that exemption is now applied explicitly where the middleware is registered (app.ts, the
+ * /api/* limiter: an uploaded registration once ran these routes right past this module's own
+ * exemption promise).
  *
  * Fixed-window counters in memory. Precise-enough for the ceilings involved, allocation-free per
  * request (a Map entry per key), and — unlike a token bucket — trivially explainable in the 429 it
@@ -91,9 +94,14 @@ export function buildLimiters(config: ServerConfig): LimiterSet {
  * The distinction that makes the limiter safe: a *public* socket is the client itself, so any
  * forwarded header it sends is its own lie. A *private* socket means something inside the deployment
  * is in front of us and may have appended a genuine client address.
+ *
+ * The `::ffff:` arm is IPv4-mapped IPv6: on a dual-stack host a real proxied connection arrives
+ * spelled that way (`::ffff:10.0.0.5`). Missing it skipped the forwarded path entirely and collapsed
+ * every visitor of such a deployment onto the one socket bucket. A mapped public address
+ * (`::ffff:203.0.113.9`) stays public — the mapping must not open the forwarded path for it.
  */
 const PRIVATE_ADDRESS =
-  /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|::1$|f[cd])/i;
+  /^(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.|::1$|f[cd]|::ffff:(?:127\.|10\.|192\.168\.|169\.254\.|172\.(?:1[6-9]|2\d|3[01])\.))/i;
 
 export function isPrivateAddress(address: string): boolean {
   return PRIVATE_ADDRESS.test(address);
@@ -102,16 +110,21 @@ export function isPrivateAddress(address: string): boolean {
 /**
  * Derive the client identity for rate limiting.
  *
- * `X-Forwarded-For` is client-settable. A client that sends one has its value *appended to* by the
- * edge proxy, so the entry a naive "skip N hops from the right" walk lands on can be the client's own
- * forged line — which is a free bucket rotation, and a free way to spend the API key at any rate. The
- * previous implementation did exactly that.
+ * `X-Forwarded-For` is client-settable, and the append semantics are the whole game: each proxy
+ * pass-through APPENDS the address it received from to the right-hand end of the header. So with
+ * `TRUST_PROXY = n`, the last `n` entries are exactly the ones trusted proxies wrote, and the
+ * address of the client is the leftmost of those: `hops[hops.length - n]`. Every entry further
+ * left arrived from the client, pre-written, and rotating it must not rotate the bucket.
  *
- * The socket address is the one identity a client cannot forge, so it is the default and the fallback.
- * The forwarded header is consulted only when the socket is private — the signature of a reverse
- * proxy on the local network — and only when it carries at least one more entry than there are trusted
- * proxies, which is the condition under which the walked entry was written by a proxy rather than
- * supplied by the client.
+ * The previous implementation walked one entry further left (`hops[len - n - 1]`), which is the
+ * FIRST client-written line: a free bucket rotation, and on the generate limiter, free AI spend.
+ * Verified live: 40 forged-header rotations against a limit-5 server produced zero 429s.
+ *
+ * The socket address is the one identity a client cannot forge, so it is the default and the
+ * fallback: when the socket is public (no proxy is in front, the client is talking to us
+ * directly), when no header is present, or when the header carries FEWER entries than trusted
+ * proxies (`hops.length < n`, strict — some trusted hop never appended and the position
+ * arithmetic cannot be trusted for that header).
  *
  * `06` calls trust-proxy "the single most consequential deployed-server setting". That remains true:
  * a deployment that sets `TRUST_PROXY` too high trusts more hops than actually exist, and too low
@@ -130,15 +143,21 @@ export function clientKey(context: Context, trustProxy: number, remoteAddress: s
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
-  // Fewer entries than trusted proxies means the header cannot have passed through them all, so
-  // whatever is in it was written by the client. The socket is all that remains trustworthy.
-  if (hops.length <= trustProxy) return socket;
+  // Fewer entries than trusted proxies means some trusted hop never appended, so the position
+  // arithmetic cannot be trusted for this header: the socket is the identity that still stands.
+  if (hops.length < trustProxy) return socket;
 
-  return hops[hops.length - trustProxy - 1] ?? socket;
+  // The leftmost entry a trusted proxy actually wrote — an honest chain of n proxies produces
+  // exactly n entries and this reads the first one; a client-padded chain reads the same position
+  // but the padding sits further left than the trusted proxies' window.
+  return hops[hops.length - trustProxy] ?? socket;
 }
 
 /**
- * Guard an AI-expensive path with its dedicated limiter. Health is exempt by construction.
+ * Guard one route with its dedicated limiter. The health exemption is applied where the general
+ * /api/* limiter is registered (app.ts); the per-endpoint limiters here are attachable one route at
+ * a time, so nothing is "exempt by construction" — a registration passing through this helper is
+ * limited.
  */
 export function limitWith(
   limiter: RateLimiter,

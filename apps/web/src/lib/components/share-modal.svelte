@@ -2,12 +2,53 @@
   Share Blueprint modal — V1's exact markup: link row with copy button + feedback, QR canvas,
   social buttons. The URL points at this app's /viewer?model=<id> after publishing; publishing
   without a backend reports honestly rather than pretending to share (`03` R8).
+
+  Publish-token design (matches the server's fail-closed write guard): POST /api/gallery requires
+  `Authorization: Bearer EDU3D_WRITE_TOKEN`. When the server answers 401, this modal prompts the
+  author to paste the token once, keeps it in localStorage under `edu3d.publish.token`, and sends
+  it as that Bearer header on every attempt.
+
+  Say plainly what this is and is not: it is an ABUSE GATE, not authentication. There is no login
+  on this platform; the token is a plain string that gates who may write to the shared gallery.
+  Whatever is entered here is readable by anything running on this origin (localStorage), so it
+  must not be a credential that protects anything else, and it travels only to this same-origin
+  API — never logged, never in a URL. It is also not enforceable against a determined client that
+  hosts the page itself; the gate lives on the server, and this UI only ships the header it asks for.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import type { ModelManifest } from '@edu3d/contracts';
   import { apiFetch, peekBundleCode, peekBundleRuntime } from '$lib/core/api.ts';
+
+  const PUBLISH_TOKEN_KEY = 'edu3d.publish.token';
+
+  /** Storage is optional (private mode); a read failure behaves exactly like "no token yet". */
+  function storedPublishToken(): string {
+    try {
+      return localStorage.getItem(PUBLISH_TOKEN_KEY) ?? '';
+    } catch {
+      return '';
+    }
+  }
+
+  function savePublishToken(token: string): void {
+    try {
+      if (token.length === 0) localStorage.removeItem(PUBLISH_TOKEN_KEY);
+      else localStorage.setItem(PUBLISH_TOKEN_KEY, token);
+    } catch {
+      /* private mode: keep the token in memory below and let the retry carry it */
+      memoryToken = token;
+    }
+  }
+
+  /** Fallback for the rare browser where localStorage throws: lasts as long as the page does. */
+  let memoryToken = '';
+
+  /** The token that goes on the wire, joined whichever store above produced it. */
+  function currentToken(): string {
+    return storedPublishToken() || memoryToken;
+  }
 
   const { manifest, onclose }: { manifest: ModelManifest | null; onclose: () => void } = $props();
 
@@ -16,6 +57,9 @@
   let publishError = $state<string | null>(null);
   let copied = $state(false);
   let published = $state(false);
+  /** Set when the server answered 401: show the token prompt rather than only an error line. */
+  let needsToken = $state(false);
+  let publishToken = $state('');
 
   onMount(() => {
     // A local-only share still resolves: the model is in session storage, so the link opens this
@@ -37,10 +81,14 @@
     // its browser-side loop guard. The reference fallback ships clean source, as it always has.
     const runtime = peekBundleRuntime();
 
+    const token = currentToken();
     try {
       const response = await apiFetch<{ id: string; shareUrl: string }>('/gallery', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           bundle: { manifest: manifestToStore, code, ...(runtime ? { runtime } : {}) },
         }),
@@ -48,12 +96,26 @@
       if (response.ok) {
         shareUrl = `${window.location.origin}${response.data.shareUrl}`;
         published = true;
+        needsToken = false;
       } else {
         publishError = response.message;
+        // The fail-closed server's answer to a write without (or with a wrong) token: surface the
+        // one input that can fix it instead of a dead end (the old behaviour when a deployment
+        // had a token — the modal printed the error text and nothing else).
+        if (response.code === 'unauthorized') needsToken = true;
       }
     } finally {
       publishing = false;
     }
+  }
+
+  async function saveTokenAndRetry() {
+    const token = publishToken.trim();
+    if (token.length === 0) return;
+    savePublishToken(token);
+    publishToken = '';
+    publishError = null;
+    await publish();
   }
 
   async function copy() {
@@ -105,10 +167,42 @@
         <div class="share-copy-feedback visible-when-copied" class:visible={copied}>
           Copied to clipboard!
         </div>
-        {#if publishing}<p class="share-status">Publishing…</p>{/if}
+        {#if publishing && !needsToken}<p class="share-status">Publishing…</p>{/if}
         {#if published}<p class="share-status published">
             Published to the gallery — the link below opens this exact model anywhere.
           </p>{/if}
+        {#if !published && needsToken}
+          <!-- The recovery path for a token-protected server: one paste, one retry. -->
+          <div class="share-url-section" style="margin-top: 0.75rem;">
+            <label for="publishTokenInput">Publish token</label>
+            <p class="share-status" style="margin-bottom: 0.5rem;">
+              This server protects publishing with a write token. Paste the token the operator gave
+              you — it is kept in this browser only (localStorage) and sent as a Bearer header to
+              the same-origin API.
+            </p>
+            <div class="share-url-row">
+              <input
+                id="publishTokenInput"
+                class="share-url-input"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="paste the publish token"
+                bind:value={publishToken}
+                onkeydown={(event) => {
+                  if (event.key === 'Enter') void saveTokenAndRetry();
+                }}
+              />
+              <button
+                class="share-copy-btn"
+                disabled={publishing}
+                onclick={() => void saveTokenAndRetry()}
+              >
+                {publishing ? 'Publishing…' : 'Publish'}
+              </button>
+            </div>
+          </div>
+        {/if}
         {#if publishError}<p class="share-status error">{publishError}</p>{/if}
       </div>
 

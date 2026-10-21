@@ -126,6 +126,20 @@ describe('production refusals', () => {
     expect(config.problems.map((p) => p.variable)).toContain('EDU3D_WRITE_TOKEN');
   });
 
+  it('keeps open writes possible in production only through the explicit escape hatch', async () => {
+    // Guard, not regression: the boot refusal stays the loud half, and app.ts's requireWriteToken
+    // now fails closed at request time too (`allowOpenWrites || !isProduction` with no token) — so
+    // the two layers agree: an operator who wants open writes says so exactly once, and everyone
+    // else gets a 401 the share modal can prompt for. The authoring pass tests this route-level
+    // half (tests/app.test.ts, "the write posture"); this pins the resolver side.
+    const { EDU3D_WRITE_TOKEN: _omitted, ...env } = validProduction;
+    const config = resolveConfig({ ...env, EDU3D_ALLOW_OPEN_WRITES: 'true' });
+    expect(config.problems.map((p) => p.variable)).not.toContain('EDU3D_WRITE_TOKEN');
+    expect(shouldRefuseToStart(config)).toBe(false);
+    expect(config.security.allowOpenWrites).toBe(true);
+    expect(config.security.writeToken).toBeNull();
+  });
+
   it('refuses without proxy trust, the setting that silently breaks rate limiting', () => {
     const { TRUST_PROXY: _omitted, ...env } = validProduction;
     const config = resolveConfig(env);

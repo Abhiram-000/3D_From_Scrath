@@ -154,6 +154,24 @@ Panels reachable at 390×844 · story opens, advances to `2 / 5`, closes, consol
 status bar · Physics reports solver time for a declared world · no console errors anywhere (the only
 noise is zod's `Function('')` probe tripping report-only CSP).
 
+**Share, publish and gallery, end to end:** opening the share dialog published the model, produced
+`/viewer?model=b03e0c16-…`, rendered a **QR canvas 270×270 with a 37% dark-module ratio** (real barcode
+content, not a decorative pattern), and labelled the reference model honestly ("the link shares it
+as-is, not an AI-generated model"). The gallery holds one entry with a **snapshot thumbnail** that
+serves as a 178 KB PNG at the HD preset and loads in the gallery card, and the shared link opened cold
+in a new tab loads the same model — 35 parts, 3 parameters, no console errors.
+
+**Chat streaming, end to end (and one bug it exposed):** the tutor's answer streamed in progressively
+(749 characters rendered while the composer was still disabled, so text arrives _before_ the completion
+ends) — but the composer never re-enabled: at 30 s and 55 s the send button was still disabled, with no
+typing indicator and no error. Reading the code confirmed the cause: `consumeStream` tracks the
+provider's terminal event but only exits its read loop when the provider _closes the socket_, and this
+provider sends its terminal chunk then holds the connection open — so no terminal event was ever
+written, `chatStream` never settled, and the panel's `finally` never ran. A learner could ask exactly
+one question per page load. Fixed at the transport (exit on the provider's terminal event, release the
+reader), which is the same hang class the generation path could hit. Not re-verified live: the fix
+landed after this run's last browser session.
+
 ### Commits
 
 `7f772f4` verification artifacts out of the gates · `9947bf5` physics compiled before hardening ·

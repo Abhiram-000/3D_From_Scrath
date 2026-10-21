@@ -28,31 +28,25 @@ function statValue(page: Page, stat: string) {
 }
 
 /**
- * Skip a test that cannot be trusted when the renderer is a software rasterizer.
+ * Why the interaction assertions are written as polls rather than as fixed sleeps.
  *
  * CI runs headless Chromium with SwiftShader (`playwright.config.ts`), which renders the reference
- * model's 177,530 triangles at 1-3 fps on this machine. (It was described here as 334k, a figure
- * that came from a design note and never matched the model: building the reference through the real
- * pipeline measures 52 parts, 30 geometries and 177,530 realized triangles — the authored count
- * already multiplies the instances. The qualitative point stands; the number was wrong.)
- * Playwright's click actionability checks require
- * the element to be stable across consecutive animation frames, so at 1 fps a single click can spend
- * seconds proving the page is not moving — and the test then fails on its timeout, having asserted
- * nothing.
+ * model's 177,530 triangles at 1-3 fps on this machine — the model is 52 parts, 30 geometries and
+ * that many realized triangles, measured through the real pipeline. (The figure here used to be a
+ * design note's 334k, which never matched the model: the authored count already multiplies the
+ * instances.)
  *
- * The reported figure is the honest one. Before the frame-rate fix this read 143-186 for the very
- * same scene, because it was reporting how fast a frame could complete rather than how often one ran,
- * and the slowness was invisible.
+ * A test that samples a stat after `waitForTimeout(400)` therefore measures the renderer, not the
+ * platform, and a test that skips itself below 10 fps measures nothing at all. Seven of these did
+ * exactly that, and the coverage they gave up hid two real defects: story mode wedged the whole
+ * viewer with a Svelte update loop, and the information panel deleted the parts list on the first
+ * selection. So the assertions below poll with a timeout generous enough for a software rasterizer —
+ * the platform's promise is "this eventually changes", and that is what is asserted.
+ *
+ * Playwright's *click* actionability checks still require the element to be stable across
+ * consecutive animation frames, which is why the tests that drive the canvas use `page.mouse`
+ * directly: it performs no such check, so a drag works at any frame rate.
  */
-async function requireRealFrameRate(page: Page): Promise<void> {
-  const raw = await statValue(page, 'fps').textContent();
-  const fps = Number.parseFloat(raw ?? '0');
-  test.skip(
-    !Number.isFinite(fps) || fps < 10,
-    `Software rasterizer: the model renders at ${raw} fps, too slow for interaction assertions to be ` +
-      `meaningful. Run with a GPU, or raise this threshold once CI has one.`,
-  );
-}
 
 test.describe('the viewer', () => {
   test('renders the reference model on the user device', async ({ page }) => {
@@ -91,17 +85,14 @@ test.describe('the viewer', () => {
   test('draws frames rather than a single static image', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
-    // The time read-out is formatted MM:SS, and a software rasterizer can run this 177,530-triangle
-    // model at 1-3 fps — a 1.5s window then advances under one second of model time and the bucket
-    // may not move. Same doctrine as the suite's other interaction assertions: below a real 10 fps
-    // the assertion measures the renderer, not the platform, so it is skipped rather than flaky.
-    await requireRealFrameRate(page);
 
-    // `00`: "the default state of a model is motion"; a viewer that renders one frame and stops is a picture.
+    // `00`: "the default state of a model is motion"; a viewer that renders one frame and stops is a
+    // picture. The clock is formatted MM:SS, so the assertion polls rather than sampling a fixed
+    // window: at 1–3 fps under a software rasterizer, 1.5 s can fall inside a single frame, and the
+    // bucket then has not moved *yet*. Polling keeps the test measuring the platform instead of the
+    // renderer, which is what the frame-rate skip it replaces was really doing.
     const firstTime = await statValue(page, 'time').textContent();
-    await page.waitForTimeout(1500);
-    const laterTime = await statValue(page, 'time').textContent();
-    expect(laterTime).not.toBe(firstTime);
+    await expect(statValue(page, 'time')).not.toHaveText(firstTime ?? '', { timeout: 20_000 });
   });
 
   test('reports a sane device tier and adapts quality visibly when it does', async ({ page }) => {
@@ -111,13 +102,14 @@ test.describe('the viewer', () => {
     const tier = await statValue(page, 'tier').textContent();
     expect(['low', 'mid', 'high']).toContain((tier ?? '').trim());
 
-    // If the platform degraded anything, it says so, and says what it gave up. `08`: "silent
-    // degradation reads as breakage." The messages live on the stat item's title, not the value's.
+    // The status bar reports the preset the worker is *actually* running, and marks it adapted only
+    // when the ladder genuinely stepped down (`08`: the platform never lies about what it is doing).
+    // It used to print the word "Adapted" whenever the admission verdict carried any adjustment —
+    // a verdict computed once at load — while the live ladder could have moved several rungs since.
     const badge = page.locator('[data-stat="quality"]');
-    if (await badge.isVisible()) {
-      await expect(badge.locator('.stat-value')).toHaveText('Adapted');
-      await expect(badge).toHaveAttribute('title', /.{15,}/);
-    }
+    await expect(badge).toBeVisible();
+    await expect(badge.locator('.stat-value')).toHaveText(/^(low|medium|high)( \(adapted\))?$/);
+    await expect(badge).toHaveAttribute('title', /.{15,}/);
   });
 
   test('shows the model parameters and moves the model when one changes', async ({ page }) => {
@@ -153,8 +145,10 @@ test.describe('the viewer', () => {
   test('selects a part from the keyboard-reachable list and describes it', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
-    await requireRealFrameRate(page);
 
+    // No frame-rate skip: every assertion here is DOM. The click is on a panel button, and the part's
+    // description is text — neither needs a rendered frame, and pretending otherwise is how the
+    // parts-list bug (the list vanished after the first selection) stayed invisible.
     // `08` requires the keyboard path never to regress, and a canvas cannot be tabbed into — hence the part list.
     const bladeButton = page.getByRole('button', { name: 'Fan blades' });
     await bladeButton.click();
@@ -172,17 +166,18 @@ test.describe('the viewer', () => {
 
     await page.goto('/viewer');
     await waitForModel(page);
-    await requireRealFrameRate(page);
 
     // The three view modes are toggles, not a radio group: each returns to normal on a second
     // click. There is no `Solid` button — normal is the state you get by turning the others off.
     for (const mode of ['X-ray', 'Wireframe', 'Explode']) {
       for (const turn of ['on', 'off'] as const) {
         await page.getByRole('button', { name: mode, exact: true }).click();
-        await page.waitForTimeout(350);
         // Still rendering after the switch: a mode that kills the loop is the failure this catches.
-        const fps = await statValue(page, 'fps').textContent();
-        expect(Number.parseFloat(fps ?? '0'), `${mode} ${turn}`).toBeGreaterThan(0);
+        // Polled rather than sampled on a fixed sleep — under a software rasterizer a single read can
+        // land between frames and report 0 for a loop that is perfectly alive.
+        await expect(statValue(page, 'fps'), `${mode} ${turn}`).not.toHaveText('0', {
+          timeout: 20_000,
+        });
       }
     }
   });
@@ -190,16 +185,18 @@ test.describe('the viewer', () => {
   test('pauses and resumes the model clock', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
-    await requireRealFrameRate(page);
 
     await page.getByRole('button', { name: 'Pause' }).click();
     const paused = await statValue(page, 'time').textContent();
-    await page.waitForTimeout(900);
+    // Frozen means frozen: wait longer than the slowest frame interval this suite tolerates and still
+    // demand no change on the read-out.
+    await page.waitForTimeout(2_500);
     expect(await statValue(page, 'time').textContent()).toBe(paused);
 
     await page.getByRole('button', { name: 'Play' }).click();
-    await page.waitForTimeout(900);
-    expect(await statValue(page, 'time').textContent()).not.toBe(paused);
+    // Resumed means it moves — polled, because at 1 fps the first sample can land inside the frame
+    // that was already presented when Play was pressed.
+    await expect(statValue(page, 'time')).not.toHaveText(paused ?? '', { timeout: 20_000 });
   });
 
   test('a paused model still answers parameters (paused is not dead)', async ({ page }) => {
@@ -254,9 +251,9 @@ test.describe('the viewer', () => {
     // tracked its callback props, so a beat's parameter write re-rendered the page, the page handed
     // down fresh inline callbacks, and the effect re-ran — an unbounded Svelte update loop that
     // reported `effect_update_depth_exceeded` and left the viewer frozen (clicks ignored, the model
-    // clock stopped). The only story assertion in this file sat behind `requireRealFrameRate`, which
-    // is why it never ran here. This test deliberately does not skip: the failure has nothing to do
-    // with frame rate, and what it asserts is what a learner would notice.
+    // clock stopped). No test in this file opened story mode at all, and the interaction assertions
+    // that could have noticed were skipping themselves on frame rate. This test does not skip: the
+    // failure has nothing to do with frame rate, and what it asserts is what a learner would notice.
     const consoleErrors: string[] = [];
     page.on('console', (message) => {
       if (message.type() === 'error') consoleErrors.push(message.text());
@@ -294,8 +291,9 @@ test.describe('the viewer', () => {
   test('orbits the camera on drag without losing the model', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
-    await requireRealFrameRate(page);
 
+    // `page.mouse` needs no actionability check, so this works at any frame rate; only the assertion
+    // needs a rendered frame, and it polls for one.
     const holder = page.locator('.main-canvas-holder');
     const box = await holder.boundingBox();
     expect(box).not.toBeNull();
@@ -306,16 +304,14 @@ test.describe('the viewer', () => {
     await page.mouse.move(box.x + box.width / 2 + 160, box.y + box.height / 2 + 40, { steps: 12 });
     await page.mouse.up();
 
-    await page.waitForTimeout(400);
-    // Still drawing triangles: an orbit that pushes the camera inside the model or to NaN would cull everything.
-    const triangles = await statValue(page, 'triangles').textContent();
-    expect(Number.parseInt(triangles ?? '0', 10)).toBeGreaterThan(0);
+    // Still drawing triangles: an orbit that pushes the camera inside the model or to NaN would cull
+    // everything. Polled — under a software rasterizer the next presented frame is not 400 ms away.
+    await expect(statValue(page, 'triangles')).not.toHaveText('0k', { timeout: 20_000 });
   });
 
   test('shows what the model actually produced rather than an estimate', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);
-    await requireRealFrameRate(page);
 
     // There is no diagnostics panel in the viewer. `03` R8 asks for the real cost next to the
     // model's own output, and the AI Output modal is what ships: measured cost chips, the raw text

@@ -3,18 +3,27 @@
  *
  * The startup contract (`06`, `08`): resolve everything once, list every problem, refuse to start when
  * production is unsafe. The shutdown sequence, in order and each step for a reason (`06`):
- *   1. flip the drain flag — readiness fails 503 so the load balancer stops routing;
- *   2. stop accepting connections — in-flight requests run to completion;
- *   3. notify every open generation stream — a learner one to three minutes in gets a terminal
- *      "server is restarting" event instead of a severed socket;
- *   4. flush and close — debounced local writes flushed, store closed;
- *   5. exit, guaranteed by a hard timer — a process that refuses to die loses everything step 4 was for.
+ *   1. arm the hard-exit timer FIRST — every later step is bounded, and a process that refuses to
+ *      die loses everything the drain was for (arming it first is what keeps that guarantee honest);
+ *   2. drain — the lifecycle flag aborts in-flight provider calls and makes the pipeline's phase
+ *      checks convert every open generation stream into the terminal `draining` error event; the
+ *      readiness flag fails 503 so the load balancer stops routing;
+ *   3. stop accepting connections — idle sockets closed, in-flight requests run to completion;
+ *   4. wait for the streams to be TOLD — `waitUntilQuiet` bounds this wait, and only then do the
+ *      debounced local writes flush and the store close (persistence must not race a stream whose
+ *      final event has not been delivered yet);
+ *   5. exit 0.
+ *
+ * An `uncaughtException` is NOT this sequence: process state is unknown, so it fails loudly (
+ * exit 1) instead of pretending a graceful finish happened.
  */
 import { serve } from '@hono/node-server';
 import pino from 'pino';
+import type { Server as HttpServer } from 'node:http';
 import { resolveConfig, formatStartupReport, shouldRefuseToStart } from './config/config.ts';
 import { buildApp, type AppState } from './app.ts';
 import { AiClient } from './services/ai-client.ts';
+import { lifecycle } from './services/lifecycle.ts';
 import { buildLimiters } from './services/rate-limits.ts';
 import { openGalleryStore } from './services/gallery-store.ts';
 import { STATIC_SITE_PRESENT } from './services/static-pages.ts';
@@ -95,32 +104,70 @@ async function main(): Promise<void> {
   process.on('uncaughtException', (error) => {
     logger.error(
       { error: error.message, stack: error.stack?.split('\n').slice(0, 4).join(' ') },
-      'uncaught exception — draining',
+      'uncaught exception',
     );
-    void shutdown('uncaught exception');
+    // Unknown process state is not a graceful drain: fail loudly (`06` separates shutdown modes).
+    process.exit(1);
   });
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+
+    // 1. Arm the hard timer FIRST. The old sequence armed it last and scheduled a 500 ms exit,
+    //    which cut streams mid-flight and, worse, made every bounded step's bound ornamental.
+    const hardExit = setTimeout(() => {
+      console.error('shutdown exceeded the hard-exit timer; forcing exit');
+      process.exit(1);
+    }, SHUTDOWN_HARD_EXIT_MS);
+
     console.log(
       `\n${signal} received — draining (in-flight requests finish, streams are told, hard exit in ${SHUTDOWN_HARD_EXIT_MS / 1000}s)`,
     );
 
-    // 1. Drain flag: readiness fails, new expensive requests are refused with an explanation.
+    // 2. Drain: the lifecycle aborts in-flight provider calls, the pipeline converts open
+    //    generation streams into their terminal `draining` event, and readiness fails 503.
+    //    (state.draining stays for the routes that read it directly.)
     state.draining = true;
-
-    // 2. Stop accepting new connections; let in-flight requests complete.
-    server.close();
+    lifecycle.beginDrain();
     clearInterval(limiterSweep);
 
-    // 3. Notify open streams. The generation streams are inside ReadableStream bodies; the drain flag
-    //    makes the next pipeline phase check fail into a terminal error event, and the hard exit below
-    //    bounds how long a wedged stream can hold the process.
-    // 4. Flush the store's pending write-through, then release its resources — the Postgres pool
-    // ends (open clients would hold the process open past the hard-exit timer) and the file
-    // store's last debounced write hits disk.
+    // 3. Stop accepting new connections and drop the idle keep-alive ones; in-flight requests
+    //    are told, not severed.
+    //
+    //    The close PROMISE is deliberately NOT awaited: it resolves only when the last
+    //    keep-alive socket closes, and a streaming client's socket goes idle the moment its
+    //    terminal event is delivered but then just sits there. Awaiting it here deadlocks the
+    //    drain — the hard timer fires at 15 s and the process exits 1 WITH NOTHING FLUSHED,
+    //    which is exactly the failure the bounded sequence exists to prevent. Accept-stop is
+    //    synchronous; the two bounded steps below own the sequencing.
+    //    (`closeIdleConnections` is http-server-only; hono's `ServerType` unions in http2, so
+    //    reach it through the node http surface the listener actually is.)
+    const nodeServer = server as unknown as HttpServer;
+    nodeServer.closeIdleConnections();
+    nodeServer.close((error) => {
+      if (error) logger.warn({ error: String(error) }, 'server close error');
+    });
+
+    // 4. Wait for the streams to be told (bounded): the pipeline's phase checks and its
+    //    provider-signal aborts end each generation with its terminal event, and this resolves
+    //    as the count falls to zero. Persistence happens AFTER, so "streams are told" is a
+    //    promise the server actually keeps.
+    await lifecycle.waitUntilQuiet(SHUTDOWN_HARD_EXIT_MS);
+
+    // 4b. One bounded grace turn: "quiet" means every generation RETURNED and its terminal
+    //     event was ENQUEUED — but enqueued is not transmitted. Without this, process.exit
+    //     can drop the still-buffered socket write and the learner sees a severed socket
+    //     instead of the terminal `draining` event: the original 500 ms exit-kill bug back
+    //     again, wearing a different hat. Half a second is far under the hard cap and more
+    //     than enough turns for a local write to reach the wire.
+    const FLUSH_GRACE_MS = 500;
+    await new Promise<void>((resolve) => setTimeout(resolve, FLUSH_GRACE_MS));
+
+    // 5. Flush the store's pending write-through, then release its resources — the Postgres pool
+    //    ends (open clients would hold the process open past the hard-exit timer) and the file
+    //    store's last debounced write hits disk.
     try {
       await store.flush();
       await store.close();
@@ -128,12 +175,9 @@ async function main(): Promise<void> {
       logger.warn({ error: (error as Error).message }, 'store flush during shutdown');
     }
 
-    // 5. Exit, guaranteed.
-    setTimeout(() => process.exit(0), 500).unref();
-    setTimeout(() => {
-      console.error('shutdown exceeded the hard-exit timer; forcing exit');
-      process.exit(1);
-    }, SHUTDOWN_HARD_EXIT_MS).unref();
+    // 6. Exit 0, with the timer cleared so no crash-report noise follows a clean finish.
+    clearTimeout(hardExit);
+    process.exit(0);
   };
 
   process.on('SIGTERM', () => void shutdown('SIGTERM'));

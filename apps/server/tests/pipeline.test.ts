@@ -99,3 +99,297 @@ describe('the generated bundle', () => {
     },
   );
 });
+
+describe('runPipeline never throws (the contract its docs and clients depend on)', () => {
+  it(
+    'routes a guest loop-budget overrun to a terminal pipeline failure, not an exception',
+    { timeout: 60_000 },
+    async () => {
+      // The reference model passes the gate and builds; the appended onFrame passes the gate too
+      // (its loop is instrumented), then burns the guard during the audit sweep. A bug made this
+      // throw GuestBudgetError THROUGH runPipeline — the learner saw a generic 500 and the two
+      // repair passes were never offered on a repairable model.
+      const bomb = `${REFERENCE_MODEL_SOURCE}
+scene.onFrame(function (ctx) { while (true) { } });
+`;
+      const result = await runPipeline('a turbofan engine', 'balanced', {
+        ai: {
+          complete: async () => ({
+            ok: true as const,
+            text: bomb,
+            finishReason: 'stop',
+            usage: { promptTokens: 1, completionTokens: 1 },
+          }),
+        } as unknown as AiClient,
+        sink: () => {},
+        tier: 'mid',
+        maxOutputTokens: 8192,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.failure.code).toBe('generation_unrepairable');
+      expect(result.failure.message.length).toBeGreaterThan(0);
+    },
+  );
+});
+
+describe('the manifest is validated where it crosses the sandbox boundary', () => {
+  it(
+    'refuses a manifest over the contracts caps (motions 512, lights 24, colorRoles 16) instead of shipping it',
+    { timeout: 60_000 },
+    async () => {
+      // 600 motions / 40 lights / 20 colorRoles used to pass the gate and the audit and ship as
+      // `ready` — then 400 on publish, discarding the learner's share.
+      const overCaps = `
+      scene.describe({ name: 'Over the caps', description: 'Exceeds the manifest caps.',
+        concept: 'caps', objectives: ['exceed caps'] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'root', name: 'Root', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      for (var i = 0; i < 600; i++) {
+        scene.motion({ id: 'spin' + i, partId: 'root', kind: 'spin', axis: [0, 0, 1],
+          rate: 0.001 * (i + 1), reason: 'spin ' + i });
+      }
+      for (var j = 0; j < 40; j++) {
+        scene.light({ id: 'light' + j, kind: 'directional', intensity: 1, position: [j, 1, 0] });
+      }
+      for (var k = 0; k < 20; k++) {
+        scene.colorRole({ id: 'role' + k, label: 'Role ' + k, color: '#3388aa', meaning: 'meaning ' + k });
+      }
+    `;
+      const result = await runPipeline('a capped-out model', 'balanced', {
+        ai: {
+          complete: async () => ({
+            ok: true as const,
+            text: overCaps,
+            finishReason: 'stop',
+            usage: { promptTokens: 1, completionTokens: 1 },
+          }),
+        } as unknown as AiClient,
+        sink: () => {},
+        tier: 'mid',
+        maxOutputTokens: 8192,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) {
+        throw new Error(
+          `shipped a manifest with ${result.bundle.manifest.motions.length} motions / ${result.bundle.manifest.lights.length} lights — publish would 400`,
+        );
+      }
+      // A schema violation is a repairable program mistake: it gets the repair round, and when the
+      // revision still violates the caps the run fails genuinely rather than shipping.
+      expect(result.failure.code).toBe('generation_unrepairable');
+    },
+  );
+
+  it(
+    'still ships the reference model — validation must not false-positive a legitimate manifest',
+    { timeout: 60_000 },
+    async () => {
+      const result = await runPipeline('a turbofan engine', 'balanced', {
+        ai: referenceAi,
+        sink: () => {},
+        tier: 'mid',
+        maxOutputTokens: 8192,
+      });
+      expect(result.ok, result.ok ? '' : result.failure.message).toBe(true);
+    },
+  );
+});
+
+describe('provider call accounting and token visibility', () => {
+  it(
+    'counts the truncation re-ask in repair accounting and records usage in provenance',
+    { timeout: 60_000 },
+    async () => {
+      // Two provider calls (initial + truncation re-ask) used to be reported as repairPasses: 0,
+      // and the parsed usage { promptTokens, completionTokens } was discarded entirely.
+      const cutReply =
+        '```javascript\n' + REFERENCE_MODEL_SOURCE.slice(0, REFERENCE_MODEL_SOURCE.length * 0.5);
+      let calls = 0;
+      const result = await runPipeline('a turbofan engine', 'balanced', {
+        ai: {
+          complete: async () => {
+            calls += 1;
+            return calls === 1
+              ? {
+                  ok: true as const,
+                  text: cutReply,
+                  finishReason: 'length',
+                  usage: { promptTokens: 1234, completionTokens: 5678 },
+                }
+              : {
+                  ok: true as const,
+                  text: '```javascript\n' + REFERENCE_MODEL_SOURCE + '\n```',
+                  finishReason: 'stop',
+                  usage: { promptTokens: 2345, completionTokens: 6789 },
+                };
+          },
+        } as unknown as AiClient,
+        sink: () => {},
+        tier: 'mid',
+        maxOutputTokens: 8192,
+      });
+      expect(result.ok, result.ok ? '' : result.failure.message).toBe(true);
+      if (!result.ok) return;
+      expect(calls).toBe(2);
+      const provenance = result.bundle.provenance;
+      expect(
+        provenance?.repairPasses,
+        'the truncation re-ask is a paid correction call and must be counted',
+      ).toBe(1);
+      // providerCalls/usage are runtime observability fields the wire schema strips — read them
+      // through the runtime shape, not the manifest type.
+      const runtimeProvenance = provenance as unknown as {
+        providerCalls?: number;
+        usage?: { promptTokens?: number; completionTokens?: number };
+      };
+      expect(
+        runtimeProvenance.providerCalls,
+        'all provider calls must be visible in provenance',
+      ).toBe(2);
+      const usage = runtimeProvenance.usage as
+        { promptTokens?: number; completionTokens?: number } | undefined;
+      expect(usage?.promptTokens).toBe(1234 + 2345);
+      expect(usage?.completionTokens).toBe(5678 + 6789);
+    },
+  );
+
+  it(
+    'rawOutput is the reply the model actually shipped after a truncation re-ask',
+    { timeout: 60_000 },
+    async () => {
+      // The repair prompt showed the model a program it did not write, and the bundle's rawOutput
+      // ("the provider's untouched reply") pointed at the truncated original.
+      const cutReply =
+        '```javascript\n' + REFERENCE_MODEL_SOURCE.slice(0, REFERENCE_MODEL_SOURCE.length * 0.5);
+      const completeReply = '```javascript\n' + REFERENCE_MODEL_SOURCE + '\n```';
+      let calls = 0;
+      const result = await runPipeline('a turbofan engine', 'balanced', {
+        ai: {
+          complete: async () => {
+            calls += 1;
+            return calls === 1
+              ? {
+                  ok: true as const,
+                  text: cutReply,
+                  finishReason: 'length',
+                  usage: { promptTokens: 1, completionTokens: 1 },
+                }
+              : {
+                  ok: true as const,
+                  text: completeReply,
+                  finishReason: 'stop',
+                  usage: { promptTokens: 1, completionTokens: 1 },
+                };
+          },
+        } as unknown as AiClient,
+        sink: () => {},
+        tier: 'mid',
+        maxOutputTokens: 8192,
+      });
+      expect(result.ok, result.ok ? '' : result.failure.message).toBe(true);
+      if (!result.ok) return;
+      expect(result.bundle.rawOutput).toBe(completeReply);
+    },
+  );
+});
+
+describe('one refinement pass, accepted only if genuinely better', () => {
+  const MODEL_A = `
+    scene.describe({ name: 'ModelA', description: 'First draft.', concept: 'c', objectives: ['o1'] });
+    var m = mat.metal({});
+    scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m,
+      hero: true, info: { title: 'P', summary: 's', bullets: ['b'] } });
+  `;
+  // The "refinement" scores higher via a constant motion (+9 liveliness points) while adding
+  // TWO unbound parameters — two new MAJOR deficiencies, each worth zero score. Under the old
+  // rule (score >= alone) this replaced the learner's good model.
+  const MODEL_B_DEGENERATE = `
+    scene.describe({ name: 'ModelB', description: 'Refined.', concept: 'c', objectives: ['o1'] });
+    var m = mat.metal({});
+    scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m,
+      hero: true, info: { title: 'P', summary: 's', bullets: ['b'] } });
+    scene.motion({ id: 'spin', partId: 'p', kind: 'spin', axis: [0, 0, 1], rate: { const: 0.2 }, reason: 'r' });
+    scene.param({ id: 'w', kind: 'number', label: 'W', min: 0, max: 1, default: 0.5, affects: [{ channel: 'transform' }] });
+    scene.param({ id: 'v', kind: 'number', label: 'V', min: 0, max: 1, default: 0.5, affects: [{ channel: 'transform' }] });
+  `;
+
+  it(
+    'rejects a refinement that improves score while ADDING deficiencies',
+    { timeout: 60_000 },
+    async () => {
+      let calls = 0;
+      const result = await runPipeline('a degenerate refinement', 'balanced', {
+        ai: {
+          complete: async () => {
+            calls += 1;
+            return {
+              ok: true as const,
+              text: calls === 1 ? MODEL_A : MODEL_B_DEGENERATE,
+              finishReason: 'stop',
+              usage: { promptTokens: 1, completionTokens: 1 },
+            };
+          },
+        } as unknown as AiClient,
+        sink: () => {},
+        tier: 'mid',
+        maxOutputTokens: 8192,
+      });
+      expect(result.ok, result.ok ? '' : result.failure.message).toBe(true);
+      if (!result.ok) return;
+      // The refined manifest named 'ModelB' with MORE deficiencies used to replace ModelA.
+      expect(
+        result.bundle.manifest.name,
+        'a refinement that added a deficiency must not replace the model',
+      ).toBe('ModelA');
+    },
+  );
+});
+
+describe('drain awareness inside the pipeline', () => {
+  it('returns the draining failure at the next phase check — never a wasted provider call', async () => {
+    const { createLifecycle: makeLifecycle } = await import('../src/services/lifecycle.ts');
+    const local = makeLifecycle();
+    const calls: number[] = [];
+    const result = await runPipeline('a turbofan engine', 'balanced', {
+      ai: {
+        complete: async () => {
+          calls.push(1);
+          return {
+            ok: true as const,
+            text: '```javascript\n' + REFERENCE_MODEL_SOURCE + '\n```',
+            finishReason: 'stop',
+            usage: { promptTokens: 1, completionTokens: 1 },
+          };
+        },
+      } as unknown as AiClient,
+      sink: () => {},
+      tier: 'mid',
+      maxOutputTokens: 8192,
+      lifecycle: local,
+    });
+    // Drain before the pipeline begins: it must stop before spending the first AI call.
+    local.beginDrain();
+    const result2 = await runPipeline('a turbofan engine', 'balanced', {
+      ai: {
+        complete: async () => {
+          calls.push(2);
+          return {
+            ok: true as const,
+            text: REFERENCE_MODEL_SOURCE,
+            finishReason: 'stop',
+            usage: { promptTokens: 1, completionTokens: 1 },
+          };
+        },
+      } as unknown as AiClient,
+      sink: () => {},
+      tier: 'mid',
+      maxOutputTokens: 8192,
+      lifecycle: local,
+    });
+    expect(result2.ok).toBe(false);
+    if (!result2.ok) expect(result2.failure.code).toBe('draining');
+    expect(calls, 'a draining pipeline must never spend a provider call').toEqual([1]);
+    expect(result.ok, 'without drain the first run completes').toBe(true);
+  });
+});

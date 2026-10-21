@@ -24,6 +24,7 @@ import {
 } from '@edu3d/contracts';
 // Direct subpath: the Node host imports `node:vm` and must stay out of any browser-reachable barrel.
 import { authorInNodeVm } from '@edu3d/engine/node-host';
+import { GuestBudgetError, GuestTimeoutError } from '@edu3d/sandbox';
 
 /** Sweep samples per parameter: min, quarter, default, three-quarters, max. Enough to catch a dead binding. */
 const SWEEP_FRACTIONS = [0, 0.25, 0.5, 0.75, 1] as const;
@@ -171,8 +172,32 @@ export function auditModel(input: AuditInput): AuditOutcome {
 
   for (const parameter of manifest.parameters) {
     const values = sweepValuesFor(parameter);
-    for (const time of SWEEP_TIMES) {
-      for (const value of values) builder.sweepParameter(parameter.id, value, time);
+    // The sweep runs guest frame callbacks whose loop guard is still armed with the BUILD's
+    // deadline (the node host arms it once, `node-host.ts`). A heavy build can therefore
+    // exhaust the shared budget mid-sweep — caught here so the loop guard's
+    // `GuestBudgetError`/`GuestTimeoutError` becomes an audit OUTCOME (a repairable build
+    // failure the pipeline routes to repair), never an exception that escapes the audit.
+    // (Root cause — re-arm the guard per phase — lives in packages/engine; reported.)
+    let sweepError: unknown = null;
+    try {
+      for (const time of SWEEP_TIMES) {
+        for (const value of values) builder.sweepParameter(parameter.id, value, time);
+      }
+    } catch (error) {
+      sweepError = error;
+    }
+    if (sweepError !== null) {
+      const detail =
+        sweepError instanceof GuestBudgetError || sweepError instanceof GuestTimeoutError
+          ? ((sweepError as { message?: string }).message ?? 'compute budget exhausted')
+          : sweepError && typeof sweepError === 'object' && 'message' in sweepError
+            ? String((sweepError as { message: unknown }).message)
+            : String(sweepError);
+      return {
+        ok: false,
+        message: `The model exceeded its compute budget while the audit swept its parameters (${detail}). Reduce per-frame loop work so the model can be measured reliably.`,
+        timedOut: true,
+      };
     }
     const points = builder.sweepStates.get(parameter.id) ?? [];
     const changedInSlice = SWEEP_TIMES.some((time) => {

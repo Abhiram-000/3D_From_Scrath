@@ -191,3 +191,229 @@ describe('a learner who closed the tab', () => {
     expect(result.text).toBe('const a = 1;');
   });
 });
+
+describe('credentials: an auth failure fails fast and keeps its actionable message', () => {
+  const authConfig = resolveConfig({
+    AI_API_KEY: 'wrong-key',
+    AI_MODEL: 'primary-model',
+    AI_BASE_URL: 'https://freeinference.org/v1',
+    FALLBACK_AI_API_KEY: 'fb-key',
+    FALLBACK_AI_BASE_URL: 'https://fallback.example/v1',
+    FALLBACK_AI_MODEL: 'fb-model',
+  });
+
+  it(
+    'spends exactly one provider call on a wrong key — not the cascade, not the fallback',
+    { timeout: 20_000 },
+    async () => {
+      // The old behaviour: 401/403 was coded `status`, the cascade advanced on the CODE, and the
+      // cross-provider fallback was entered on ANY failure — a wrong AI_API_KEY burned 7 paid
+      // calls before reporting anything.
+      const calls: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url: unknown, init: { body: string }) => {
+          calls.push(JSON.parse(init.body).model);
+          return new Response('{"error":"bad key"}', {
+            status: 401,
+            headers: { 'content-type': 'application/json' },
+          });
+        }),
+      );
+      const result = await new AiClient(authConfig).complete({
+        maxOutputTokens: 100,
+        messages: [{ role: 'user', content: 'x' }],
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('unreachable');
+      expect(result.code, 'auth is its own named failure, not generic `status`').toBe('auth');
+      expect(result.retryable).toBe(false);
+      expect(result.message).toMatch(/AI_API_KEY|credentials/i);
+      expect(calls, `one call for a wrong key, got ${JSON.stringify(calls)}`).toEqual([
+        'primary-model',
+      ]);
+    },
+  );
+
+  it(
+    'keeps the auth message when the (not entered) fallback keeps failing',
+    { timeout: 20_000 },
+    async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url: unknown, init: { body: string }) => {
+          const model = JSON.parse(init.body).model;
+          return model.startsWith('fb')
+            ? new Response('{"error":"upstream gone"}', { status: 500 })
+            : new Response('{"error":"bad key"}', { status: 401 });
+        }),
+      );
+      const result = await new AiClient(authConfig).complete({
+        maxOutputTokens: 100,
+        messages: [{ role: 'user', content: 'x' }],
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('unreachable');
+      expect(result.message).toMatch(/AI_API_KEY|credentials/i);
+    },
+  );
+});
+
+describe('the cross-provider fallback is for a throttled/down/retired primary only', () => {
+  const fbConfig = resolveConfig({
+    AI_API_KEY: 'k',
+    AI_MODEL: 'primary-model',
+    FALLBACK_AI_API_KEY: 'fb',
+    FALLBACK_AI_MODEL: 'fb-model',
+  });
+  const json = (body: object) =>
+    new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+
+  it('does not re-send a safety refusal to a second provider', { timeout: 20_000 }, async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init: { body: string }) => {
+        calls.push(JSON.parse(init.body).model);
+        return json({ choices: [{ message: { content: '' }, finish_reason: 'content_filter' }] });
+      }),
+    );
+    const result = await new AiClient(fbConfig).complete({
+      maxOutputTokens: 100,
+      messages: [{ role: 'user', content: 'refused topic' }],
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.code).toBe('refused');
+    expect(calls, `a refusal must cost one call, got ${JSON.stringify(calls)}`).toEqual([
+      'primary-model',
+    ]);
+  });
+
+  it(
+    'does not re-send a request-shaped (malformed) failure to a second provider',
+    { timeout: 20_000 },
+    async () => {
+      const calls: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url: unknown, init: { body: string }) => {
+          calls.push(JSON.parse(init.body).model);
+          return new Response('{"error":"bad shape"}', {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          });
+        }),
+      );
+      const result = await new AiClient(fbConfig).complete({
+        maxOutputTokens: 100,
+        messages: [{ role: 'user', content: 'x' }],
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('unreachable');
+      expect(calls).toEqual(['primary-model']);
+    },
+  );
+
+  it(
+    'still crosses providers when the primary is down (the case the fallback exists for)',
+    { timeout: 30_000 },
+    async () => {
+      const calls: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_url: unknown, init: { body: string }) => {
+          const model = JSON.parse(init.body).model;
+          calls.push(model);
+          if (model.startsWith('fb'))
+            return json({
+              choices: [{ message: { content: 'const ok = 1;' }, finish_reason: 'stop' }],
+              usage: {},
+            });
+          // 502: the primary is down — a `status` failure, retryable, without a provider-dictated
+          // wait (so the test stays fast; the 429 path carries its own 60 s backoff).
+          return new Response('{"error":"upstream down"}', {
+            status: 502,
+            headers: { 'content-type': 'application/json' },
+          });
+        }),
+      );
+      const result = await new AiClient(fbConfig).complete({
+        maxOutputTokens: 100,
+        messages: [{ role: 'user', content: 'x' }],
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('unreachable');
+      expect(result.text).toBe('const ok = 1;');
+      const distinct = new Set(calls);
+      expect(distinct.has('primary-model')).toBe(true);
+      expect(distinct.has('fb-model')).toBe(true);
+    },
+  );
+});
+
+describe('client failures carry no provider internals', () => {
+  it(
+    'returns a fixed learner-facing message on a provider 4xx and logs the body server-side, never echoing keys/orgs',
+    { timeout: 20_000 },
+    async () => {
+      const rawBody = JSON.stringify({
+        error: {
+          message: 'Model `primary-model` not owned by org sk-LIVE-secret123 (org-9f83aa91)',
+        },
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(rawBody, { status: 400, headers: { 'content-type': 'application/json' } }),
+        ),
+      );
+      const result = await new AiClient(config).complete({
+        maxOutputTokens: 100,
+        messages: [{ role: 'user', content: 'x' }],
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('unreachable');
+      expect(result.message).not.toContain('sk-');
+      expect(result.message).not.toContain('org-');
+      expect(result.message).not.toContain('primary-model` not owned');
+    },
+  );
+});
+
+describe('backoff is abortable', () => {
+  it(
+    'a cancelled request does not hold its slot through the quota backoff',
+    { timeout: 20_000 },
+    async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response('{"error":"quota"}', {
+              status: 429,
+              headers: { 'content-type': 'application/json' },
+            }),
+        ),
+      );
+      const controller = new AbortController();
+      const t0 = Date.now();
+      const pending = new AiClient(config).complete({
+        maxOutputTokens: 100,
+        messages: [{ role: 'user', content: 'x' }],
+        signal: controller.signal,
+      });
+      // The provider said wait 60 s; the learner aborted at 200 ms — the client must not sleep
+      // 60 s holding the request (and a cancelled request resolves promptly).
+      setTimeout(() => controller.abort(), 200);
+      const result = await pending;
+      const elapsed = Date.now() - t0;
+      expect(result.ok).toBe(false);
+      expect(
+        elapsed,
+        `cancelled after the abort must not wait out the backoff (${elapsed} ms)`,
+      ).toBeLessThan(5_000);
+    },
+  );
+});

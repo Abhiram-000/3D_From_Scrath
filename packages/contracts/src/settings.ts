@@ -7,11 +7,15 @@
  * beats the optimizer, which then only warns" — which is why `quality` is a nullable override rather
  * than a plain value.
  *
- * WIRED SO FAR: `quality` only, end to end (a control in the viewer, a store in `core/settings.ts`,
- * and the worker's ladder honouring it). The rest of the schema is *specified* and deliberately not
- * wired: each one needs a control, and a field nothing reads is the same problem as a policy nothing
- * enforces. They are listed here because the contract is where the design lives — but do not mistake
- * a field in this object for a setting the platform currently honours.
+ * WIRED SO FAR: `quality` (a control in `components/settings-modal.svelte`, the store in
+ * `core/settings.ts`, and the worker's ladder honouring a pin); `timeScale` (the modal emits it and
+ * the host's `setTimeScale` applies it to the live model); and `narration` / `narrationRate` (the
+ * modal toggles them and `core/settings.ts:narratePart` gates every utterance on them). The rest of
+ * the schema is *specified* and deliberately not wired: each one needs a control the engine will
+ * act on, and a field nothing reads is the same problem as a policy nothing enforces. The settings
+ * surface shows those disabled, with the reason, rather than moving silently. They are listed here
+ * because the contract is where the design lives — but do not mistake a field in this object for a
+ * setting the platform currently honours.
  */
 import { z } from 'zod';
 import { QualityPreset } from './budgets.ts';

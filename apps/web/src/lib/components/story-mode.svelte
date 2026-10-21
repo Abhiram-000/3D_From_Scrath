@@ -5,12 +5,15 @@
   shots, otherwise its declared shots chained one after the next by their own durations), may set
   parameters so the phenomenon demonstrates itself, and narrates through the subtitle overlay. The
   story never traps: prev/next/cancel are always one click, auto-advance uses reading time, and
-  voice narration — when enabled — advances *on error too*, because "a synthesis error must never
-  strand the story on the current beat". A beat whose target part vanished skips its camera move
-  and still narrates. Unplayable shot kinds are honest skips in the worker, not broken beats.
+  voice narration — gated on the learner's `narration` setting and silent when the browser has no
+  speech synthesis — advances *on error too*, because "a synthesis error must never strand the
+  story on the current beat". A beat whose target part vanished skips its camera move and still
+  narrates. Unplayable shot kinds are honest skips in the worker, not broken beats.
 -->
 <script lang="ts">
   import type { ShotDecl, StoryBeat } from '@edu3d/contracts';
+  import { untrack } from 'svelte';
+  import { narratePart, speechSynthesisApi, type NarrationSettings } from '$lib/core/settings.ts';
 
   const {
     story,
@@ -18,6 +21,7 @@
     onfocus,
     onshot,
     onclose,
+    narration = { narration: false, narrationRate: 1 },
   }: {
     story: StoryBeat[];
     /** The one owner of parameter writes — beats flow through the same history as manual changes (`05`). */
@@ -26,6 +30,12 @@
     /** Play one declared camera shot; the host owns whether it actually plays. */
     onshot: (shot: ShotDecl) => void;
     onclose: () => void;
+    /**
+     * The learner's narration choice. Defaults to off because `UserSettings.narration` does — a
+     * story opened before settings load must not start talking, and every utterance is gated on
+     * this rather than on the mere presence of `speechSynthesis`.
+     */
+    narration?: NarrationSettings;
   } = $props();
 
   let index = $state(0);
@@ -43,13 +53,19 @@
   /** A cut registers in a frame or two; the next shot in the beat follows, not a full duration. */
   const CUT_HOLD_MILLIS = 450;
 
-  /** Voice narration: optional, and never able to strand the story (`05`). */
-  const speech: SpeechSynthesis | null =
-    typeof speechSynthesis !== 'undefined' ? speechSynthesis : null;
+  /** Voice narration: optional, gated on the learner's setting, and never able to strand the story. */
+  const speech = speechSynthesisApi();
 
   $effect(() => {
     void index; // re-run the effect whenever the beat index moves
-    play();
+    // Everything `play()` reaches for is read untracked. `onsetParameter`, `onfocus` and `onshot`
+    // arrive as props, and a parent that passes an inline arrow hands down a *new function on every
+    // render* — tracking that identity turned a beat's parameter write into an unbounded loop: the
+    // write re-rendered the parent, the parent handed down fresh callbacks, this effect re-ran,
+    // `play()` wrote again. Svelte reported `effect_update_depth_exceeded` and stopped applying
+    // state, which the learner sees as a frozen viewer (`05`: the story must never trap the page).
+    // The beat index is the only dependency this effect is allowed to have.
+    untrack(() => play());
     return () => stop();
   });
 
@@ -58,6 +74,8 @@
     advanceTimer = null;
     if (shotTimer) clearTimeout(shotTimer);
     shotTimer = null;
+    // Cut any in-flight speech: a beat change or a close must not leave the previous sentence
+    // playing over the next one. This runs from the effect's cleanup, so both paths are covered.
     speech?.cancel();
   }
 
@@ -97,22 +115,16 @@
   }
 
   function narrate(text: string) {
-    if (!speech) return;
-    try {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1;
-      utterance.onend = () => {
+    // Every utterance goes through the gate: `narration: false` is silence, and a browser without
+    // speech synthesis is a no-op rather than an error. The reading-time timer still runs, so a
+    // silent story still advances — and so does one whose synthesis fails (`05`).
+    narratePart(text, narration, {
+      onend: () => {
         // Narration done: advance sooner than the reading-time fallback.
         if (advanceTimer) clearTimeout(advanceTimer);
         advanceTimer = setTimeout(() => (index < story.length - 1 ? (index += 1) : onclose()), 700);
-      };
-      utterance.onerror = () => {
-        /* advance on error, never stall — the reading-time timer still runs */
-      };
-      speech.speak(utterance);
-    } catch {
-      /* synthesis unavailable: reading-time auto-advance covers it */
-    }
+      },
+    });
   }
 
   function go(delta: number) {

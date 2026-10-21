@@ -10,6 +10,12 @@
  * written by an older version of the schema, or unavailable entirely (private browsing throws on
  * read). All four land on the contract's defaults rather than on a half-parsed object, because a
  * settings load must never be the reason a page fails.
+ *
+ * It also owns the one runtime reader that cannot be separated from the schema it reads: narration.
+ * `narration` and `narrationRate` only mean anything where speech is emitted, so the gate — speak
+ * only when the setting is on, and only when the platform can speak — lives beside the defaults or
+ * the two drift apart. `narratePart` is the single door to speech: the story's beats and the
+ * viewer's per-part read-out both go through it, and neither can speak when nothing is set.
  */
 import { SETTINGS_STORAGE_KEY, UserSettings } from '@edu3d/contracts';
 
@@ -66,6 +72,82 @@ export function saveSettings(
     storage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
     return true;
   } catch {
+    return false;
+  }
+}
+
+/** The slice of `SpeechSynthesis` narration needs — structural, so tests can pass a plain object. */
+export interface SpeechApi {
+  speak(utterance: SpeechSynthesisUtterance): void;
+  cancel(): void;
+}
+
+/** The fields narration reads. Narrower than `UserSettings` so a caller can pass just these. */
+export type NarrationSettings = Pick<
+  UserSettings,
+  'narration' | 'narrationRate' | 'narrationVoice'
+>;
+
+/** The browser's speech synthesis, or null when it has none (or referencing it throws). */
+export function speechSynthesisApi(): SpeechApi | null {
+  try {
+    return typeof speechSynthesis !== 'undefined' ? speechSynthesis : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The utterance constructor, or null where the platform has none. */
+function browserUtteranceFactory(): ((text: string) => SpeechSynthesisUtterance) | null {
+  try {
+    return typeof SpeechSynthesisUtterance === 'function'
+      ? (text: string) => new SpeechSynthesisUtterance(text)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read `text` aloud, and only when the learner has asked for it.
+ *
+ * This is the one place the platform speaks, so the hostile cases are handled here rather than at
+ * each call site: narration off is silence, an empty string is silence, a browser with no
+ * `speechSynthesis` is silence, and a synthesiser that throws mid-utterance is swallowed. `05` and
+ * `00` are explicit that absence of speech is a first-class silent state, never an error and never
+ * a stall — so this returns whether it spoke, and callers keep their own non-speech fallback.
+ *
+ * `speech` and `makeUtterance` are injectable purely so the gate can be tested without a DOM; both
+ * default to the browser's own objects.
+ */
+export function narratePart(
+  text: string,
+  settings: NarrationSettings,
+  options: {
+    /** Fired when the utterance finishes, so a caller can advance sooner than its reading timer. */
+    onend?: () => void;
+    speech?: SpeechApi | null;
+    makeUtterance?: (text: string) => SpeechSynthesisUtterance;
+  } = {},
+): boolean {
+  // The setting is the first gate: a control that says "off" must mean off, whatever the device can do.
+  if (!settings.narration) return false;
+
+  const speech = options.speech ?? speechSynthesisApi();
+  const makeUtterance = options.makeUtterance ?? browserUtteranceFactory();
+  if (!speech || !makeUtterance) return false;
+
+  const spoken = text.trim();
+  if (spoken.length === 0) return false;
+
+  try {
+    const utterance = makeUtterance(spoken);
+    utterance.rate = settings.narrationRate;
+    utterance.onend = options.onend ? () => options.onend?.() : null;
+    speech.speak(utterance);
+    return true;
+  } catch {
+    // Synthesis unavailable or refused: reading-time auto-advance covers it.
     return false;
   }
 }

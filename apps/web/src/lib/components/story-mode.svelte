@@ -1,25 +1,30 @@
 <!--
   Story mode (`05`): the cinematic guided tour.
 
-  Each beat drives the camera to its target (through the host's focusPart), may set parameters so the
-  phenomenon demonstrates itself, and narrates through the subtitle overlay. The story never traps:
-  prev/next/cancel are always one click, auto-advance uses reading time, and voice narration — when
-  enabled — advances *on error too*, because "a synthesis error must never strand the story on the
-  current beat". A beat whose target part vanished skips its camera move and still narrates.
+  Each beat drives the camera (through the host: the default eased focus when the beat names no
+  shots, otherwise its declared shots chained one after the next by their own durations), may set
+  parameters so the phenomenon demonstrates itself, and narrates through the subtitle overlay. The
+  story never traps: prev/next/cancel are always one click, auto-advance uses reading time, and
+  voice narration — when enabled — advances *on error too*, because "a synthesis error must never
+  strand the story on the current beat". A beat whose target part vanished skips its camera move
+  and still narrates. Unplayable shot kinds are honest skips in the worker, not broken beats.
 -->
 <script lang="ts">
-  import type { StoryBeat } from '@edu3d/contracts';
+  import type { ShotDecl, StoryBeat } from '@edu3d/contracts';
 
   const {
     story,
     onsetParameter,
     onfocus,
+    onshot,
     onclose,
   }: {
     story: StoryBeat[];
     /** The one owner of parameter writes — beats flow through the same history as manual changes (`05`). */
     onsetParameter: (id: string, value: number | boolean | string) => void;
     onfocus: (partId: string | null) => void;
+    /** Play one declared camera shot; the host owns whether it actually plays. */
+    onshot: (shot: ShotDecl) => void;
     onclose: () => void;
   } = $props();
 
@@ -27,6 +32,16 @@
   const beat = $derived(story[index]);
   const HOLD_SECONDS = 6;
   let advanceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The timer chaining this beat's remaining shots. */
+  let shotTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * The contract default `ShotDecl` carries, restated because beat shots are captured verbatim by
+   * the authoring pass and can arrive here without zod's defaults applied.
+   */
+  const SHOT_DEFAULT_DURATION = 1.2;
+  /** A cut registers in a frame or two; the next shot in the beat follows, not a full duration. */
+  const CUT_HOLD_MILLIS = 450;
 
   /** Voice narration: optional, and never able to strand the story (`05`). */
   const speech: SpeechSynthesis | null =
@@ -41,13 +56,37 @@
   function stop() {
     if (advanceTimer) clearTimeout(advanceTimer);
     advanceTimer = null;
+    if (shotTimer) clearTimeout(shotTimer);
+    shotTimer = null;
     speech?.cancel();
+  }
+
+  /**
+   * Chain a beat's shots in order, each starting when the previous ends on its own clock.
+   *
+   * Declared choreography replaces the default eased fly-to — that default is what a beat gets
+   * when it names no shots at all. A wall-clock chain in the page and a wall-clock player in the
+   * worker can drift by a frame; both yield instantly to anything the learner does, so a drift
+   * never shows up as a fight.
+   */
+  function chainShots(shots: readonly ShotDecl[], i: number): void {
+    const shot = shots[i];
+    if (!shot) return;
+    onshot(shot);
+    const millis =
+      shot.kind === 'cut' ? CUT_HOLD_MILLIS : (shot.duration ?? SHOT_DEFAULT_DURATION) * 1000;
+    shotTimer = setTimeout(() => chainShots(shots, i + 1), millis);
   }
 
   function play() {
     if (!beat) return;
-    // The camera follows the story; a dangling target skips the move, not the narration (`05`).
-    onfocus(beat.targetPartId ?? null);
+    if (beat.shots.length > 0) {
+      chainShots(beat.shots, 0);
+    } else {
+      // The default move: the camera follows the beat's target; a dangling target skips the
+      // move, not the narration (`05`).
+      onfocus(beat.targetPartId ?? null);
+    }
     if (beat.setParameters) {
       for (const [id, value] of Object.entries(beat.setParameters)) onsetParameter(id, value);
     }

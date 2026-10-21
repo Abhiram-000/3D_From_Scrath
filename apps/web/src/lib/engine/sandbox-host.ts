@@ -17,7 +17,13 @@
  *
  * All rendering happens here, on the learner's device. The server is never involved in a frame.
  */
-import type { DeviceTier, ModelManifest, QualityPreset, RuntimeStats } from '@edu3d/contracts';
+import type {
+  DeviceTier,
+  ModelManifest,
+  QualityPreset,
+  RuntimeStats,
+  ShotDecl,
+} from '@edu3d/contracts';
 import type { SerializableVerdict, WorkerRequest, WorkerResponse } from './sandbox-worker.ts';
 import SandboxWorker from './sandbox-worker.ts?worker';
 import {
@@ -608,6 +614,18 @@ export class SandboxHost {
 
   focusPart(partId: string | null): void {
     this.send({ type: 'focusPart', partId });
+  }
+
+  /**
+   * Play a declared camera shot on the loaded model.
+   *
+   * Sent by the page — story mode owns the beats' clocks and chains a beat's shots by their own
+   * durations — so the worker never arbitrates between a beat's choreography and the learner's
+   * next action: an input message lands between shots and the player yields, exactly as `00`
+   * requires. Unplayable kinds and missing targets are honest skips inside the worker.
+   */
+  playShot(shot: ShotDecl): void {
+    this.send({ type: 'playShot', shot });
   }
 
   /** Standard camera angles (`03`): "show me it from the side" without fumbling an orbit. */

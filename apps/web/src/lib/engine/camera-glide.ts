@@ -11,11 +11,17 @@
  * to the vertical field of view alone crops a wide object on a narrow screen, so the fit considers
  * both axes.
  *
+ * Since the declared shot vocabulary became playable, this module also carries the arithmetic the
+ * shot player needs: the easing vocabulary a `ShotDecl` names (a follow or dolly may ask for
+ * linear, a landing for ease-out) and the view-axis dolly step. The cinematic cubic stays the
+ * default, so the learner-selected focus move is untouched by any of it.
+ *
  * The camera's own state is spherical — an angle around the model, a polar angle, a distance and a
  * pivot — because that is what a hand-rolled orbit rig is. Interpolating that state, rather than
  * interpolating a position and re-deriving the rig afterwards, keeps the orbit rig the single
  * source of truth: a gesture that lands mid-move continues from exactly where the camera is.
  */
+import type { ShotEasing } from '@edu3d/contracts';
 
 /** The camera's position expressed as the orbit rig understands it. */
 export interface OrbitPose {
@@ -45,6 +51,11 @@ export interface Glide {
   duration: number;
   /** The angle to travel, already resolved to the short way round. */
   thetaDelta: number;
+  /**
+   * The curve this travel follows. Defaulted to the cinematic cubic so the focus glide never has
+   * to name it; a declared shot carries its own choice.
+   */
+  easing: ShotEasing;
 }
 
 /** How long a camera move takes, in seconds. */
@@ -75,6 +86,35 @@ export const TAP_THRESHOLD_PX = 6;
 export function easeInOutCubic(t: number): number {
   const clamped = Math.min(1, Math.max(0, t));
   return clamped < 0.5 ? 4 * clamped * clamped * clamped : 1 - Math.pow(-2 * clamped + 2, 3) / 2;
+}
+
+/** The easing vocabulary a `ShotDecl` names, as pure functions of normalized time. */
+export function easeLinear(t: number): number {
+  return t;
+}
+export function easeInCubic(t: number): number {
+  return t * t * t;
+}
+export function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+/**
+ * The curve a shot asked for. A module-level lookup rather than a closure factory: this runs once
+ * per frame while a move is in flight, and a per-frame allocation here is exactly the churn the
+ * frame budget exists to prevent.
+ */
+export function easeFor(easing: ShotEasing): (t: number) => number {
+  switch (easing) {
+    case 'linear':
+      return easeLinear;
+    case 'easeIn':
+      return easeInCubic;
+    case 'easeOut':
+      return easeOutCubic;
+    default:
+      return easeInOutCubic;
+  }
 }
 
 /**
@@ -115,6 +155,7 @@ export function createGlide(
   from: OrbitPose,
   to: OrbitPose,
   duration: number = GLIDE_DURATION,
+  easing: ShotEasing = 'easeInOut',
 ): Glide {
   return {
     from: clonePose(from),
@@ -122,6 +163,7 @@ export function createGlide(
     elapsed: 0,
     duration: Math.max(MIN_DURATION, duration),
     thetaDelta: shortestAngleDelta(from.theta, to.theta),
+    easing,
   };
 }
 
@@ -138,7 +180,7 @@ export function stepGlide(
 ): { glide: Glide; pose: OrbitPose; done: boolean } {
   const elapsed = glide.elapsed + Math.max(0, deltaSeconds);
   const t = Math.min(1, elapsed / glide.duration);
-  const eased = easeInOutCubic(t);
+  const eased = easeFor(glide.easing)(t);
 
   const pose: OrbitPose = {
     theta: glide.from.theta + glide.thetaDelta * eased,
@@ -242,6 +284,23 @@ export function isUsablePose(pose: OrbitPose): boolean {
     Number.isFinite(pose.target.y) &&
     Number.isFinite(pose.target.z)
   );
+}
+
+/**
+ * The destination of a dolly: `delta` along the view axis, the angle and pivot untouched.
+ *
+ * "Toward the target when negative" is the contract's sign — the camera slides along the line it
+ * is already looking down. Distance limits are deliberately *not* applied here: `stepGlide`
+ * applies them to the pose every frame, so clamping happens on the travel rather than only at the
+ * endpoints, and an endpoint clamp can never strand the camera somewhere the rig refuses.
+ */
+export function dollyPose(pose: OrbitPose, delta: number): OrbitPose {
+  return {
+    theta: pose.theta,
+    phi: pose.phi,
+    distance: pose.distance + delta,
+    target: { x: pose.target.x, y: pose.target.y, z: pose.target.z },
+  };
 }
 
 /**

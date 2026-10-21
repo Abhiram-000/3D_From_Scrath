@@ -11,6 +11,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   createGlide,
+  dollyPose,
+  easeFor,
   easeInOutCubic,
   fitDistance,
   isTapGesture,
@@ -21,6 +23,7 @@ import {
   stepGlide,
   type GlideLimits,
   type OrbitPose,
+  type ShotEasing,
 } from './camera-glide';
 
 const NO_LIMITS: GlideLimits = {
@@ -280,5 +283,70 @@ describe('re-aiming a move at something that moved', () => {
     const stepped = stepGlide(glide, 0.45, NO_LIMITS);
     const moved = retargetGlide(stepped.glide, { x: 1, y: 2, z: 3 }, 40);
     expect(moved.elapsed).toBeCloseTo(0.45, 10);
+  });
+});
+
+describe('the easing vocabulary a shot can ask for', () => {
+  it('keeps linear linear', () => {
+    expect(easeFor('linear')(0.5)).toBe(0.5);
+  });
+
+  it('holds ease-in below the diagonal and ease-out above it', () => {
+    expect(easeFor('easeIn')(0.5)).toBeLessThan(0.5);
+    expect(easeFor('easeOut')(0.5)).toBeGreaterThan(0.5);
+    expect(easeFor('easeInOut')(0.5)).toBeCloseTo(0.5, 10);
+  });
+
+  it('lands exactly, whichever curve is chosen', () => {
+    for (const kind of [
+      'linear',
+      'easeIn',
+      'easeOut',
+      'easeInOut',
+    ] as const satisfies readonly ShotEasing[]) {
+      expect(easeFor(kind)(0)).toBe(0);
+      expect(easeFor(kind)(1)).toBe(1);
+    }
+  });
+});
+
+describe('a glide carrying a shot easing', () => {
+  it('follows the easing the shot asked for, not always the cinematic cubic', () => {
+    // A linear follow/dolly at the quarter point is a quarter of the way. The cubic default
+    // would be well under that — the distinguishing sample.
+    const glide = createGlide(pose({ distance: 0 }), pose({ distance: 100 }), 1, 'linear');
+    const quarter = stepGlide(glide, 0.25, NO_LIMITS);
+    expect(quarter.pose.distance).toBeCloseTo(25, 10);
+  });
+
+  it('ease-out arrives early and still lands exactly', () => {
+    const glide = createGlide(pose({ distance: 0 }), pose({ distance: 100 }), 1, 'easeOut');
+    const quarter = stepGlide(glide, 0.25, NO_LIMITS);
+    expect(quarter.pose.distance).toBeGreaterThan(25);
+    const done = stepGlide(quarter.glide, 0.75, NO_LIMITS);
+    expect(done.done).toBe(true);
+    expect(done.pose.distance).toBeCloseTo(100, 10);
+  });
+
+  it('defaults to the cinematic cubic, so the focus glide is untouched', () => {
+    // The learner-selected focus move predates the shot vocabulary and must keep its curve.
+    const glide = createGlide(pose({ distance: 0 }), pose({ distance: 100 }), 1);
+    const quarter = stepGlide(glide, 0.25, NO_LIMITS);
+    expect(quarter.pose.distance).toBeLessThan(25);
+  });
+});
+
+describe('a dolly', () => {
+  it('moves along the view axis without changing the angle or the pivot', () => {
+    const from = pose({ theta: 0.7, phi: 1.1, distance: 10, target: { x: 1, y: 2, z: 3 } });
+    const to = dollyPose(from, -3);
+    expect(to.distance).toBe(7);
+    expect(to.theta).toBe(from.theta);
+    expect(to.phi).toBe(from.phi);
+    expect(to.target).toEqual(from.target);
+  });
+
+  it('dollys out on a positive delta', () => {
+    expect(dollyPose(pose({ distance: 4 }), 2).distance).toBe(6);
   });
 });

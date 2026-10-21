@@ -30,6 +30,8 @@ import {
   type QualityPreset,
   type QualityRung,
   type RuntimeStats,
+  type ShotDecl,
+  type ShotEasing,
 } from '@edu3d/contracts';
 import {
   compileGuest,
@@ -74,7 +76,10 @@ import {
 } from './frame-compose.ts';
 import {
   createGlide,
+  dollyPose,
+  easeFor,
   fitDistance,
+  GLIDE_DURATION,
   isTapRelease,
   isUsablePose,
   retargetGlide,
@@ -115,6 +120,7 @@ export type WorkerRequest =
   | { type: 'zoom'; delta: number }
   | { type: 'pan'; deltaX: number; deltaY: number }
   | { type: 'focusPart'; partId: string | null }
+  | { type: 'playShot'; shot: ShotDecl }
   | { type: 'viewPreset'; preset: 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso' }
   | { type: 'setViewMode'; mode: 'normal' | 'xray' | 'wireframe' | 'explode' }
   | { type: 'setTheme'; theme: { top: string; bottom: string } }
@@ -264,6 +270,18 @@ const TIMING = {
   ladderHeadroomFactor: 0.85,
 } as const;
 
+/**
+ * An fov pull in flight: the projection animates from `fromFov` to `toFov` over `duration`, on the
+ * same easing vocabulary the pose glides use. Position is untouched — that is the whole move.
+ */
+interface FovMove {
+  fromFov: number;
+  toFov: number;
+  elapsed: number;
+  duration: number;
+  easing: ShotEasing;
+}
+
 /** Everything the worker owns between loads. */
 interface WorkerState {
   renderer: THREE.WebGLRenderer;
@@ -402,6 +420,16 @@ interface WorkerState {
    * because the camera's state lives here.
    */
   glide: Glide | null;
+
+  /**
+   * An fov pull in flight, or null.
+   *
+   * `fovPull` is the one shot that animates the projection rather than the rig: the camera holds
+   * its position and the field of view narrows or widens, which is what a focus pull between two
+   * related parts reads as. Advanced by `advanceShot` on wall-clock time like the glide; cleared
+   * by every learner gesture and by any new pose move.
+   */
+  fovMove: FovMove | null;
 
   /**
    * The press in progress: where it began, and how many fingers were part of it.
@@ -592,18 +620,241 @@ function framingPose(
  *
  * `focus` is what the move is travelling to, and it is measured again every frame — see
  * `glideFocus`. A preset has no focus: it moves the camera without arriving anywhere in
- * particular.
+ * particular. Declared shots pass their own duration and easing; the focus glide keeps its
+ * defaults.
  */
 function startGlide(
   target: WorkerState,
   to: OrbitPose,
   focus?: { object: THREE.Object3D; margin: number },
+  duration: number = GLIDE_DURATION,
+  easing: ShotEasing = 'easeInOut',
 ): void {
-  target.glide = createGlide(currentPose(target), to);
-  target.glideFocus = focus ?? null;
-  // A move is motion; the idle orbit would fight it.
+  cancelCameraMove(target);
   target.autoRotate = false;
+  target.glide = createGlide(currentPose(target), to, duration, easing);
+  target.glideFocus = focus ?? null;
+  // A move is motion; the idle orbit would fight it, and the frame must present.
   target.cameraDirty = true;
+}
+
+/**
+ * The declared shot vocabulary the viewer plays, with the kinds that say honest about the rest.
+ *
+ * `00-GOAL.md` specifies nine kinds; the player covers the four whose implementation this camera
+ * rig already genuinely performs — `cut` (apply the destination), `flyTo` (the eased glide along
+ * the current approach), `dolly` (a view-axis change of distance) and `fovPull` (the projection
+ * pulled while the position holds). The other five stay legal in the schema because the spec
+ * names them, but nothing plays them, so the audit flags a model that declares one rather than
+ * letting the manifest promise a camera move that will not happen.
+ */
+const PLAYABLE_SHOT_KINDS = new Set(['cut', 'flyTo', 'dolly', 'fovPull']);
+
+/**
+ * The contract defaults a captured `ShotDecl` may not carry.
+ *
+ * Story-beat and interaction shots are captured verbatim by the authoring pass — like
+ * `MotionDeclInput`, they can arrive at playback without zod's defaults applied. The player
+ * defaults them itself, against `ShotDecl`'s own numbers, instead of multiplying by `undefined`.
+ */
+const SHOT_DEFAULT_DURATION = 1.2;
+
+const SHOT_DEFAULT_MARGIN = 1.35;
+
+/** Write the projection's field of view. One place, so every caller updates the matrix too. */
+function applyFov(target: WorkerState, fov: number): void {
+  target.camera.fov = fov;
+  target.camera.updateProjectionMatrix();
+}
+
+/**
+ * The pose a shot travels to, or null when there is nothing honest to travel to.
+ *
+ * `targetPartId` resolves against the live model's framing (the same fit the focus glide uses);
+ * an explicit `pose` overrides the current rig field by field, deriving spherical coordinates when
+ * a full position–target pair is authored. A shot with neither — or one whose part does not exist,
+ * or whose framing is a NaN — returns null and the shot simply does not start.
+ */
+function shotDestination(
+  target: WorkerState,
+  shot: ShotDecl,
+): { pose: OrbitPose; focus: { object: THREE.Object3D; margin: number } | null } | null {
+  const margin = shot.margin ?? SHOT_DEFAULT_MARGIN;
+  if (shot.targetPartId !== undefined && target.model) {
+    const object = target.model.parts.get(shot.targetPartId);
+    // `05`: a missing target skips the move, it does not fake one.
+    if (!object) return null;
+    const pose = framingPose(target, object, margin);
+    if (!pose) return null;
+    return { pose, focus: { object, margin } };
+  }
+  if (shot.pose) {
+    const pose = currentPose(target);
+    const { position, target: lookAt } = shot.pose;
+    if (position && lookAt) {
+      const dx = position[0] - lookAt[0];
+      const dy = position[1] - lookAt[1];
+      const dz = position[2] - lookAt[2];
+      const distance = Math.max(0.1, Math.sqrt(dx * dx + dy * dy + dz * dz));
+      pose.theta = Math.atan2(dx, dz);
+      pose.phi = Math.acos(Math.max(-1, Math.min(1, dy / distance)));
+      pose.distance = distance;
+      pose.target = { x: lookAt[0], y: lookAt[1], z: lookAt[2] };
+    } else if (lookAt) {
+      pose.target = { x: lookAt[0], y: lookAt[1], z: lookAt[2] };
+    } else if (position) {
+      // A position without a target orbits to the same angles measured from the current pivot.
+      const dx = position[0] - pose.target.x;
+      const dy = position[1] - pose.target.y;
+      const dz = position[2] - pose.target.z;
+      const distance = Math.max(0.1, Math.sqrt(dx * dx + dy * dy + dz * dz));
+      pose.theta = Math.atan2(dx, dz);
+      pose.phi = Math.acos(Math.max(-1, Math.min(1, dy / distance)));
+      pose.distance = distance;
+    }
+    if (!isUsablePose(pose)) return null;
+    return { pose, focus: null };
+  }
+  return null;
+}
+
+/**
+ * Play a declared camera shot. Returns whether it actually started.
+ *
+ * A `false` is an honest skip, never a fake: an unplayable kind (`crane`, `orbit`, `follow`,
+ * `pan`, `moveTo` — see `PLAYABLE_SHOT_KINDS`) and a missing target part both leave the camera
+ * exactly where it was, which is why the audit flags the kind and dangling ids separately — the
+ * learner must never watch a move the manifest promised and did not make.
+ */
+export function playShot(target: WorkerState, shot: ShotDecl): boolean {
+  if (!target.manifest) return false;
+  if (!PLAYABLE_SHOT_KINDS.has(shot.kind)) return false;
+  const duration = shot.duration ?? SHOT_DEFAULT_DURATION;
+
+  switch (shot.kind) {
+    case 'cut': {
+      const destination = shotDestination(target, shot);
+      if (!destination) return false;
+      target.autoRotate = false;
+      cancelCameraMove(target);
+      applyPose(target, destination.pose);
+      // A cut's authored fov applies in the same frame as its framing — an instant transition
+      // means the *whole* frame the learner sees next is the destination.
+      if (shot.pose?.fov !== undefined) applyFov(target, shot.pose.fov);
+      target.cameraDirty = true;
+      return true;
+    }
+    case 'flyTo': {
+      const destination = shotDestination(target, shot);
+      if (!destination) return false;
+      target.autoRotate = false;
+      // The focus rides along so a moving part is re-framed every frame while the approach runs.
+      startGlide(target, destination.pose, destination.focus ?? undefined, duration, shot.easing);
+      return true;
+    }
+    case 'dolly': {
+      // The contract's sign: negative moves toward the target. No distance means nothing to move.
+      if (shot.distance === undefined || !Number.isFinite(shot.distance)) return false;
+      target.autoRotate = false;
+      startGlide(
+        target,
+        dollyPose(currentPose(target), shot.distance),
+        undefined,
+        duration,
+        shot.easing,
+      );
+      return true;
+    }
+    case 'fovPull': {
+      if (shot.fov === undefined || !Number.isFinite(shot.fov)) return false;
+      if (!Number.isFinite(target.camera.fov)) return false;
+      target.autoRotate = false;
+      // A pull is a still-camera move: an in-flight glide would move the framing under it.
+      cancelCameraMove(target);
+      target.fovMove = {
+        fromFov: target.camera.fov,
+        toFov: shot.fov,
+        elapsed: 0,
+        duration: Math.max(0.01, duration),
+        easing: shot.easing,
+      };
+      target.cameraDirty = true;
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * Play the shots an interaction declares for a part's `click` (`on: 'click'`, kind `playShot`).
+ *
+ * Returns whether one actually played, so the tap handler can fall back to the default
+ * select-and-frame move when the interaction carries nothing that plays. Every other
+ * interaction trigger (`hover` per-move spam, the double-tap timers the rig does not model)
+ * is deliberately out of the player's reach today: a shot that fires on a hover would fire
+ * dozens of times a second, and half a camera vocabulary beats one that misfires.
+ */
+export function playPartShots(target: WorkerState, partId: string): boolean {
+  if (!target.manifest) return false;
+  for (const interaction of target.manifest.interactions) {
+    if (interaction.partId !== partId || interaction.on !== 'click') continue;
+    if (!interaction.shot) continue;
+    if (playShot(target, interaction.shot)) return true;
+  }
+  return false;
+}
+
+/**
+ * Every way the camera is told to move, ended at once.
+ *
+ * `00`: "never fight the user." Any learner gesture, any pose move replacing another, and any
+ * new shot all end what was in flight — pose moves and fov pulls alike, because a pull under a
+ * fresh glide would move the framing the pull promised to hold.
+ */
+export function cancelCameraMove(target: WorkerState): void {
+  target.glide = null;
+  target.fovMove = null;
+  target.glideFocus = null;
+}
+
+/**
+ * Advance the shot player by one tick: fov pull first, then any pose glide.
+ *
+ * Extracted from the frame loop so tests can drive it, and so the loop keeps one camera
+ * choreography call. Runs on wall-clock seconds above the render gate — the camera is an
+ * instrument, not simulation: a slow-motion model does not slow the shot, and a paused one can
+ * still be looked at properly. Both branches write only into state that already exists; there
+ * is no per-frame allocation here.
+ */
+export function advanceShot(target: WorkerState, deltaSeconds: number): void {
+  const cameraDelta = Math.min(TIMING.maxDelta, Math.max(0, deltaSeconds));
+
+  if (target.fovMove) {
+    const move = target.fovMove;
+    move.elapsed += cameraDelta;
+    const t = Math.min(1, move.elapsed / move.duration);
+    applyFov(target, move.fromFov + (move.toFov - move.fromFov) * easeFor(move.easing)(t));
+    // The projection changed; the frame must present even on a paused, still model.
+    target.cameraDirty = true;
+    if (t >= 1) target.fovMove = null;
+  }
+
+  if (target.glide) {
+    // The destination is measured again while the camera travels: a spinning blade is somewhere
+    // else by the time the camera arrives, and a window resized mid-move changes what fits on
+    // screen for the same reason.
+    if (target.glideFocus) {
+      const live = framingPose(target, target.glideFocus.object, target.glideFocus.margin);
+      if (live) target.glide = retargetGlide(target.glide, live.target, live.distance);
+    }
+    const stepped = stepGlide(target.glide, cameraDelta, glideLimits(target));
+    applyPose(target, stepped.pose);
+    target.glide = stepped.done ? null : stepped.glide;
+    // The rig moved, so the camera must be recomputed — and the frame presented, because
+    // `cameraDirty` is what keeps the on-demand gate open for the length of the move.
+    target.cameraDirty = true;
+  }
 }
 
 /** Set up the renderer. Called once per worker; the worker is replaced rather than reconfigured. */
@@ -746,6 +997,7 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     autoRotate: true,
 
     glide: null,
+    fovMove: null,
     pointerPress: null,
     pointersDown: 0,
     glideFocus: null,
@@ -970,9 +1222,9 @@ export function loadProgram(
   }
   target.lastProbes = {};
 
-  // A new model starts with a clean camera: a move in flight belonged to the old one.
-  target.glide = null;
-  target.glideFocus = null;
+  // A new model starts with a clean camera: a move in flight belonged to the old one — pose
+  // moves and fov pulls alike.
+  cancelCameraMove(target);
   target.pointerPress = null;
   target.pointersDown = 0;
 
@@ -1019,8 +1271,7 @@ export function loadProgram(
 
   // Apply the authored opening frame. `00`: "every model opens with the full concept in view."
   const pose = manifest.camera.initial;
-  target.camera.fov = pose.fov;
-  target.camera.updateProjectionMatrix();
+  applyFov(target, pose.fov);
   target.orbit.target.set(...pose.target);
   const offset = new THREE.Vector3(...pose.position).sub(target.orbit.target);
   target.orbit.distance = Math.max(0.1, offset.length());
@@ -1231,26 +1482,12 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   const rawDelta = target.lastFrameAt === 0 ? 1 / 60 : (timestamp - target.lastFrameAt) / 1000;
   target.lastFrameAt = timestamp;
 
-  // A camera move advances here, above the gate, because the gate would otherwise close on a
+  // The shot player advances here, above the gate, because the gate would otherwise close on a
   // paused or idle model and the move would never start. The camera is an instrument, not
   // simulation: it travels on wall-clock time, so a slow-motion model does not slow the camera
-  // down, and a model paused for inspection can still be looked at properly.
-  if (target.glide) {
-    // The destination is measured again while the camera travels: a spinning blade is somewhere
-    // else by the time the camera arrives, and a window resized mid-move changes what fits on
-    // screen for the same reason.
-    if (target.glideFocus) {
-      const live = framingPose(target, target.glideFocus.object, target.glideFocus.margin);
-      if (live) target.glide = retargetGlide(target.glide, live.target, live.distance);
-    }
-    const cameraDelta = Math.min(TIMING.maxDelta, Math.max(0, rawDelta));
-    const stepped = stepGlide(target.glide, cameraDelta, glideLimits(target));
-    applyPose(target, stepped.pose);
-    target.glide = stepped.done ? null : stepped.glide;
-    // The rig moved, so the camera must be recomputed — and the frame presented, because
-    // `cameraDirty` is what keeps the on-demand gate open for the length of the move.
-    target.cameraDirty = true;
-  }
+  // down, and a model paused for inspection can still be looked at properly. Pose glides and
+  // fov pulls both live in `advanceShot` — see there for the allocation discipline.
+  advanceShot(target, rawDelta);
 
   // The on-demand gate (`08`): a paused model with nothing marked dirty presents nothing — no
   // physics step, no guest callback, no declared motion, no sync, no cast, no render. `paused`
@@ -1821,7 +2058,7 @@ function loop(timestamp: number): void {
           state.hoverPending = true;
         } else if (request.kind === 'down') {
           // A gesture cancels a camera move in flight: the camera never fights the learner.
-          state.glide = null;
+          cancelCameraMove(state);
           state.pointersDown += 1;
           if (state.pointerPress) {
             // A second finger joined the press: this is a pinch, not a choice.
@@ -1847,6 +2084,12 @@ function loop(timestamp: number): void {
           updateHover(state);
           const partId = state.hoveredPart;
           if (!partId || !state.model) break;
+          // A part whose declared interaction replays a shot defines its own camera move; the
+          // default select-and-frame glide yields to it and only covers the parts without one.
+          if (playPartShots(state, partId)) {
+            state.needsRender = true;
+            break;
+          }
           const object = state.model.parts.get(partId);
           if (!object) break;
           const pose = framingPose(state, object, 1.6);
@@ -1860,7 +2103,7 @@ function loop(timestamp: number): void {
         if (!state) return;
         state.autoRotate = false;
         // The learner is steering: a camera move in flight yields to them.
-        state.glide = null;
+        cancelCameraMove(state);
         state.orbit.theta -= request.deltaX * 0.005;
         // Polar angle clamped so the camera never passes through the poles, where orbit control degenerates.
         const limits = state.manifest?.camera.limits;
@@ -1880,7 +2123,7 @@ function loop(timestamp: number): void {
         if (!state) return;
         state.autoRotate = false;
         // The learner is steering: a camera move in flight yields to them.
-        state.glide = null;
+        cancelCameraMove(state);
         const limits = state.manifest?.camera.limits;
         const min = limits?.minDistance ?? 0.1;
         const max = limits?.maxDistance ?? 500;
@@ -1897,7 +2140,7 @@ function loop(timestamp: number): void {
         if (!state) return;
         state.autoRotate = false;
         // The learner is steering: a camera move in flight yields to them.
-        state.glide = null;
+        cancelCameraMove(state);
         // Pan in the camera's own plane, scaled by distance so the gesture tracks the cursor at any zoom.
         // `matrixWorld` (the composed world matrix), not `matrix` (its local one) — the camera is a
         // root object so they coincide today, and reading the wrong one is the kind of bug that
@@ -1922,6 +2165,15 @@ function loop(timestamp: number): void {
         // The focus is passed along so the camera keeps aiming at the part while it travels: a
         // part that is moving is somewhere else by the time the camera gets there.
         startGlide(state, pose, { object, margin });
+        break;
+      }
+
+      case 'playShot': {
+        if (!state) return;
+        // A declared shot from a story beat or an interaction, sent by the page (the single
+        // owner of the beats' clocks). An honest skip — an unplayable kind, a missing part —
+        // leaves the camera where it is; the audit flags those declarations upstream.
+        playShot(state, request.shot);
         break;
       }
 

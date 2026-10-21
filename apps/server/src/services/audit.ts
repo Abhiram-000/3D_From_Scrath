@@ -29,6 +29,12 @@
  *    dimensionless factors are legitimate, so the finding instructs rather than accuses, and a
  *    minor never triggers the paid refinement pass.
  *
+ *  - **Shot honesty**: the schema keeps all nine `ShotKind`s legal because `00-GOAL.md` specifies
+ *    them, but the viewer's player covers four (`cut`, `flyTo`, `dolly`, `fovPull`). A declared
+ *    kind with no player is a promised camera move that will not happen — flagged under
+ *    `pedagogy` at `minor` severity, naming the playable vocabulary, rather than credited. The
+ *    reference turbofan declares only `flyTo` shots, so the exemplar stays unflagged.
+ *
  * What the audit deliberately does **not** claim, because a manifest cannot carry the evidence:
  * whether a constant is real, a proportion is right, a causal direction is correct or a formula is
  * true — textbook *accuracy* has no machine-checkable dimension here and lives in the prompt's
@@ -469,8 +475,35 @@ export function auditModel(input: AuditInput): AuditOutcome {
     });
   }
 
-  // ── Referential integrity: every declared id must resolve ──────────────────
+  // ── Shot honesty: a declared shot the viewer cannot play is a false promise ─
   //
+  // `00-GOAL.md` makes the shot vocabulary "a core capability, not a nice-to-have", and the
+  // schema keeps all nine kinds legal. But the viewer's player covers exactly four of them —
+  // `cut`, `flyTo`, `dolly`, `fovPull` — and a model declaring one of the other five is promising
+  // a camera move the learner will never see. The honest reading is a *completeness* gap in the
+  // scripted lesson: the beat still narrates and its target still receives the default focus
+  // move, so nothing is broken-to-the-learner, only the declared choreography beyond it is
+  // missing. That is a `pedagogy` finding at `minor` severity deliberately: a `major` would send
+  // the model to the paid refinement pass for following a prompt the platform itself cannot yet
+  // honour — burning API money on a platform gap the model author cannot fix from their side. A
+  // minor costs diagnostics and states the playable vocabulary, which becomes true the hour the
+  // next player lands.
+  const PLAYABLE_SHOT_KINDS = new Set(['cut', 'flyTo', 'dolly', 'fovPull']);
+  const flagShot = (shot: { kind: string }, subjectId: string): void => {
+    if (PLAYABLE_SHOT_KINDS.has(shot.kind)) return;
+    deficiencies.push({
+      dimension: 'pedagogy',
+      severity: 'minor',
+      finding: `A '${shot.kind}' shot is declared (under '${subjectId}') but the viewer cannot play that kind yet — the camera move this beat or interaction promises will not happen.`,
+      instruction:
+        `Replace the shot's kind with one the viewer plays — 'cut', 'flyTo', 'dolly' or 'fovPull' ` +
+        `(e.g. scene.shot('x', { kind: 'flyTo', targetPartId: 'partId' })) — or drop the shot; ` +
+        `'${shot.kind}' is a legal kind but has no player, so the declared move silently does nothing.`,
+      subjectId,
+    });
+  };
+
+  // ── Referential integrity: every declared id must resolve ──────────────────  //
   // `scene.motion` and `scene.interaction` throw on a missing partId at authoring time, so those
   // never reach the audit. Everything else is captured verbatim with no resolution check: story
   // targets, story `setParameters`, shot targets (in `camera.shots` and inside beat `shots`),
@@ -502,12 +535,13 @@ export function auditModel(input: AuditInput): AuditOutcome {
         });
       }
     }
-    for (const shot of beat.shots) {
+    for (const [index, shot] of beat.shots.entries()) {
       claimPart(
         shot.targetPartId,
         `story beat '${beat.id}' shot`,
         `set the shot's targetPartId to a real part id, or drop it.`,
       );
+      flagShot(shot, `shot:${beat.id}#${index + 1}`);
     }
   }
   for (const question of manifest.quiz) {
@@ -547,6 +581,7 @@ export function auditModel(input: AuditInput): AuditOutcome {
       `camera shot '${shotId}'`,
       `set the shot's targetPartId to a real part id, or drop it.`,
     );
+    flagShot(shot, `shot:${shotId}`);
   }
   for (const interaction of manifest.interactions) {
     if (
@@ -570,6 +605,9 @@ export function auditModel(input: AuditInput): AuditOutcome {
         missingId: interaction.targetId,
         instruction: `toggleVisibility's targetId must name a real part id.`,
       });
+    }
+    if (interaction.shot) {
+      flagShot(interaction.shot, `shot:${interaction.partId}(${interaction.on})`);
     }
   }
   // Bound the finding list: 64 deficiencies is the schema's ceiling and refinement reads them as

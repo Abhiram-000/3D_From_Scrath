@@ -1451,6 +1451,7 @@
             story={manifest.story}
             onsetParameter={beatSetParameter}
             onfocus={(partId) => host?.focusPart(partId)}
+            onshot={(shot) => host?.playShot(shot)}
             onclose={() => {
               activeMode = 'none';
               host?.focusPart(null);

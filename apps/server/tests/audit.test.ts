@@ -442,6 +442,100 @@ describe('unit discipline — quantitative claims on physical controls', () => {
   });
 });
 
+describe('shot vocabulary honesty — a declared shot with no player is a false promise', () => {
+  // `00-GOAL.md` calls the shot vocabulary a core capability. Four kinds — cut, flyTo, dolly,
+  // fovPull — are played by the viewer; the other five are legal in the schema but have no
+  // player, so a model declaring one is promising a camera move that will not happen. The flag
+  // must say so honestly instead of crediting a declaration the learner will never see.
+  it('flags a named camera shot whose kind cannot play', () => {
+    const result = audit(`
+      scene.describe({ name: 'Crane promise', description: 'A crane shot that will never run.',
+        concept: 'the camera rises to reveal', objectives: ['watch the reveal'] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.shot('reveal', { kind: 'crane', distance: 1.5, duration: 2 });
+      scene.story([
+        { id: 'b1', title: 'Reveal', narration: 'The camera rises to show the whole assembly.' },
+      ]);
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const flagged = deficienciesFor(result, 'pedagogy')?.find((d) => d.subjectId === 'shot:reveal');
+    expect(flagged, "shot 'reveal' (crane) has no player — must be flagged").toBeDefined();
+    expect(flagged?.severity).toBe('minor');
+    expect(flagged?.finding).toMatch(/crane/);
+    expect(flagged?.instruction).toMatch(/flyTo/);
+  });
+
+  it('flags an unplayable shot inside a story beat', () => {
+    const result = audit(`
+      scene.describe({ name: 'Orbit promise', description: 'A beat whose orbit shot will not play.',
+        concept: 'the camera circles the mechanism', objectives: ['see it from all sides'] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.story([
+        { id: 'b1', title: 'All sides', narration: 'The camera circles the part.',
+          targetPartId: 'p', shots: [{ kind: 'orbit', sweep: 1.5, duration: 3 }] },
+      ]);
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const flagged = deficienciesFor(result, 'pedagogy')?.find((d) => d.subjectId === 'shot:b1#1');
+    expect(flagged, 'beat shot 1 (orbit) has no player — must be flagged').toBeDefined();
+    expect(flagged?.severity).toBe('minor');
+  });
+
+  it('flags an interaction playShot whose kind cannot play', () => {
+    const result = audit(`
+      scene.describe({ name: 'Pan promise', description: 'A click that promises a pan.',
+        concept: 'clicking pans across the part', objectives: ['pan across the part'] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.interaction({ partId: 'p', on: 'click', kind: 'playShot',
+        shot: { kind: 'pan', sweep: 0.5, duration: 1 } });
+      scene.story([
+        { id: 'b1', title: 'One', narration: 'A beat so the model carries a story.' },
+      ]);
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const flagged = deficienciesFor(result, 'pedagogy')?.find(
+      (d) => d.subjectId === 'shot:p(click)',
+    );
+    expect(flagged, 'the interaction pan shot has no player — must be flagged').toBeDefined();
+    expect(flagged?.severity).toBe('minor');
+  });
+
+  it('does not flag the four playable kinds — the honest vocabulary passes clean', () => {
+    const result = audit(`
+      scene.describe({ name: 'Playable shorts', description: 'Only kinds the viewer can play.',
+        concept: 'shots the camera really makes', objectives: ['watch each move'] });
+      var m = mat.metal({});
+      scene.mesh({ id: 'p', name: 'P', geometry: geom.box({ size: [0.2, 0.2, 0.2] }), material: m });
+      scene.shot('a', { kind: 'cut', pose: { position: [1, 1, 1] } });
+      scene.shot('b', { kind: 'flyTo', targetPartId: 'p', duration: 1 });
+      scene.shot('c', { kind: 'dolly', distance: -0.5 });
+      scene.shot('d', { kind: 'fovPull', fov: 35 });
+      scene.story([
+        { id: 'b1', title: 'One', narration: 'First beat.',
+          targetPartId: 'p', shots: [{ kind: 'dolly', distance: -0.4 }, { kind: 'fovPull', fov: 38 }] },
+      ]);
+      scene.interaction({ partId: 'p', on: 'click', kind: 'playShot',
+        shot: { kind: 'flyTo', targetPartId: 'p' } });
+    `);
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+
+    const shotFindings = (deficienciesFor(result, 'pedagogy') ?? []).filter(
+      (d) => typeof d.subjectId === 'string' && d.subjectId.startsWith('shot:'),
+    );
+    expect(shotFindings, 'playable kinds must not be flagged').toEqual([]);
+  });
+});
+
 describe('the reference turbofan — the regression guard', () => {
   it('audits clean on parameter leverage: every control, including cutaway, provably drives something', () => {
     // The flagship must survive the stricter audit. Before the cutaway toggle was implemented

@@ -17,6 +17,14 @@
  *     thing that distinguishes a slow frame from a dead worker is the worker itself saying so.
  *
  * Extracted here, free of the DOM, so the policy can be tested as arithmetic.
+ *
+ * The trade-off this policy makes, stated plainly because it is a real one: the worst case for
+ * catching a genuinely wedged worker gets *longer*. A worker that hangs during its first frame is
+ * now tolerated for the cap rather than four seconds, so a learner waits longer before the viewer
+ * offers them a retry. The guarantee itself is unchanged — a wedged worker sends nothing at all, so
+ * it crosses any threshold eventually — and the alternative was worse in the other direction: on a
+ * slow device the four-second rule killed models that were working, and a kill is not a retry it
+ * recovers from, it is the model being taken away.
  */
 
 /** Watchdog thresholds. Each is a number with a reason, not a guess. */

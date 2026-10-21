@@ -227,6 +227,28 @@ test.describe('the viewer', () => {
     await expect(thrust).not.toHaveText(before ?? '', { timeout: 15_000 });
   });
 
+  test('travels the camera to the part the learner selects', async ({ page }) => {
+    // What this asserts is the feature itself, at the only level it can be asserted: the camera
+    // moved. The status bar reports the camera's distance from what it is looking at, and that
+    // number is the observable — a move nothing can observe is indistinguishable from a teleport.
+    await page.goto('/viewer');
+    await waitForModel(page);
+
+    const distance = page.locator('[data-stat="distance"] .stat-value');
+    const initial = await distance.textContent();
+    expect(initial).not.toBe('—');
+
+    // The parts list commands the same move a canvas tap does.
+    await page.getByRole('button', { name: 'Fan blades', exact: true }).click();
+    await expect(distance).not.toHaveText(initial ?? '', { timeout: 20_000 });
+    const framedOnBlades = await distance.textContent();
+
+    // A second, much larger part frames at a different distance — proof the first change was the
+    // camera travelling to *that* part rather than one coincidence of arithmetic.
+    await page.getByRole('button', { name: 'Combustor liner', exact: true }).click();
+    await expect(distance).not.toHaveText(framedOnBlades ?? '', { timeout: 20_000 });
+  });
+
   test('orbits the camera on drag without losing the model', async ({ page }) => {
     await page.goto('/viewer');
     await waitForModel(page);

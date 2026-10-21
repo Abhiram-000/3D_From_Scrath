@@ -146,6 +146,16 @@ export const RuntimeStats = z.object({
   quality: QualityPreset,
   effectiveTier: DeviceTier,
   simSeconds: z.number().min(0),
+  /**
+   * How far the camera is from what it is looking at, in metres (the scene is SI).
+   *
+   * Reported because the camera now *travels* when a learner selects a part, and a move nothing can
+   * observe is a move nobody can tell from a teleport — the number changing as the camera glides is
+   * what makes the motion visible.
+   *
+   * Defaulted rather than required: an older worker that does not report it must still parse.
+   */
+  cameraDistance: z.number().min(0).default(0),
   /** Present when the ladder has stepped down, so the notice can explain what changed and why. */
   degradedRungs: z.array(z.enum(QUALITY_LADDER)).default([]),
 });

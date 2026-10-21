@@ -17,7 +17,7 @@
  *
  * All rendering happens here, on the learner's device. The server is never involved in a frame.
  */
-import type { DeviceTier, ModelManifest, RuntimeStats } from '@edu3d/contracts';
+import type { DeviceTier, ModelManifest, QualityPreset, RuntimeStats } from '@edu3d/contracts';
 import type { SerializableVerdict, WorkerRequest, WorkerResponse } from './sandbox-worker.ts';
 import SandboxWorker from './sandbox-worker.ts?worker';
 import {
@@ -157,6 +157,9 @@ export class SandboxHost {
   private buildingUntil = 0;
   private disposed = false;
 
+  /** The learner's pinned quality, if any. Read at spawn, so a respawn keeps their choice. */
+  private pinnedQuality: QualityPreset | null;
+
   /** Retained so a kill can be recovered from by reloading the same program into a fresh worker. */
   private lastProgram: { code: string; seed: number; runtime?: string } | null = null;
   private theme = { top: '#17130f', bottom: '#08070a' };
@@ -165,17 +168,33 @@ export class SandboxHost {
   private statsPublished = 0;
   private watchdogWarned = false;
 
-  constructor(container: HTMLElement, callbacks: HostCallbacks = {}) {
+  constructor(
+    container: HTMLElement,
+    callbacks: HostCallbacks = {},
+    options: { quality?: QualityPreset | null } = {},
+  ) {
     this.container = container;
     this.callbacks = callbacks;
     const detected = detectTier();
     this.tier = detected.tier;
     // Capped here rather than in the worker so the cap is visible to the page's own layout maths.
     this.pixelRatio = Math.min(detected.pixelRatio, 2);
+    this.pinnedQuality = options.quality ?? null;
   }
 
   get deviceTier(): DeviceTier {
     return this.tier;
+  }
+
+  /**
+   * Set the learner's pinned quality, or null to hand the decision back to the adaptive ladder.
+   *
+   * Sent to the live worker rather than waiting for a reload: a control that only takes effect the
+   * next time the model loads is a control that appears broken.
+   */
+  setQuality(quality: QualityPreset | null): void {
+    this.pinnedQuality = quality;
+    this.send({ type: 'setQuality', quality });
   }
 
   /**
@@ -241,6 +260,10 @@ export class SandboxHost {
         pixelRatio: this.pixelRatio,
         tier: this.tier,
         theme: this.theme,
+        // The learner's pinned quality travels with the init rather than after it: the ladder can
+        // step inside the first second, and a pin that arrives late is one the optimizer already
+        // overrode.
+        quality: this.pinnedQuality,
       },
       [offscreen],
     );

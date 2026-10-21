@@ -3,10 +3,13 @@
 
   Markup mirrors index.html class-for-class: .app-container → .top-toolbar (brand + grouped
   .control-group buttons with separators) → .content-area (.left-panel with Parameters/AI Chat tabs,
-  .viewport-container with the canvas + tooltip + story subtitle overlay, .right-panel with the
-  Information sections) → .bottom-bar stats. Modals: quiz, shortcuts, settings (presets), share
-  (link + QR + social), export, AI output. The stylesheets are V1's styles.css and ui-extended.css
-  verbatim, imported globally; the engine wiring (SandboxHost, contracts) is ours.
+  .viewport-container with the canvas + tooltip + quality pin + story subtitle overlay, .right-panel
+  with the Information sections) → .bottom-bar stats. Modals: quiz, shortcuts, settings (presets),
+  share (link + QR + social), export, AI output. The stylesheets are V1's styles.css and
+  ui-extended.css verbatim, imported globally; the engine wiring (SandboxHost, contracts) is ours.
+
+  One control is ours rather than V1's: the quality pin over the canvas (`08`: the learner's explicit
+  choice beats the optimizer, which then only warns). V1 shipped the setting and no way to set it.
 
   `03`'s rules that V1's markup already carries structurally: the shell boots with a dead engine;
   every toolbar button has a tooltip and a shortcut; the canvas is aria-hidden because the part list
@@ -14,11 +17,12 @@
 -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import type { ModelManifest, QuizQuestion, RuntimeStats } from '@edu3d/contracts';
+  import type { ModelManifest, QualityPreset, QuizQuestion, RuntimeStats } from '@edu3d/contracts';
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
   import type { SerializableVerdict } from '$lib/engine/sandbox-worker.ts';
   import { apiFetch, takeBundle, storedRuntime } from '$lib/core/api.ts';
+  import { SettingsStore } from '$lib/core/settings.ts';
   import { panelShowsSelectedPart } from '$lib/components/panel-branch.ts';
   import { shouldSendPointerNow, toCanvasPoint, type RectLike } from '$lib/core/pointer.ts';
   import { anyOverlayOpen, shouldPauseRender } from '$lib/core/render-pause.ts';
@@ -78,6 +82,17 @@
   let deviceTier = $state('');
   let theme = $state<'dark' | 'light'>('dark');
 
+  /**
+   * The learner's settings, and the quality they have pinned (`08`: their explicit choice beats the
+   * optimizer, which then only warns).
+   *
+   * The store is a plain object rather than `$state`: it is not rendered, only read at mount and
+   * written by the control — and the pin itself is mirrored into reactive state so the control can
+   * show what is currently chosen.
+   */
+  const settings = new SettingsStore();
+  let pinnedQuality = $state<QualityPreset | null>(null);
+
   // Pointer/orbit state
   let dragging: 'orbit' | 'pan' | null = null;
   let lastPointer = { x: 0, y: 0 };
@@ -89,6 +104,8 @@
 
   // Dropdown / modals (V1 modal set)
   let viewPresetsOpen = $state(false);
+  /** The quality menu over the canvas. Why it is not in the toolbar is in the markup comment. */
+  let qualityOpen = $state(false);
   let quizModalOpen = $state(false);
   let shortcutsModalOpen = $state(false);
   let shareModalOpen = $state(false);
@@ -188,7 +205,11 @@
     ambient = new Ambient({ grid: false, spotlight: false, blobs: false });
     ambient.mount();
 
-    host = new SandboxHost(canvasHolder, callbacks);
+    // The learner's settings, read once here and handed to the host: a pin is a session-level
+    // choice, and the worker needs it at spawn (see `host.setQuality`).
+    pinnedQuality = settings.current.quality;
+
+    host = new SandboxHost(canvasHolder, callbacks, { quality: pinnedQuality });
     host.start();
     host.setTheme(readThemeColors());
     deviceTier = host.deviceTier;
@@ -309,6 +330,10 @@
           ) {
             quizModalOpen = shortcutsModalOpen = shareModalOpen = codeViewModalOpen = false;
             galleryOpen = generateOpen = false;
+          } else if (qualityOpen) {
+            // A menu over the canvas is not a modal, so nothing else would ever close it: Escape is
+            // the keyboard's way out of an overlay it opened, as it is for every dialog here.
+            qualityOpen = false;
           } else if (activeMode !== 'none') {
             activeMode = 'none';
           } else {
@@ -359,6 +384,22 @@
   function setViewMode(mode: typeof viewMode) {
     viewMode = mode;
     host?.setViewMode(mode);
+  }
+
+  /**
+   * Pin a quality, or hand the decision back to the platform with `null`.
+   *
+   * Written through the settings store so the choice survives a reload, and sent to the live worker
+   * so it takes effect now rather than at the next model load (`08`: the pin beats the optimizer).
+   */
+  function setPinnedQuality(quality: QualityPreset | null) {
+    pinnedQuality = settings.update({ quality }).quality;
+    host?.setQuality(pinnedQuality);
+    toast(
+      pinnedQuality === null
+        ? 'Quality set to Auto — the platform adapts to this device.'
+        : `Quality pinned to ${pinnedQuality}. The platform will keep it and warn if this device struggles.`,
+    );
   }
 
   function toggleTheme() {
@@ -536,6 +577,9 @@
     return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
   };
 
+  // Camera distance from its pivot, in metres (the scene is SI).
+  const formatDistance = (metres: number): string => `${metres.toFixed(1)} m`;
+
   const VIEW_PRESETS = [
     { id: 'front', label: 'Front' },
     { id: 'back', label: 'Back' },
@@ -545,6 +589,55 @@
     { id: 'bottom', label: 'Bottom' },
     { id: 'iso', label: 'Isometric' },
   ] as const;
+
+  /**
+   * What a learner can pin, and what each choice means.
+   *
+   * `null` is Auto: the default, and the only option that hands the decision back to the optimizer —
+   * which is why it carries the one line of copy that says what it means. The other three are the
+   * ladder's own rung names, so a translation would only add words.
+   */
+  const QUALITY_CHOICES: ReadonlyArray<{
+    value: QualityPreset | null;
+    label: string;
+    hint?: string;
+  }> = [
+    { value: null, label: 'Auto', hint: 'The platform adapts to this device.' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+  ];
+
+  /**
+   * The ladder's names are lowercase ids. Two of them are outside what this control offers, but the
+   * worker may report any of them in `stats.quality`, and a lookup that left a blank — or the word
+   * "undefined" — in the status bar would be a quiet wrong of exactly the kind `08` forbids.
+   */
+  const QUALITY_LABELS: Record<QualityPreset, string> = {
+    minimum: 'Minimum',
+    low: 'Low',
+    medium: 'Medium',
+    high: 'High',
+    ultra: 'Ultra',
+  };
+
+  /** What the learner chose: their pin, or Auto when the platform is the one deciding. */
+  const pinnedLabel = $derived(pinnedQuality === null ? 'Auto' : QUALITY_LABELS[pinnedQuality]);
+
+  /**
+   * The quality in force, as the worker itself reports it: the pin when there is one, the tier's rung
+   * when there is not. Read from `stats` rather than re-derived here, so the control cannot disagree
+   * with the engine about which quality is running.
+   */
+  const effectiveQuality = $derived(stats ? QUALITY_LABELS[stats.quality] : null);
+
+  const qualityTitle = $derived(
+    pinnedQuality === null
+      ? effectiveQuality
+        ? `Quality: Auto — the platform is using ${effectiveQuality} on this device. Pick a level to pin it.`
+        : 'Quality: Auto — the platform adapts to this device. Pick a level to pin it.'
+      : `Quality: ${pinnedLabel}, pinned by you — the platform keeps it and warns if this device struggles. Pick Auto to hand the decision back.`,
+  );
 
   const SHORTCUT_CATEGORIES: ReadonlyArray<{
     title: string;
@@ -1388,6 +1481,87 @@
         </div>
       {/if}
 
+      <!--
+        Quality pin — the learner's explicit choice, which `08` makes beat the optimizer (that then
+        only warns). `setPinnedQuality` writes it through the settings store and tells the live worker;
+        this is only the control for it.
+
+        It floats over the canvas because neither of the two places the rest of the chrome would put
+        it has room left: the toolbar strip carries 22 buttons in a strip that fits them within 1-23px
+        at 1366-1440 and shows about four of them at 390px, and the status bar's second group has ~28px
+        of slack on a degraded phone — the device where this control matters most, and where that
+        group already carries the Tier read-out and the `Adapted` badge. Anchored here it costs no
+        chrome its width, is on screen at every size, and sits above the read-outs it changes.
+
+        The menu is the toolbar's View Presets dropdown — same wrapper, menu and item classes, same
+        open/close state, same dismissal by the trigger or by an item — flipped upward and made solid,
+        because a `backdrop-filter` over an opaque WebGL canvas is re-rasterised on every presented
+        frame. It also closes on Escape, which the toolbar's does not: a menu anchored over the canvas
+        has no dialog behind it to shut. Not being a blur is also why it does not join
+        `anyOverlayOpen`'s pause: the engine keeps running behind it, which is what lets a learner watch
+        FPS answer a pin.
+      -->
+      <div class="quality-control">
+        <div class="dropdown-wrapper">
+          <button
+            class="quality-trigger"
+            title={qualityTitle}
+            aria-expanded={qualityOpen}
+            onclick={() => (qualityOpen = !qualityOpen)}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              ><path d="M2.5 12a5.5 5.5 0 0 1 11 0" /><path
+                d="M8 12l3.2-4.6"
+                stroke-linecap="round"
+              /></svg
+            >
+            <span class="quality-label">Quality</span>
+            <span class="quality-now">{pinnedLabel}</span>
+            {#if pinnedQuality === null && effectiveQuality}
+              <span class="quality-effective">· {effectiveQuality}</span>
+            {/if}
+            <svg
+              class="dropdown-arrow"
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              fill="currentColor"><path d="M6 8L2 4h8L6 8Z" /></svg
+            >
+          </button>
+
+          <div class="dropdown-menu quality-menu" class:active={qualityOpen}>
+            {#each QUALITY_CHOICES as choice (choice.label)}
+              {@const isCurrent = choice.value === pinnedQuality}
+              <button
+                class="dropdown-item"
+                class:current={isCurrent}
+                aria-current={isCurrent ? 'true' : undefined}
+                onclick={() => {
+                  setPinnedQuality(choice.value);
+                  qualityOpen = false;
+                }}
+              >
+                <span class="quality-choice">
+                  <span>{choice.label}</span>
+                  {#if choice.hint}
+                    <span class="quality-hint">{choice.hint}</span>
+                  {/if}
+                </span>
+                {#if isCurrent}
+                  <span class="quality-check" aria-hidden="true">✓</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        </div>
+      </div>
+
       <!-- Loading overlay -->
       {#if modelLoading}
         <div class="loading-overlay">
@@ -1558,6 +1732,10 @@
       <div class="stat-item" data-stat="tier" title="Device tier">
         <span class="stat-label">Tier</span>
         <span class="stat-value">{deviceTier || '—'}</span>
+      </div>
+      <div class="stat-item" data-stat="distance" title="Camera distance from its pivot">
+        <span class="stat-label">Distance</span>
+        <span class="stat-value">{stats ? formatDistance(stats.cameraDistance) : '—'}</span>
       </div>
       <div class="stat-item">
         <span class="stat-label">Physics</span>
@@ -1795,5 +1973,111 @@
 
   .stat-value.warning {
     color: var(--warning);
+  }
+
+  /*
+    The quality pin over the canvas (see the markup comment for why it is not in the toolbar).
+
+    Solid and un-blurred, like the tooltip and the toasts above it: this sits over an opaque WebGL
+    canvas, where a backdrop-filter is re-rasterised on every presented frame.
+  */
+  .quality-control {
+    position: absolute;
+    right: var(--space-3);
+    bottom: var(--space-3);
+    /* Above the canvas (auto) and below the loading overlay (200), so a model that is still being
+       built does not offer a control that could not yet do anything. */
+    z-index: 150;
+  }
+
+  .quality-trigger {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-surface-solid, var(--bg-panel));
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md, 10px);
+    box-shadow: var(--shadow-md);
+    transition:
+      color var(--dur-fast) ease,
+      border-color var(--dur-fast) ease;
+  }
+
+  .quality-trigger:hover {
+    color: var(--text-primary);
+    border-color: var(--border-medium);
+  }
+
+  .quality-trigger svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .quality-now {
+    color: var(--primary-cyan);
+    font-weight: 600;
+  }
+
+  /* What the platform is using while the choice is Auto. Dimmer than the choice itself, because it
+     is a consequence of it rather than a second setting. */
+  .quality-effective {
+    font-weight: 500;
+    color: var(--text-dim);
+  }
+
+  /* The menu opens upward: the chip is anchored to the bottom of the canvas. */
+  .quality-menu {
+    top: auto;
+    bottom: calc(100% + 8px);
+    left: auto;
+    right: 0;
+    min-width: 15rem;
+    transform: translateY(10px);
+    background: var(--bg-surface-solid, var(--bg-elevated));
+    backdrop-filter: none;
+  }
+
+  .quality-menu.active {
+    transform: translateY(0);
+  }
+
+  .quality-menu .dropdown-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+
+  /* Filled rather than tinted, like every other current-selection in the app. */
+  .quality-menu .dropdown-item.current {
+    color: var(--primary-cyan);
+  }
+
+  .quality-choice {
+    display: grid;
+    gap: 2px;
+    text-align: left;
+  }
+
+  .quality-hint {
+    font-weight: 400;
+    font-size: 0.6875rem;
+    color: var(--text-dim);
+  }
+
+  .quality-check {
+    color: var(--primary-cyan);
+  }
+
+  /* The toolbar's own responsive rule, for the same reason: at 390px the icon and the value are what
+     a learner needs, and the noun is one tap away in the menu. */
+  @media (max-width: 768px) {
+    .quality-label {
+      display: none;
+    }
   }
 </style>

@@ -6,6 +6,12 @@
  * and nothing forces a learner to tune anything. And `08` again: "the user's explicit quality choice
  * beats the optimizer, which then only warns" — which is why `quality` is a nullable override rather
  * than a plain value.
+ *
+ * WIRED SO FAR: `quality` only, end to end (a control in the viewer, a store in `core/settings.ts`,
+ * and the worker's ladder honouring it). The rest of the schema is *specified* and deliberately not
+ * wired: each one needs a control, and a field nothing reads is the same problem as a policy nothing
+ * enforces. They are listed here because the contract is where the design lives — but do not mistake
+ * a field in this object for a setting the platform currently honours.
  */
 import { z } from 'zod';
 import { QualityPreset } from './budgets.ts';

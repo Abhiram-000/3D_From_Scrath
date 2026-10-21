@@ -27,6 +27,7 @@ import {
   QUALITY_LADDER,
   type DeviceTier,
   type ModelManifest,
+  type QualityPreset,
   type QualityRung,
   type RuntimeStats,
 } from '@edu3d/contracts';
@@ -74,6 +75,7 @@ import {
   type GlideLimits,
   type OrbitPose,
 } from './camera-glide.ts';
+import { ladderDecision } from './quality-pin.ts';
 
 /** Messages the page sends into the worker. */
 export type WorkerRequest =
@@ -85,6 +87,14 @@ export type WorkerRequest =
       pixelRatio: number;
       tier: DeviceTier;
       theme: { top: string; bottom: string };
+      /**
+       * The learner's pinned quality, or null to let the adaptive ladder decide.
+       *
+       * Carried at init rather than sent afterwards, because the ladder can step within the first
+       * second of a model's life and a pin that arrives late would be a pin the optimizer already
+       * overrode.
+       */
+      quality: QualityPreset | null;
     }
   | { type: 'load'; code: string; seed: number; deadlineMs?: number; runtime?: string }
   | { type: 'resize'; width: number; height: number; pixelRatio: number }
@@ -100,6 +110,7 @@ export type WorkerRequest =
   | { type: 'viewPreset'; preset: 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso' }
   | { type: 'setViewMode'; mode: 'normal' | 'xray' | 'wireframe' | 'explode' }
   | { type: 'setTheme'; theme: { top: string; bottom: string } }
+  | { type: 'setQuality'; quality: QualityPreset | null }
   | { type: 'snapshot'; width: number; height: number }
   | { type: 'dispose' };
 
@@ -337,7 +348,20 @@ interface WorkerState {
     headroomFrames: number;
     /** The base pixel ratio before the first step-down, so stepping back up restores it. */
     basePixelRatio: number;
+    /**
+     * True once the ladder has warned that a pinned quality is not being held.
+     *
+     * Sent once per model: a learner who has already been told does not need telling sixty times,
+     * and a notice that repeats itself is a notice that gets ignored.
+     */
+    warnedAboutPin: boolean;
   };
+
+  /**
+   * The learner's pinned quality, or null to let the ladder decide (`08`: the explicit choice beats
+   * the optimizer, which then only warns).
+   */
+  pinnedQuality: QualityPreset | null;
 
   /** Orbit state: spherical coordinates around the target. */
   orbit: { theta: number; phi: number; distance: number; target: THREE.Vector3 };
@@ -677,7 +701,10 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
       pressureFrames: 0,
       headroomFrames: 0,
       basePixelRatio: request.pixelRatio,
+      warnedAboutPin: false,
     },
+
+    pinnedQuality: request.quality,
 
     orbit: { theta: Math.PI * 0.25, phi: Math.PI * 0.4, distance: 5, target: new THREE.Vector3() },
     autoRotate: true,
@@ -1468,13 +1495,34 @@ function monitorLadder(target: WorkerState, frameTimeMs: number): void {
     target.ladder.headroomFrames = 0;
   }
 
-  if (target.ladder.pressureFrames >= TIMING.ladderSustainFrames) {
+  const decision = ladderDecision({
+    pressureFrames: target.ladder.pressureFrames,
+    headroomFrames: target.ladder.headroomFrames,
+    sustainFrames: TIMING.ladderSustainFrames,
+    pinned: target.pinnedQuality !== null,
+  });
+
+  if (decision.warn && !target.ladder.warnedAboutPin) {
+    // The pin is honoured and the learner is told what it costs. `08`: the optimizer becomes a
+    // warner — a quality they chose that the device cannot hold must not be silently exchanged for
+    // stutter they cannot explain.
+    target.ladder.warnedAboutPin = true;
+    post({
+      type: 'notice',
+      message:
+        'Your device is working hard to hold the quality you chose. Set quality back to Auto to let the platform adapt.',
+    });
+  }
+
+  if (decision.step === 'down') {
     target.ladder.pressureFrames = 0;
     ladderStep(target, 'down');
-  } else if (target.ladder.headroomFrames >= TIMING.ladderSustainFrames * 2) {
+  } else if (decision.step === 'up') {
     target.ladder.headroomFrames = 0;
     ladderStep(target, 'up');
   }
+  // Otherwise: hold, by design. The counters keep their evidence for the next frame — including
+  // when a pin means the pressure will never be acted on, which is the point of a pin.
 }
 
 /** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */ function publishStats(
@@ -1504,9 +1552,16 @@ function monitorLadder(target: WorkerState, frameTimeMs: number): void {
       triangles: info.render.triangles,
       physicsMillis: target.physicsMillis,
       cacheHitRate: cacheTotal > 0 ? (geometryStats?.hits ?? 0) / cacheTotal : 1,
-      quality: target.tier === 'low' ? 'low' : target.tier === 'mid' ? 'medium' : 'high',
+      // Reported as the pin when the learner set one: the status bar must show the quality in
+      // force, not the quality the tier would have chosen.
+      quality:
+        target.pinnedQuality ??
+        (target.tier === 'low' ? 'low' : target.tier === 'mid' ? 'medium' : 'high'),
       effectiveTier: target.tier,
       simSeconds: target.elapsed,
+      // The camera's distance from its pivot: the number that changes while a camera move is in
+      // flight, so the move is observable rather than something only the picture knows about.
+      cameraDistance: target.orbit.distance,
       degradedRungs: [...target.ladder.applied],
     },
   });
@@ -1778,6 +1833,16 @@ function loop(timestamp: number): void {
         state.viewMode = request.mode;
         applyViewMode(state);
         // A mode change rewrites materials across the scene: a frame must present it.
+        state.needsRender = true;
+        break;
+      }
+
+      case 'setQuality': {
+        if (!state) return;
+        // The learner changed their mind: the pin applies from the next frame, and the warning is
+        // re-armed so a *new* pin gets its own chance to be explained.
+        state.pinnedQuality = request.quality;
+        state.ladder.warnedAboutPin = false;
         state.needsRender = true;
         break;
       }

@@ -715,7 +715,21 @@ export class AiClient {
             /* a malformed chunk never kills the stream; the next one usually heals it */
           }
         }
+        // A terminal event means the provider is FINISHED writing — not that the socket closed.
+        // This provider sends its finish_reason and then HOLDS THE CONNECTION OPEN, so waiting for
+        // the `done` read never ended: a fully-written answer hung until the per-attempt timeout,
+        // and the learner's composer stayed disabled forever. A completion is finished when the
+        // provider says it is.
+        //
+        // Trade-off accepted: a provider that sends a usage frame AFTER its finish_reason loses
+        // those token counts. That is safe because the classification below never keys on usage —
+        // `sawDone` alone decides clean-finish vs truncation, and usage only ever rides along as
+        // diagnostics on the truncation path.
+        if (sawDone) break;
       }
+      // Release the socket the moment we stop reading: a held-open body must not linger now that
+      // the answer is in hand (an un-cancelled reader keeps the connection alive behind us).
+      void reader.cancel().catch(() => {});
       onProgress(text.length + reasoningChars);
     } catch {
       // Whose abort was it? The drain, the learner, our own timeout, or (none of those) the

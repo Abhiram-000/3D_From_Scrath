@@ -48,6 +48,24 @@ function interruptedSse(frames: string[]): Response {
   );
 }
 
+/**
+ * The `sse` shape, but the socket is NEVER closed: the terminal chunk arrives and the provider then
+ * holds the connection open. This is the real provider's behaviour that made a finished answer hang
+ * until the attempt timeout — the read loop must end on the terminal event, not on the close.
+ */
+function heldSse(frames: string[]): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame));
+        // Deliberately no controller.close(): the body stays open after the finish frame.
+      },
+    }),
+    { headers: { 'content-type': 'text/event-stream' } },
+  );
+}
+
 /** A content frame. */
 const delta = (text: string) =>
   `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n`;
@@ -643,4 +661,57 @@ describe('a streaming completion yields text as it is written', () => {
     expect(result.retryable).toBe(true);
     expect(deltas).toEqual([]);
   });
+
+  it(
+    'resolves on the provider’s terminal chunk even though the body never closes',
+    { timeout: 20_000 },
+    async () => {
+      // The live bug: the provider sends finish_reason and then holds the socket open. The read
+      // loop must end on the finish, not on a close that never comes — otherwise a fully-written
+      // answer hangs until the attempt timeout and the learner's composer never re-enables.
+      respondWith(() =>
+        heldSse([delta('const a = 1;\n'), delta('const b = 2;\n'), finish('stop'), DONE]),
+      );
+
+      const deltas: string[] = [];
+      const startedAt = Date.now();
+      const result = await new AiClient(config).completeStream(
+        { maxOutputTokens: 4096, messages: [{ role: 'user', content: 'x' }], timeoutMs: 30_000 },
+        (fragment) => deltas.push(fragment),
+      );
+      const elapsed = Date.now() - startedAt;
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error('unreachable');
+      expect(result.text).toBe('const a = 1;\nconst b = 2;\n');
+      // Clean finish, from the finish_reason chunk — the same classification the closed-body path
+      // produces. Nothing here may depend on the socket closing.
+      expect(result.finishReason).toBe('stop');
+      expect(deltas).toEqual(['const a = 1;\n', 'const b = 2;\n']);
+      // The proof it ended on the provider's own finish, not on the 30 s attempt timeout.
+      expect(elapsed, `resolved in ${elapsed} ms`).toBeLessThan(2_000);
+    },
+  );
+
+  it(
+    'still refuses a body that closes with text but no terminal event',
+    { timeout: 20_000 },
+    async () => {
+      // The preserved conclusion, pinned: a clean EOF with text and no finish_reason / [DONE] is a
+      // mid-program cut — handed back with `partialText`, not retried here. The early exit above must
+      // not change this; it only changes WHEN the loop stops, not what it concludes.
+      respondWith(() => sse([delta('const a = 1;')]));
+
+      const result = await new AiClient(config).completeStream(
+        { maxOutputTokens: 4096, messages: [{ role: 'user', content: 'x' }] },
+        () => {},
+      );
+
+      expect(result.ok).toBe(false);
+      if (result.ok) throw new Error('unreachable');
+      expect(result.code).toBe('truncated');
+      expect(result.retryable).toBe(false);
+      expect(result.partialText).toBe('const a = 1;');
+    },
+  );
 });

@@ -89,13 +89,16 @@ export function sniffSnapshot(bytes: Uint8Array): string | null {
 export interface GalleryStore {
   list(query: GalleryQuery): Promise<GalleryList>;
   get(id: string): Promise<GalleryRecord | null>;
-  /** Insert or replace by id. UUIDs are minted here so a retried publish cannot double-insert. */
+  /** Insert or replace by id. UUIDs are minted here so a retried publish cannot double-insert.
+   *  `snapshotUrl`, when provided, is the pointer the record itself carries — the gallery list
+   *  renders `entry.snapshotUrl`, so it lives on the row, never only inside the bundle blob. */
   put(record: {
     name: string;
     subject: string;
     tags: string[];
     bundle: unknown;
     id?: string;
+    snapshotUrl?: string | null;
   }): Promise<GalleryRecord>;
   delete(id: string): Promise<boolean>;
   /** Store snapshot bytes; returns the URL they are served from. Content-addressed by uuid. */
@@ -215,17 +218,36 @@ export class PostgresStore implements GalleryStore {
     tags: string[];
     bundle: unknown;
     id?: string;
+    snapshotUrl?: string | null;
   }): Promise<GalleryRecord> {
     const id = input.id ?? randomUUID();
     const now = new Date().toISOString();
+    const snapshotUrl = input.snapshotUrl ?? null;
+    // A replaced publish that drops or swaps its snapshot would otherwise orphan the old row: the
+    // pointer lives in the row we are about to overwrite, so read it through the same round trip.
+    const previous = await this.client.query('SELECT snapshot_url FROM blueprints WHERE id = $1', [
+      id,
+    ]);
+    const previousUrl = previous.rows[0]?.snapshot_url
+      ? String(previous.rows[0].snapshot_url)
+      : null;
+    if (previousUrl && previousUrl !== snapshotUrl) await this.deleteSnapshotByUrl(previousUrl);
     // INSERT … ON CONFLICT: a retried publish with the same id replaces rather than duplicates (`04`).
     await this.client.query(
-      `INSERT INTO blueprints (id, name, subject, tags, bundle, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $6)
+      `INSERT INTO blueprints (id, name, subject, tags, bundle, snapshot_url, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, subject = EXCLUDED.subject, tags = EXCLUDED.tags,
-         bundle = EXCLUDED.bundle, updated_at = EXCLUDED.updated_at`,
-      [id, input.name, input.subject, [...input.tags], JSON.stringify(input.bundle), now],
+         bundle = EXCLUDED.bundle, snapshot_url = EXCLUDED.snapshot_url, updated_at = EXCLUDED.updated_at`,
+      [
+        id,
+        input.name,
+        input.subject,
+        [...input.tags],
+        JSON.stringify(input.bundle),
+        snapshotUrl,
+        now,
+      ],
     );
     return {
       id,
@@ -233,20 +255,31 @@ export class PostgresStore implements GalleryStore {
       subject: input.subject,
       tags: input.tags,
       bundle: input.bundle,
-      snapshotUrl: null,
+      snapshotUrl,
       createdAt: new Date(now).getTime(),
       updatedAt: new Date(now).getTime(),
     };
   }
 
+  /** Postgres keys snapshot rows by the bare uuid it minted; a stored URL carries it last. */
+  private async deleteSnapshotByUrl(url: string): Promise<void> {
+    const uuid = url.split('/').pop()?.split('.')[0] ?? '';
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) return;
+    await this.client.query('DELETE FROM snapshots WHERE id = $1', [uuid]).catch(() => undefined);
+  }
+
   async delete(id: string): Promise<boolean> {
     // RETURNING is the truth: a delete of an unknown id must report false, not a crafted
-    // `|| true`. The snapshot delete stays fire-and-forget — an orphan snapshot is a cleanup
-    // matter, not a failed publish-removal (same edge case, `06`).
-    const result = await this.client.query('DELETE FROM blueprints WHERE id = $1 RETURNING id', [
-      id,
-    ]);
-    await this.client.query('DELETE FROM snapshots WHERE id = $1', [id]).catch(() => undefined);
+    // `|| true`. The snapshot row is found through the record's own `snapshot_url` — the OLD
+    // shape deleted `WHERE id = $1` with the *blueprint* id, which never matched the separately
+    // minted snapshot uuid, so every delete orphaned its snapshot row (`06`: snapshots live in
+    // their own table so this linkage is the only one there is).
+    const result = await this.client.query(
+      'DELETE FROM blueprints WHERE id = $1 RETURNING snapshot_url',
+      [id],
+    );
+    const url = result.rows[0]?.snapshot_url ? String(result.rows[0].snapshot_url) : null;
+    if (url) await this.deleteSnapshotByUrl(url);
     return (result.rows ?? []).length > 0;
   }
 
@@ -352,17 +385,28 @@ export class FileStore implements GalleryStore {
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      void this.flush();
+      // A failed write leaves `dirty` true (see `flush`), so rows stay marked unpersisted and the
+      // next mutation — or shutdown's `flush` — retries. Swallowed here only so a debounced write
+      // failing in the background is not an unhandled rejection that kills the process.
+      this.flush().catch(() => undefined);
     }, PERSIST_DEBOUNCE_MS);
   }
 
-  /** Atomic: temp file + rename, so a crash leaves the old file or the new one, never a hybrid (`06`). */
+  /**
+   * Atomic: temp file + rename, so a crash leaves the old file or the new one, never a hybrid (`06`).
+   *
+   * `dirty` clears ONLY after the rename commits. The old order — clear, then write — meant a
+   * failed write returned rows to an in-memory state marked persisted: silent data loss on the
+   * next restart, invisible until the store was reloaded and the gallery was missing publishes
+   * someone saw succeed. A throw propagates: callers that await this (shutdown, the test above)
+   * surface it, and because `dirty` is untouched the debounced path retries on the next trigger.
+   */
   async flush(): Promise<void> {
     if (!this.dirty) return;
-    this.dirty = false;
     const temp = `${this.filePath}.tmp`;
     await writeFile(temp, JSON.stringify({ rows: this.rows }), 'utf8');
     await rename(temp, this.filePath);
+    this.dirty = false;
   }
 
   async close(): Promise<void> {
@@ -370,12 +414,23 @@ export class FileStore implements GalleryStore {
     await this.flush();
   }
 
+  /** Unlink a snapshot file by its stored URL, tolerating absence (`06`). Returns when attempted. */
+  private async removeSnapshotFile(snapshotUrl: string | null): Promise<void> {
+    if (!snapshotUrl) return;
+    const snapshotId = snapshotUrl.split('/').pop() ?? '';
+    // A missing snapshot file is not an error (`06`).
+    await unlink(path.join(this.snapshotDir, snapshotId)).catch(() => undefined);
+  }
+
   private evictIfNeeded(): void {
     if (this.rows.length <= MAX_FILE_ROWS) return;
-    // Oldest-first, by creation time — the bounded-rows rule.
+    // Oldest-first, by creation time — the bounded-rows rule. The evicted rows' snapshot files go
+    // with them: rows are bounded so a full disk cannot be, and an orphaned snapshot file here is
+    // an unbounded leak behind a bounded row count.
     this.rows.sort((a, b) => a.createdAt - b.createdAt);
     const excess = this.rows.length - MAX_FILE_ROWS;
-    this.rows.splice(0, excess);
+    const evicted = this.rows.splice(0, excess);
+    for (const row of evicted) void this.removeSnapshotFile(row.snapshotUrl);
   }
 
   async list(query: GalleryQuery): Promise<GalleryList> {
@@ -412,16 +467,23 @@ export class FileStore implements GalleryStore {
     tags: string[];
     bundle: unknown;
     id?: string;
+    snapshotUrl?: string | null;
   }): Promise<GalleryRecord> {
     await this.init();
     const now = Date.now();
     const existing = input.id ? this.rows.find((row) => row.id === input.id) : undefined;
     if (existing) {
+      // A swapped or dropped snapshot must not leak its old file, same as delete (`06`).
+      const oldUrl = existing.snapshotUrl;
+      if (input.snapshotUrl !== undefined && oldUrl && oldUrl !== input.snapshotUrl) {
+        void this.removeSnapshotFile(oldUrl);
+      }
       Object.assign(existing, {
         name: input.name,
         subject: input.subject,
         tags: [...input.tags],
         bundle: input.bundle,
+        ...(input.snapshotUrl !== undefined ? { snapshotUrl: input.snapshotUrl } : {}),
         updatedAt: now,
       });
       this.schedulePersist();
@@ -433,7 +495,7 @@ export class FileStore implements GalleryStore {
       subject: input.subject,
       tags: [...input.tags],
       bundle: input.bundle,
-      snapshotUrl: null,
+      snapshotUrl: input.snapshotUrl ?? null,
       createdAt: now,
       updatedAt: now,
     };
@@ -451,11 +513,7 @@ export class FileStore implements GalleryStore {
     if (!removed) return false;
     this.rows.splice(index, 1);
     this.schedulePersist();
-    // A missing snapshot file on delete is not an error (`06`).
-    if (removed.snapshotUrl) {
-      const snapshotId = removed.snapshotUrl.split('/').pop() ?? '';
-      await unlink(path.join(this.snapshotDir, snapshotId)).catch(() => undefined);
-    }
+    await this.removeSnapshotFile(removed.snapshotUrl);
     return true;
   }
 
@@ -519,8 +577,17 @@ export async function openGalleryStore(config: ServerConfig): Promise<GallerySto
     return store;
   } catch (error) {
     if (config.isProduction) {
+      // The message names the HOST the server actually tried: the most common causes are a typo'd
+      // hostname, a wrong port, or a database that never came up — none distinguishable from
+      // "unreachable" without the address in the refusal.
+      let host = '(unparsable connection string)';
+      try {
+        host = new URL(config.storage.databaseUrl).host || host;
+      } catch {
+        /* leave the placeholder */
+      }
       throw new Error(
-        `DATABASE_URL is set but unreachable (${(error as Error).message}). Refusing to start in production — fix the database or set EDU3D_ALLOW_EPHEMERAL_STORE=true.`,
+        `DATABASE_URL points at ${host} but is unreachable (${(error as Error).message}). Refusing to start in production — fix the database or set EDU3D_ALLOW_EPHEMERAL_STORE=true.`,
         { cause: error },
       );
     }

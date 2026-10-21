@@ -16,9 +16,11 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type z } from 'zod';
 import { ModelBundle } from '@edu3d/contracts';
-import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
+import { REFERENCE_MODEL_SOURCE, apiSurfaceSet } from '@edu3d/engine';
+import { prepareProgram } from '@edu3d/sandbox';
 import { buildApp, type AppState } from '../src/app.ts';
 import { resolveConfig } from '../src/config/config.ts';
+import { auditModel } from '../src/services/audit.ts';
 import type { AiClient } from '../src/services/ai-client.ts';
 import {
   FileStore,
@@ -54,6 +56,8 @@ const WORKERS_DIR = fileURLToPath(
  */
 type Bundle = z.infer<typeof ModelBundle>;
 let referenceBundle: Bundle;
+/** The real engine-authored bundle: gate + instrument + headless audit of the shipped reference. */
+let turbofanBundle: Bundle;
 
 /** One temp root per run: the file store writes here across every suite in this file. */
 let dataDir: string;
@@ -115,13 +119,49 @@ beforeAll(async () => {
         .join('; ')}`,
     );
   }
-  // NOTE on the fixture's real-world counterpart (a finding to REPORT, not to fix in this lane):
-  // the pipeline's authoring output is NOT this clean — the engine's structural geometry keying
-  // produces a marching-cubes `geometry.cacheKey` of 3114 chars on the reference turbofan while
-  // `contracts` caps `cacheKey` at 512 (packages/contracts/src/manifest/parts.ts) — so a REAL
-  // pipeline bundle fails `ModelBundle`/`PublishRequest` parsing and cannot be published at all,
-  // regardless of tokens or auth. Packages files are outside this lane's write scope.
+  // HISTORY (B1b, now fixed): this fixture's real-world counterpart — the pipeline's authoring
+  // output — used to be NOT this clean: the engine's structural geometry keying produced a
+  // marching-cubes `geometry.cacheKey` of 3114 chars on the reference turbofan while `contracts`
+  // caps `cacheKey` at 512, so a REAL pipeline bundle failed `ModelBundle`/`PublishRequest`
+  // parsing and could not be published at all. The engine now emits contract-bounded keys; the
+  // `turbofanBundle` fixture below publishes what the engine really authors, not this stand-in.
   referenceBundle = validated.data;
+
+  // The REAL publish fixture: authored by the engine exactly the way the pipeline authors a
+  // generated model (gate + instrument, then the headless audit). The hand-built fixture above
+  // can never catch B1b — its cache keys are invented strings — while this one carries whatever
+  // the engine actually emitted, including any over-cap structural key.
+  const prepared = prepareProgram(REFERENCE_MODEL_SOURCE, { apiSurface: apiSurfaceSet() });
+  if (!prepared.ok) {
+    throw new Error(
+      `the reference turbofan must pass the gate: ${JSON.stringify(prepared.gate).slice(0, 300)}`,
+    );
+  }
+  const built = auditModel({ code: prepared.instrumented, tier: 'mid', seed: 7 });
+  if (!built.ok) {
+    throw new Error(`the reference turbofan must audit clean: ${built.message}`);
+  }
+  const rawBundle = {
+    manifest: built.manifest,
+    code: prepared.code,
+    runtime: prepared.instrumented,
+    provenance: { topic: 'a turbofan engine' },
+  };
+  const authored = ModelBundle.safeParse(rawBundle);
+  if (!authored.success) {
+    // Deliberately NOT fatal: the publish test below drives the raw bundle through the real route,
+    // so the failure shows up as the route's own 400 — the honest RED evidence — instead of a
+    // fixture-build throw that never reaches the wire.
+    console.warn(
+      `[fixture] a real engine manifest is not publishable as-is: ${authored.error.issues
+        .slice(0, 4)
+        .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+        .join('; ')}`,
+    );
+  }
+  turbofanBundle = (authored.success
+    ? authored.data
+    : rawBundle) as unknown as typeof referenceBundle;
 });
 
 /** A publish snapshot the sniff accepts: the PNG magic is the header, nothing more is needed. */
@@ -138,14 +178,17 @@ const neverAi = {
 type TestApp = Hono<{ Variables: { requestId: string; state: AppState } }>;
 
 /** Build the app from one env, with the file store rooted at this run's temp dir. */
-function appFor(env: Record<string, string | undefined>): {
+function appFor(
+  env: Record<string, string | undefined>,
+  ai: AiClient = neverAi,
+): {
   app: TestApp;
   state: AppState;
 } {
   const config = resolveConfig({ EDU3D_DATA_DIR: dataDir, ...env });
   const state: AppState = {
     config,
-    ai: neverAi,
+    ai,
     store: new FileStore(config, 'unconfigured'),
     limiters: buildLimiters(config),
     draining: false,
@@ -409,12 +452,20 @@ describe('snapshots round-trip through both stores', () => {
     expect(published.status).toBe(201);
     const { id } = (await published.json()) as { id: string };
 
+    // The POINTER lives on the record itself, not buried inside the bundle (B3): the gallery list
+    // renders `entry.snapshotUrl`, so a publish that stored a snapshot must make it appear there.
     const record = (await (await app.request(`/api/gallery/${id}`)).json()) as {
-      bundle: { snapshotUrl: string | null };
+      snapshotUrl: string | null;
     };
-    expect(record.bundle.snapshotUrl).toMatch(/^\/api\/snapshots\//);
+    expect(record.snapshotUrl).toMatch(/^\/api\/snapshots\//);
 
-    const snapshot = await app.request(record.bundle.snapshotUrl ?? '');
+    const list = (await (await app.request('/api/gallery')).json()) as {
+      entries: Array<{ id: string; snapshotUrl: string | null }>;
+    };
+    const entry = list.entries.find((candidate) => candidate.id === id);
+    expect(entry?.snapshotUrl).toBe(record.snapshotUrl);
+
+    const snapshot = await app.request(record.snapshotUrl ?? '');
     expect(snapshot.status).toBe(200);
     expect(snapshot.headers.get('content-type')).toBe('image/png');
     // Same bytes in, same bytes out: the URL the store minted works as-is.
@@ -466,5 +517,129 @@ describe('behind a trusted proxy, headers cannot rotate the limiter bucket', () 
     // the key, all six passed, and the same gap opened the generate limiter (unlimited AI spend).
     expect(limited).toBe(3);
     expect(state.limiters.api.size).toBe(1);
+  });
+});
+
+describe('publishing what the engine really authors', () => {
+  it('the reference turbofan — with every cache key the engine emitted — publishes', async () => {
+    // B1b regression: the engine's structural keys were unbounded JSON (3,114 chars on this very
+    // model's swept bypass ribbon) while `GeometryRef.cacheKey` caps at 512, so `POST /api/gallery`
+    // answered 400 to the platform's own exemplar. The engine must emit contract-bounded keys.
+    const { app } = appFor({});
+    const published = await app.request('/api/gallery', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bundle: turbofanBundle, snapshot: pngDataUrl }),
+    });
+    expect(published.status, JSON.stringify(await published.json())).toBe(201);
+
+    // And the stored record still says the model it is: the snapshot pointer on the record, not
+    // buried in the bundle, and every emitted cache key within the contract's bound.
+    const list = (await (await app.request('/api/gallery')).json()) as {
+      entries: Array<{ id: string; snapshotUrl: string | null; name: string }>;
+    };
+    const entry = list.entries[0];
+    expect(entry?.snapshotUrl).toMatch(/^\/api\/snapshots\//);
+    expect(entry?.name).toMatch(/turbofan/i);
+
+    const record = (await (await app.request(`/api/gallery/${entry?.id ?? ''}`)).json()) as {
+      snapshotUrl: string | null;
+      bundle: { manifest: { parts: Array<{ geometry?: { cacheKey: string } }> } };
+    };
+    expect(record.snapshotUrl).toMatch(/^\/api\/snapshots\//);
+    const keys = record.bundle.manifest.parts.flatMap((part) =>
+      part.geometry ? [part.geometry.cacheKey] : [],
+    );
+    expect(keys.length).toBeGreaterThan(0);
+    for (const cacheKey of keys) {
+      expect(cacheKey.length, cacheKey.slice(0, 64)).toBeLessThanOrEqual(512);
+    }
+  });
+
+  it('the reader-proven gallery shows the turbofan by name', async () => {
+    const { app } = appFor({});
+    await app.request('/api/gallery', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bundle: turbofanBundle }),
+    });
+    const list = (await (await app.request('/api/gallery')).json()) as {
+      entries: Array<{ name: string }>;
+    };
+    expect(list.entries[0]?.name).toMatch(/turbofan/i);
+  });
+});
+
+describe('correlation ids reach the responses that bypass context.json', () => {
+  it('the generate NDJSON stream carries x-request-id', async () => {
+    // The route-built `new Response(...)` does not inherit the middleware's c.header — the fixing
+    // evidence: before B6 this asserted null while every JSON route had the header.
+    const { app } = appFor({ AI_API_KEY: 'test-key' });
+    const response = await app.request('/api/generate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ topic: 'a turbofan engine', stream: true }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/x-ndjson');
+    expect(response.headers.get('x-request-id')).toBeTruthy();
+
+    const firstEvent = JSON.parse((await response.text()).split('\n')[0] ?? '{}') as {
+      type?: string;
+    };
+    expect(firstEvent.type).toBe('phase');
+  });
+
+  it('the chat NDJSON stream carries x-request-id', async () => {
+    const chattyAi = {
+      complete: async () => ({ ok: true, text: 'Because the fan pushes air.' }),
+    } as unknown as AiClient;
+    const { app } = appFor({ AI_API_KEY: 'test-key' }, chattyAi);
+    const response = await app.request('/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'why does the fan spin?', stream: true }),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('application/x-ndjson');
+    expect(response.headers.get('x-request-id')).toBeTruthy();
+    await response.text();
+  });
+
+  it('the snapshot response carries x-request-id', async () => {
+    const { app } = appFor({});
+    const published = await app.request('/api/gallery', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bundle: referenceBundle, snapshot: pngDataUrl }),
+    });
+    expect(published.status).toBe(201);
+    const { id } = (await published.json()) as { id: string };
+    const record = (await (await app.request(`/api/gallery/${id}`)).json()) as {
+      snapshotUrl: string | null;
+    };
+    const snapshot = await app.request(record.snapshotUrl ?? '');
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.headers.get('x-request-id')).toBeTruthy();
+  });
+});
+
+describe('the CSP follows the configured origins', () => {
+  it('a split deployment (PUBLIC_ORIGIN set) adds the origin to connect-src', async () => {
+    const { app } = appFor({
+      EDU3D_CSP: 'enforce',
+      PUBLIC_ORIGIN: 'https://edu3d.example',
+    });
+    const response = await app.request('/viewer');
+    const policy = response.headers.get('content-security-policy');
+    expect(policy).toContain("connect-src 'self' https://edu3d.example");
+  });
+
+  it('same-origin deployments keep the strict shipped policy untouched', async () => {
+    const { app } = appFor({ EDU3D_CSP: 'enforce' });
+    const response = await app.request('/viewer');
+    const policy = response.headers.get('content-security-policy');
+    expect(policy).toContain("connect-src 'self';");
+    expect(policy).not.toContain('edu3d.example');
   });
 });

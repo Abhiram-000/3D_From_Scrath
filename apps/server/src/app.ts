@@ -102,9 +102,16 @@ export const WORKER_POLICY = DOCUMENT_POLICY.replace(
 );
 
 /** The policy for one response surface: built worker chunks get the compiler's allowance. */
-export function cspPolicy(pathname: string): string {
+export function cspPolicy(pathname: string, publicOrigin: string | null = null): string {
   const isWorkerChunk = pathname.startsWith(WORKER_CHUNK_PREFIX) && pathname.endsWith('.js');
-  return isWorkerChunk ? WORKER_POLICY : DOCUMENT_POLICY;
+  const policy = isWorkerChunk ? WORKER_POLICY : DOCUMENT_POLICY;
+  // `PUBLIC_ORIGIN` is only set for a split deployment — API and frontend on different origins —
+  // and that is the one case where same-origin `connect-src 'self'` would block the shipped
+  // client's own fetches from the page's origin. The server never loosens anything else (the CSP
+  // stays the shipped policy in every same-origin deployment, where PUBLIC_ORIGIN is unset and
+  // `connect-src 'self'` remains exactly what it says).
+  if (isWorkerChunk || !publicOrigin) return policy;
+  return policy.replace("connect-src 'self'", `connect-src 'self' ${publicOrigin}`);
 }
 
 /**
@@ -190,7 +197,7 @@ export function buildApp(state: AppState): Hono<AppContext> {
     // every model build in production with EvalError (verified in the browser; RED evidence in
     // tests/app.test.ts).
     if (config.security.csp !== 'off') {
-      const policy = cspPolicy(new URL(context.req.url).pathname);
+      const policy = cspPolicy(new URL(context.req.url).pathname, config.publicOrigin);
       // Violations surface in the browser console; no report sink means no report noise and no
       // endpoint for a misconfigured client to spray.
       context.header('content-security-policy-report-only', policy);
@@ -424,6 +431,10 @@ export function buildApp(state: AppState): Hono<AppContext> {
         'cache-control': 'no-cache, no-transform',
         // Any proxy in the chain must not buffer: a heartbeat nobody sees is a dead socket (`04`).
         'x-accel-buffering': 'no',
+        // A bare `new Response` does not carry the context headers the middleware staged (Hono
+        // semantics), and a failed generation stream is exactly the event a learner reports —
+        // correlation is the one thing it must carry (B6).
+        'x-request-id': requestId,
       },
     });
   });
@@ -497,7 +508,12 @@ export function buildApp(state: AppState): Hono<AppContext> {
       },
     });
     return new Response(stream, {
-      headers: { 'content-type': 'application/x-ndjson; charset=utf-8', 'x-accel-buffering': 'no' },
+      headers: {
+        'content-type': 'application/x-ndjson; charset=utf-8',
+        'x-accel-buffering': 'no',
+        // Bare Response bypasses the context headers — same as the generate stream (B6).
+        'x-request-id': requestId,
+      },
     });
   });
 
@@ -618,11 +634,16 @@ export function buildApp(state: AppState): Hono<AppContext> {
       snapshotUrl = await state.store.putSnapshot(new Uint8Array(bytes), mime);
     }
 
+    // The snapshot's pointer is a property OF THE RECORD, not of the blob: `GalleryEntry` (the
+    // wire shape the gallery list renders) carries `snapshotUrl`, so the store persists it in its
+    // own column and both `list` and `get` return it (B3). The bundle stays exactly the payload
+    // the client sent — the model program and manifest the viewer loads.
     const record = await state.store.put({
       name: parsed.data.bundle.manifest?.name ?? 'Untitled model',
       subject: parsed.data.bundle.manifest?.domain ?? 'other',
       tags: [],
-      bundle: { ...parsed.data.bundle, snapshotUrl },
+      bundle: parsed.data.bundle,
+      snapshotUrl,
     });
     return context.json({ id: record.id, shareUrl: `/viewer?model=${record.id}`, requestId }, 201);
   });
@@ -653,6 +674,7 @@ export function buildApp(state: AppState): Hono<AppContext> {
   // budget", which was never true; the immutable cache header keeps the cost bounded because a
   // browser that has the image rarely asks again.
   app.get('/api/snapshots/:id', async (context) => {
+    const requestId = context.get('requestId');
     const id = context.req.param('id');
     // Allow the file extension the fallback store appends, but reject path traversal outright.
     const safe = id.replace(/[^a-zA-Z0-9.-]/g, '');
@@ -674,6 +696,8 @@ export function buildApp(state: AppState): Hono<AppContext> {
         'content-type': snapshot.mime,
         'cache-control': 'public, max-age=31536000, immutable',
         'x-content-type-options': 'nosniff',
+        // Bare Response: the correlation header must be explicit or it does not exist (B6).
+        'x-request-id': requestId,
       },
     });
   });

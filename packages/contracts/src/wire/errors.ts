@@ -118,7 +118,7 @@ export const RETRYABLE: Readonly<Record<ErrorCode, boolean>> = Object.freeze({
  */
 export const DEFAULT_ERROR_MESSAGE: Readonly<Record<ErrorCode, string>> = Object.freeze({
   cancelled: 'The generation was stopped because you left the page.',
-  bad_request: 'That request could not be understood. Check the topic and try again.',
+  bad_request: 'That request could not be understood. Check what was sent and try again.',
   unauthorized: 'This action needs a write token. Add it to your settings and retry.',
   not_found: 'That model no longer exists. It may have been deleted.',
   too_large: 'That was too large to accept. Try something shorter.',

@@ -144,15 +144,16 @@ function manifestIssues(manifest: ManifestShape): string[] {
 
 /**
  * Engine-owned serialization fields are not authoring decisions, so they are not repairable by
- * the model and must not fail a legitimate run: the engine's geometry dedup key (`cacheKey`,
- * JSON-serialized builder spec) can exceed the contract's 512-char cap on composite geometry
- * (measured 3,114 chars on the reference turbofan's swept bypass ribbon) with NOTHING about the
- * model's plan being wrong. Exclude them so the manifest gate judges only the model's own
- * choices (counts, lengths of authored strings, numeric ranges).
+ * the model and must not fail a legitimate run: the engine's geometry dedup key (`cacheKey`)
+ * used to exceed the contract's 512-char cap on composite geometry (measured 3,114 chars on the
+ * reference turbofan's swept bypass ribbon) with NOTHING about the model's plan being wrong.
+ * Exclude them so the manifest gate judges only the model's own choices (counts, lengths of
+ * authored strings, numeric ranges).
  *
- * NOTE for the cross-lane follow-up: publish re-parses the same schema, so an over-cap
- * `cacheKey` still 400s a valid model there — the engine (or the contract) has to fix the
- * serialization itself; this gate refuses to spend a repair pass on a one-line prompt error.
+ * The engine now emits contract-bounded keys (a fixed-length digest past 512 — see
+ * `packages/engine/src/geometry/factory.ts`), so an over-cap key no longer occurs on current
+ * builds; the exclusion stays as belt-and-braces for manifests authored by an older engine
+ * build still resident in the gallery, which must remain readable and re-publishable.
  */
 function isEngineOwnedField(issue: { path: PropertyKey[] }): boolean {
   return issue.path.length > 0 && issue.path[issue.path.length - 1] === 'cacheKey';

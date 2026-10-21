@@ -153,13 +153,56 @@ function requireVec3(value: unknown, name: string): Vec3 {
 }
 
 /**
- * Stable structural key for a builder call.
+ * Stable structural key for a builder call, BOUNDED to the wire contract.
  *
- * `JSON.stringify` on a sorted key list rather than a hash: collisions in a cache key mean two different shapes
- * silently share one GPU object, which is a visually baffling failure. A slightly longer string is a cheap
- * price for exactness. Typed arrays are keyed by length plus a sampled digest, because hashing a 200k-vertex
- * buffer on every call would cost more than the cache saves.
+ * The key is `JSON.stringify` on a sorted key list when the structural form is short: collisions in a cache
+ * key mean two different shapes silently share one GPU object, which is a visually baffling failure. A
+ * slightly longer string is a cheap price for exactness. Typed arrays are keyed by length plus a sampled
+ * digest, because hashing a 200k-vertex buffer on every call would cost more than the cache saves.
+ *
+ * But a composite shape's structural form is NOT cheap — the reference turbofan's swept bypass ribbon
+ * produces a 3,114-character key — and `GeometryRef.cacheKey` rides the manifest, where
+ * `packages/contracts` caps it at 512 (`CACHE_KEY_MAX_LENGTH` here). A valid model could never publish.
+ * Past that length the key becomes a fixed-length digest of the full structural form (with its length
+ * folded in), deterministic and per-build-stable: the key's real job is dedup *inside one build*, not
+ * human-readable identity, so a digest answers the purpose without breaking the wire. The literal and
+ * digest forms can never collide (they differ in the character right after `builder:`), and the
+ * 128-bit digest makes an accidental merge of two distinct shapes vanishingly unlikely for the few
+ * thousand keys a build holds. The digest is pure JS — the worker, the Node audit host and tests all
+ * compute the identical bytes, which is what lets a manifest authored headlessly realize unchanged in
+ * the browser.
+ *
+ * B1b, fixed at the right layer: here, where the key is minted, not at the cap that guards the wire.
  */
+const CACHE_KEY_MAX_LENGTH = 512;
+
+/**
+ * A 128-bit digest, pure JS: node:crypto is unavailable on the DOM-free worker path, and the
+ * worker, the Node audit host and tests must all compute the identical bytes.
+ *
+ * Four independent 32-bit FNV-1a lanes over UTF-16 code units — unrolled rather than table-driven
+ * so it stays off `noUncheckedIndexedAccess`'s undefined-shaped indexing.
+ */
+function keyDigest128(text: string): string {
+  let a = 0x811c9dc5;
+  let b = 0x1b873593;
+  let c = 0xcc9e2d51;
+  let d = 0x27d4eb2f;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    a = Math.imul(a ^ code, 0x01000193);
+    b = Math.imul(b ^ code, 0x1000193);
+    c = Math.imul(c ^ code, 0x85ebca6b);
+    d = Math.imul(d ^ code, 0xc2b2ae35);
+  }
+  return (
+    (a >>> 0).toString(16).padStart(8, '0') +
+    (b >>> 0).toString(16).padStart(8, '0') +
+    (c >>> 0).toString(16).padStart(8, '0') +
+    (d >>> 0).toString(16).padStart(8, '0')
+  );
+}
+
 function structuralKey(builder: string, spec: unknown): string {
   const seen = new WeakSet<object>();
 
@@ -194,7 +237,11 @@ function structuralKey(builder: string, spec: unknown): string {
     return out;
   };
 
-  return `${builder}:${JSON.stringify(normalise(spec))}`;
+  const json = JSON.stringify(normalise(spec));
+  if (builder.length + 1 + json.length <= CACHE_KEY_MAX_LENGTH) return `${builder}:${json}`;
+  // Over the cap: the length is folded into the key so two long specs cannot merge even in the
+  // astronomically unlikely event their 128-bit lanes agree.
+  return `${builder}:#h${json.length}x${keyDigest128(json)}`;
 }
 
 /**

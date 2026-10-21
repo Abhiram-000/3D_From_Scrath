@@ -9,11 +9,18 @@
   Behavior per `05`: the persona is a teaching stance sent per-message; a typing indicator shows
   work honestly; auto-scroll only when already near the bottom; Enter sends; errors return the
   input; all text renders as text nodes with a constrained bold renderer.
+
+  The persona has ONE home: `UserSettings.chatPersona` in contracts (stored under
+  `edu3d.settings.v1` via lib/core/settings.ts). The old competing `edu3d.persona` localStorage key
+  was a second, silent home for the same decision — the two could disagree after a settings edit,
+  and whichever the panel read last won invisibly. It is read once here to migrate a choice made
+  under the old key, then deleted; the settings schema validates and persists from then on.
 -->
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import type { ChatPersona, ModelManifest } from '@edu3d/contracts';
   import { apiFetch } from '$lib/core/api.ts';
+  import { SettingsStore } from '$lib/core/settings.ts';
   import { toContext } from '$lib/core/model-context.ts';
 
   const {
@@ -47,7 +54,13 @@
     },
   ]);
   let input = $state('');
-  let persona = $state<ChatPersona>('teacher');
+  /**
+   * The teaching stance — a setting, not a panel-local preference. `UserSettings.chatPersona` is
+   * its single home; the store validates every change and persists it, so a persona survives a
+   * reload exactly as any other setting does.
+   */
+  const settings = new SettingsStore();
+  let persona = $state<ChatPersona>(settings.current.chatPersona);
   let thinking = $state(false);
   let nearBottom = $state(true);
   let showScrollButton = $state(false);
@@ -55,21 +68,27 @@
   let messagesElement: HTMLElement | null = $state(null);
   let sequence = 1;
 
-  $effect(() => {
+  onMount(() => {
+    // One-shot migration off the old competing key: honour the choice it holds, then remove it so
+    // `edu3d.persona` cannot come back as a second home for this decision.
     try {
-      const saved = localStorage.getItem('edu3d.persona');
-      if (saved && PERSONAS.some((entry) => entry.id === saved)) persona = saved as ChatPersona;
+      const legacy = localStorage.getItem('edu3d.persona');
+      if (legacy !== null) localStorage.removeItem('edu3d.persona');
+      if (
+        legacy &&
+        PERSONAS.some((entry) => entry.id === legacy) &&
+        legacy !== settings.current.chatPersona
+      ) {
+        persona = settings.update({ chatPersona: legacy as ChatPersona }).chatPersona;
+      }
     } catch {
-      /* session-only persona */
+      /* storage unavailable: the schema default stands */
     }
   });
 
+  /** The select changed: validate and persist through the settings store, then show what it kept. */
   function rememberPersona() {
-    try {
-      localStorage.setItem('edu3d.persona', persona);
-    } catch {
-      /* fine */
-    }
+    persona = settings.update({ chatPersona: persona }).chatPersona;
   }
 
   function onScroll() {
@@ -134,13 +153,17 @@
         { id: sequence++, role: 'assistant', text: result.data.text, timestamp: now() },
       ];
     } else {
+      // A retriable rate limit is tellable: the server's own wait goes in the same sentence.
+      const wait = result.retryAfterSeconds
+        ? ` Try again in about ${result.retryAfterSeconds}s.`
+        : '';
       input = content;
       messages = [
         ...messages,
         {
           id: sequence++,
           role: 'assistant',
-          text: `${result.message} Your message is back in the box — try again in a moment.`,
+          text: `${result.message}${wait} Your message is back in the box — try again in a moment.`,
           timestamp: now(),
         },
       ];

@@ -70,6 +70,20 @@
   let paused = $state(false);
   let viewMode = $state<'normal' | 'xray' | 'wireframe' | 'explode'>('normal');
 
+  /**
+   * The program currently on screen — `{ code, runtime? }` — or null when the screen shows the
+   * built-in reference model.
+   *
+   * This page is the single owner of that answer. The loading handoff (`takeBundle`) is consumed
+   * exactly once, here; every later model load (share link, gallery entry, Generate swap) replaces
+   * this value along with the model. The share modal and the code panel receive it as a prop, so
+   * the program published or displayed can never disagree with the manifest beside it. The previous
+   * design peeks the consumed session-storage key instead, which after one load is empty — the
+   * share modal then published the reference source under the generated model's manifest, both
+   * silently.
+   */
+  let currentProgram = $state<{ code: string; runtime?: string } | null>(null);
+
   // V1 shell state
   let leftOpen = $state(true);
   let rightOpen = $state(true);
@@ -232,13 +246,18 @@
       void loadFromGallery(sharedId);
     } else if (generated) {
       // The stored raw bundle carries the instrumented twin of code; loading it is what gives the
-      // model its browser-side loop guard.
+      // model its browser-side loop guard. The page keeps this program (below) as the current one,
+      // so share/code panels display exactly what is on screen.
+      currentProgram = { code: generated.code, runtime: storedRuntime(generated) };
       host.load(generated.code, 7, storedRuntime(generated));
       topicName =
         typeof (generated.manifest as { name?: string })?.name === 'string'
           ? (generated.manifest as { name: string }).name
           : 'Generated model';
     } else {
+      // The honest reference fallback: nothing was generated or shared in this session. Null is
+      // meaningful — the share modal labels it rather than passing the reference off as generated.
+      currentProgram = null;
       host.load(REFERENCE_MODEL_SOURCE, 7);
     }
 
@@ -360,9 +379,13 @@
     );
     if (result.ok && result.data.bundle?.code) {
       // Entries published before the guard carry no runtime; they load clean, as they always did.
-      host?.load(result.data.bundle.code, 7, result.data.bundle.runtime);
+      const { code, runtime } = result.data.bundle;
+      currentProgram = runtime ? { code, runtime } : { code };
+      host?.load(code, 7, runtime);
       return;
     }
+    // The failure fallback is the reference model, and the current-program tracking says so.
+    currentProgram = null;
     toast('That shared model could not be loaded; showing the reference model instead.');
     host?.load(REFERENCE_MODEL_SOURCE, 7);
   }
@@ -495,6 +518,9 @@
     modelLoading = true;
     loadError = null;
     topicName = name;
+    // Whoever just produced this load owns "what is on screen" from here on — including the
+    // share/code panels reading `currentProgram`.
+    currentProgram = runtime ? { code, runtime } : { code };
     generateOpen = false;
     galleryOpen = false;
     host?.load(code, Math.floor(Math.random() * 0xffffffff), runtime);
@@ -1652,13 +1678,14 @@
   {/if}
 
   {#if shareModalOpen}
-    <ShareModal {manifest} onclose={() => (shareModalOpen = false)} />
+    <ShareModal {manifest} program={currentProgram} onclose={() => (shareModalOpen = false)} />
   {/if}
 
   <!-- ── AI Output viewer ─────────────────────────────────────────────────── -->
   {#if codeViewModalOpen}
     <CodeViewModal
       {manifest}
+      code={currentProgram?.code ?? null}
       tab={codeViewTab}
       ontab={(t) => (codeViewTab = t)}
       onclose={() => (codeViewModalOpen = false)}

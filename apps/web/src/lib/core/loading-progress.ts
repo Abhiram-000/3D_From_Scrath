@@ -116,7 +116,13 @@ export const PHASES: readonly PhaseSpec[] = [
   },
 ] as const;
 
-/** Map a server event onto a phase key. Notices carry no phase; heartbeats confirm the current one. */
+/** Map a server event onto a phase key. Notices carry no phase; heartbeats confirm the current one.
+ *
+ * Notices are handled before this function in `apply`: they are worth *showing* (a repair pass, a
+ * provider retry, a quality downgrade) but never move the bar — they say the *how* changed, not
+ * that a milestone was crossed. Dropping them entirely was the old behaviour, and a learner
+ * watching a repair pass with a frozen bar and no explanation is a lie by omission.
+ */
 export function phaseOf(event: GenerationEvent): GenerationPhase | 'done' | null {
   if (event.type === 'phase') return event.phase;
   if (event.type === 'ready') return 'done';
@@ -152,6 +158,8 @@ export interface ProgressView {
   status: string;
   stage: StageName;
   completedStages: number;
+  /** The latest server notice ("repairing the program…"), or null. Worth showing, never a milestone. */
+  notice: string | null;
 }
 
 export class ProgressModel {
@@ -159,14 +167,27 @@ export class ProgressModel {
   value = 0;
   /** The server's own sentence for the current phase, when it has sent one. */
   private message: string | null = null;
+  /** The latest notice ("truncating the program…", "repairing…"), held until another replaces it. */
+  private lastNotice: string | null = null;
   private phaseStartedAt: number;
 
   constructor(now = Date.now()) {
     this.phaseStartedAt = now;
   }
 
+  /** The latest server notice, for UIs that show it beside the status line. */
+  get notice(): string | null {
+    return this.lastNotice;
+  }
+
   /** Feed a server event; monotonic by construction. */
   apply(event: GenerationEvent, now = Date.now()): void {
+    // A notice is surfaced, not consumed: it explains what the pipeline is doing differently
+    // (truncation, gate repair, build repair, refinement) without claiming a milestone happened.
+    if (event.type === 'notice') {
+      this.lastNotice = event.message;
+      return;
+    }
     const key = phaseOf(event);
     if (key === null) return;
     if (event.type === 'phase') this.message = event.message;
@@ -222,6 +243,7 @@ export class ProgressModel {
       status: this.status,
       stage: this.stage,
       completedStages: this.completedStages,
+      notice: this.lastNotice,
     };
   }
 }

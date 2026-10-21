@@ -12,7 +12,7 @@
   import { onMount } from 'svelte';
   import { Ambient } from '$lib/ambient.ts';
   import { LoadingBackground, initParticles } from '$lib/loading-background.ts';
-  import { generateStream, storeBundle, takeComplexity } from '$lib/core/api.ts';
+  import { generateStream, storeBundle, takeComplexity, takeTopic } from '$lib/core/api.ts';
   import { FactQueue, ProgressModel, STAGES, type StageName } from '$lib/core/loading-progress.ts';
   import { detectTier } from '$lib/engine/sandbox-host.ts';
   // V1's loading stylesheet, verbatim.
@@ -57,7 +57,7 @@
   onMount(() => {
     // Theme is already applied inline in <head>; the ambient layer and background mount next —
     // the same layered cursor system as the landing page, exactly as V1 configured it.
-    topic = takeTopicFromSession();
+    topic = takeTopic();
     ambient = new Ambient({ grid: true, magnetStrength: 0.1, magnetRadius: 90 });
     ambient.mount().parallaxize('[data-parallax]').magnetize('.loading-logo').sheen('.has-sheen');
 
@@ -93,13 +93,13 @@
     return cleanup;
   });
 
-  function takeTopicFromSession(): string {
-    try {
-      return (sessionStorage.getItem('edu3d.topic') ?? '').trim();
-    } catch {
-      return '';
-    }
-  }
+  /**
+   * The latest server notice ("truncating the program…", "repairing the program…"), if any.
+   * Surfaced, not consumed: the note explains what the pipeline is doing differently (a repair
+   * pass, a retry, a downgrade) without claiming a milestone was crossed — a silent repair was a
+   * lie by omission (`07`).
+   */
+  let noticeText = $state<string | null>(null);
 
   function cleanup() {
     if (progressTimer) clearInterval(progressTimer);
@@ -136,6 +136,14 @@
     statusText = view.status;
     currentStage = view.stage;
     completedStageCount = view.completedStages;
+    noticeText = view.notice;
+  }
+
+  /** A retryable rate limit is tellable: the server's own wait, in the learner's sentence. */
+  function withRetryHint(message: string, retryAfterSeconds?: number): string {
+    return retryAfterSeconds && retryAfterSeconds > 0
+      ? `${message} The server asks for about ${retryAfterSeconds}s before trying again.`
+      : message;
   }
 
   async function startGeneration() {
@@ -178,12 +186,13 @@
       }, 900);
     } else {
       if (outcome.code === 'aborted') return;
-      showError(
+      const base =
         outcome.code === 'network'
           ? 'The backend is not running. Start it with pnpm dev, then try again.'
-          : outcome.message,
-        { canRetry: outcome.code !== 'stalled' },
-      );
+          : outcome.message;
+      showError(withRetryHint(base, outcome.retryAfterSeconds), {
+        canRetry: outcome.code !== 'stalled',
+      });
     }
   }
 
@@ -343,6 +352,16 @@
 
       <div class="status-message" aria-live="polite">{statusText}</div>
 
+      <!--
+        The server's own notice (a repair pass, a provider retry, a quality downgrade), kept out of
+        the status line so it can neither move the milestone wording nor be mistaken for progress —
+        it is an explanation of what changed about the *how*, and it sits beside the bar where a
+        learner staring at a paused-looking bar can read why.
+      -->
+      {#if noticeText}
+        <p class="notice-line" aria-live="polite">{noticeText}</p>
+      {/if}
+
       <div class="progress-bar-container">
         <div
           class="progress-bar"
@@ -393,3 +412,16 @@
 
   <div bind:this={particles} class="particles" aria-hidden="true"></div>
 </div>
+
+<style>
+  /* loading.css is imported verbatim and untouched; this page-scoped addition styles only the
+     notice line — amber, matching the theme's warning tone without introducing a new token. */
+  .notice-line {
+    max-width: 46ch;
+    margin: 0.5rem auto 0;
+    text-align: center;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--warning, #d4a055);
+  }
+</style>

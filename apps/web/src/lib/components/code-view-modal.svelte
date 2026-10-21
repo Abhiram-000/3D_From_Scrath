@@ -3,25 +3,32 @@
   chips, raw/validated tabs, copy/download actions. Shows the exact document the model produced
   plus the manifest the engine built, so "why does the model look like this" is answered from the
   artifact. All content is untrusted text rendered as text (`03` R3).
+
+  The raw program arrives as a prop from the viewer page — the single owner of "what is on screen".
+  Reading a session-storage key here instead was the defect: `takeBundle()` consumes the key on
+  load, so the panel showed "came from the reference set" for a model the AI generated moments
+  earlier.
 -->
 <script lang="ts">
   import type { ModelManifest } from '@edu3d/contracts';
-  import { peekBundleCode } from '$lib/core/api.ts';
 
   const {
     manifest,
+    code,
     tab,
     ontab,
     onclose,
   }: {
     manifest: ModelManifest | null;
+    /** The program currently on screen (the viewer page's), or null for the reference model. */
+    code: string | null;
     tab: 'raw' | 'spec';
     ontab: (tab: 'raw' | 'spec') => void;
     onclose: () => void;
   } = $props();
 
   const rawCode = $derived(
-    peekBundleCode() ?? '(the model came from the reference set — no AI output for this session)',
+    code ?? '(the model came from the reference set — no AI output for this session)',
   );
 
   async function copy() {

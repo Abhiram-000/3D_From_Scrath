@@ -3,6 +3,12 @@
   social buttons. The URL points at this app's /viewer?model=<id> after publishing; publishing
   without a backend reports honestly rather than pretending to share (`03` R8).
 
+  WHAT GETS PUBLISHED: exactly the program the viewer page says is on screen (the `program` prop).
+  When that is null — the built-in reference model is showing — the reference source ships, which
+  is legitimate (it is a real model), and the modal says so in the UI instead of letting the
+  fallback pass silently under the current manifest. The reference fallback itself is honest and
+  stays; publishing it *unlabelled* was the lie.
+
   Publish-token design (matches the server's fail-closed write guard): POST /api/gallery requires
   `Authorization: Bearer EDU3D_WRITE_TOKEN`. When the server answers 401, this modal prompts the
   author to paste the token once, keeps it in localStorage under `edu3d.publish.token`, and sends
@@ -19,7 +25,7 @@
   import { onMount } from 'svelte';
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import type { ModelManifest } from '@edu3d/contracts';
-  import { apiFetch, peekBundleCode, peekBundleRuntime } from '$lib/core/api.ts';
+  import { apiFetch } from '$lib/core/api.ts';
 
   const PUBLISH_TOKEN_KEY = 'edu3d.publish.token';
 
@@ -50,7 +56,20 @@
     return storedPublishToken() || memoryToken;
   }
 
-  const { manifest, onclose }: { manifest: ModelManifest | null; onclose: () => void } = $props();
+  const {
+    manifest,
+    program,
+    onclose,
+  }: {
+    manifest: ModelManifest | null;
+    /**
+     * The program currently on screen, owned by the viewer page: `{ code, runtime? }` for a
+     * generated or gallery-loaded model, null when the built-in reference model is showing.
+     * Publishing reads it directly — never a storage peek, which goes stale on any model swap.
+     */
+    program: { code: string; runtime?: string } | null;
+    onclose: () => void;
+  } = $props();
 
   let shareUrl = $state('');
   let publishing = $state(false);
@@ -60,6 +79,10 @@
   /** Set when the server answered 401: show the token prompt rather than only an error line. */
   let needsToken = $state(false);
   let publishToken = $state('');
+
+  /** True when what is on screen (and about to be published) is the built-in reference model.
+   *  Shown in the UI: the fallback is honest, but only when labelled. */
+  const usingReferenceModel = $derived(program === null);
 
   onMount(() => {
     // A local-only share still resolves: the model is in session storage, so the link opens this
@@ -72,14 +95,14 @@
     if (!manifest) return;
     publishing = true;
 
-    // The generated bundle when one is waiting in this session; the reference source otherwise —
-    // publishing the reference model is legitimate (it is a real model).
-    const waiting = peekBundleCode();
-    const code = (waiting ?? '').trim() || REFERENCE_MODEL_SOURCE;
+    // Exactly the program on screen, from the page that loaded it. When the reference model is
+    // showing, the reference source ships — it is what the link will open anywhere (`?model=`), so
+    // the published code and the manifest can never disagree about which model they describe.
+    const code = program?.code ?? REFERENCE_MODEL_SOURCE;
     const manifestToStore = manifest;
-    // The instrumented twin rides along when the stored bundle has one, so a published model keeps
-    // its browser-side loop guard. The reference fallback ships clean source, as it always has.
-    const runtime = peekBundleRuntime();
+    // The instrumented twin rides along when the on-screen program has one, so a published model
+    // keeps its browser-side loop guard. The reference fallback ships clean source, as it always has.
+    const runtime = program?.runtime;
 
     const token = currentToken();
     try {
@@ -167,6 +190,12 @@
         <div class="share-copy-feedback visible-when-copied" class:visible={copied}>
           Copied to clipboard!
         </div>
+        {#if usingReferenceModel}
+          <p class="share-status">
+            This is the built-in reference model — the link shares it as-is, not an AI-generated
+            model.
+          </p>
+        {/if}
         {#if publishing && !needsToken}<p class="share-status">Publishing…</p>{/if}
         {#if published}<p class="share-status published">
             Published to the gallery — the link below opens this exact model anywhere.

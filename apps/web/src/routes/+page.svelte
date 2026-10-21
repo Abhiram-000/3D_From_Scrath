@@ -38,6 +38,7 @@
   import { suspiciousContent } from '$lib/validate-topic.ts';
   import {
     DEFAULT_COMPLEXITY,
+    fetchHealth,
     storeComplexity,
     storeTopic,
     takeComplexity,
@@ -64,6 +65,14 @@
   let complexity = $state<ComplexityPreference>(DEFAULT_COMPLEXITY);
   let submitting = $state(false);
   let theme = $state<'dark' | 'light'>('dark');
+  /**
+   * What this deployment can do, probed once on mount. `false` (the server said so through
+   * /api/health's capabilities) is the only state that warns: an unreachable endpoint is
+   * "unknown" and stays silent, because missing evidence of a capability is not evidence of its
+   * absence. The point is to tell a learner on a no-AI deployment *before* they type, not as a
+   * failure after a four-minute wait.
+   */
+  let aiAvailable = $state<boolean | null>(null);
 
   /** The chosen level's own numbers, rendered from contracts so the label cannot drift from the ask. */
   const level = $derived(COMPLEXITY_LEVELS.find((entry) => entry.id === complexity)!);
@@ -82,6 +91,12 @@
   onMount(() => {
     theme = getTheme();
     complexity = takeComplexity();
+
+    // The capability probe is fire-and-forget: it must never delay the page (`08`), and its only
+    // consumer is the note below.
+    void fetchHealth().then((result) => {
+      aiAvailable = result.ok ? result.data.capabilities.ai : null;
+    });
 
     // The layered cursor system: reactive dot grid, trailing spotlight, parallax depth, magnetic
     // pull and glass sheen — one rAF loop, exactly as V1 configured it.
@@ -539,6 +554,18 @@
       </p>
 
       <!--
+        The server said this deployment has no AI: say so before the learner types, not as a
+        failure four minutes later. The demo link below needs no AI key, so it still works —
+        "degrade, never die", and never degrade silently.
+      -->
+      {#if aiAvailable === false}
+        <p class="ai-absent-note" role="status">
+          This server has no AI configured right now, so generation will not start. You can still
+          open the live demo below — it runs entirely on this device.
+        </p>
+      {/if}
+
+      <!--
         Three chips, and they stay exactly as they are. Breadth would read better on paper, but the
         measured build rate is 62%, so a proven topic is worth more than a wider spread of
         unproven ones — a chip that generates a failure is worse copy than a narrow chip.
@@ -617,5 +644,15 @@
     opacity: 0;
     transform: scale(0.99);
     pointer-events: none;
+  }
+
+  /* The no-AI deployment note. Narrow measure, quiet amber: information, not an alarm. */
+  .ai-absent-note {
+    max-width: 46ch;
+    margin: 0.75rem auto 0;
+    text-align: center;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--warning, #d4a055);
   }
 </style>

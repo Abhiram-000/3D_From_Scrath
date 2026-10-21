@@ -32,6 +32,10 @@ function heartbeat(): GenerationEvent {
   } as unknown as GenerationEvent;
 }
 
+function noticeEvent(message: string): GenerationEvent {
+  return { type: 'notice', kind: 'repair', message, at: 0 } as unknown as GenerationEvent;
+}
+
 function readyEvent(): GenerationEvent {
   return { type: 'ready', bundle: {} } as unknown as GenerationEvent;
 }
@@ -116,6 +120,39 @@ describe('the wording on screen', () => {
   it('has something to say before the first event arrives', () => {
     const model = new ProgressModel(NOW);
     expect(model.status.length).toBeGreaterThan(0);
+  });
+});
+
+describe('notices (the server saying the *how* changed)', () => {
+  it('are surfaced to the learner without moving the bar, stage or status', () => {
+    // A repair pass or provider retry explains the run; it is not a milestone. The old behaviour
+    // dropped notice events entirely, so a learner watched a frozen bar with no explanation — a
+    // lie by omission for a platform whose stance is "degrade, never lie".
+    const model = new ProgressModel(NOW);
+    model.apply(phaseEvent('model', 'The model is designing your 3D scene…'), NOW);
+    const before = model.view();
+
+    model.apply(noticeEvent('Ran out of context: keeping the first 90% of the program.'), NOW);
+    const view = model.view();
+
+    expect(view.notice).toBe('Ran out of context: keeping the first 90% of the program.');
+    expect(view.value).toBe(before.value);
+    expect(view.status).toBe(before.status);
+    expect(view.stage).toBe(before.stage);
+    expect(view.completedStages).toBe(before.completedStages);
+  });
+
+  it('show the latest notice, not an accumulation', () => {
+    // The line is a sentence, not a log: the most recent explanation wins.
+    const model = new ProgressModel(NOW);
+    model.apply(noticeEvent('Gate repair pass 1/2 — rewriting the forbidden call.'), NOW);
+    model.apply(noticeEvent('Gate repair pass 2/2 — clean.'), NOW);
+    expect(model.view().notice).toBe('Gate repair pass 2/2 — clean.');
+  });
+
+  it('are absent until one arrives', () => {
+    const model = new ProgressModel(NOW);
+    expect(model.view().notice).toBeNull();
   });
 });
 

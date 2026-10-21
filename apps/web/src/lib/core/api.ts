@@ -13,11 +13,31 @@ import {
   HEARTBEAT_INTERVAL_MS,
   type ComplexityPreference,
   type GenerationEvent,
+  type HealthResponse,
   type ModelBundle,
 } from '@edu3d/contracts';
 
-/** Where the API lives. The dev proxy and production same-origin both answer at `/api`. */
-export const API_BASE = '/api';
+/**
+ * Where the API lives.
+ *
+ * Same-origin `/api` by default — that is what the dev proxy, the one-container deploy and every
+ * existing deployment use, and what `svelte.config.js`'s static adapter assumes. A split deployment
+ * (static shell on a CDN, Hono API on another origin) sets `PUBLIC_API_BASE` at build time via
+ * SvelteKit's `PUBLIC_*` convention, e.g. `PUBLIC_API_BASE=https://api.example.edu3d`; every fetch
+ * in this module is built from this one constant, so one variable moves the whole client and
+ * nothing else changes.
+ *
+ * The other half of a split deploy is server-side and deliberately NOT fixed here: the server's CSP
+ * pins `connect-src 'self'`, so pointing the client at another origin will be blocked by that
+ * policy until the server widens it (and adds the origin to its CORS allow-list — `PUBLIC_ORIGIN` /
+ * `ALLOWED_ORIGINS`). Without that half, every call fails with a CSP violation, not a 404. Those
+ * changes belong to `apps/server`; this constant only moves the client.
+ */
+const configuredBase = import.meta.env.PUBLIC_API_BASE;
+export const API_BASE =
+  typeof configuredBase === 'string' && configuredBase.trim().length > 0
+    ? configuredBase.trim().replace(/\/+$/, '')
+    : '/api';
 
 /** The server sends a heartbeat every ~10s; 4 missed beats is a stall, not a slow provider (`04`). */
 export const STALL_TIMEOUT_MS = STALL_HEARTBEATS * HEARTBEAT_INTERVAL_MS;
@@ -28,6 +48,15 @@ export interface GenerateOptions {
   topic: string;
   complexity?: ComplexityPreference;
   tier?: 'low' | 'mid' | 'high';
+  /**
+   * `GenerateRequest.domain` is deliberately NOT plumbed through here, on purpose rather than by
+   * omission: no call site knows the domain of the topic the learner just typed. The loading page
+   * has nothing but the topic string, and the viewer's only known `manifest.domain` belongs to the
+   * *previous* topic — sending it would bias classification towards the old subject, which is
+   * worse than the hint's benefit. The server's own classification is trusted instead; if a call
+   * site one day holds a domain for the topic at hand (e.g. a category chip carrying its domain),
+   * add the field here and send it.
+   */
   signal?: AbortSignal;
   onEvent?: (event: GenerationEvent) => void;
 }
@@ -162,26 +191,52 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
   }
 }
 
-/** A small typed fetch for the non-streaming endpoints. Errors come back as values, never throws. */
+/** A small typed fetch for the non-streaming endpoints. Errors come back as values, never throws.
+ *
+ * A rate-limited answer (429) carries the server's `retryAfterSeconds`, so the call site can tell
+ * the learner when to come back rather than leaving the failure unexplained.
+ */
 export async function apiFetch<T>(
   path: string,
   init?: RequestInit,
-): Promise<{ ok: true; data: T } | { ok: false; code: string; message: string }> {
+): Promise<
+  { ok: true; data: T } | { ok: false; code: string; message: string; retryAfterSeconds?: number }
+> {
   try {
     const response = await fetch(`${API_BASE}${path}`, init);
     const body = (await response.json().catch(() => null)) as
-      (T & { error?: { code: string; message: string } }) | null;
+      (T & { error?: { code: string; message: string; retryAfterSeconds?: number } }) | null;
     if (!response.ok) {
       return {
         ok: false,
         code: body?.error?.code ?? `http_${response.status}`,
         message: body?.error?.message ?? 'The request failed.',
+        ...(body?.error?.retryAfterSeconds
+          ? { retryAfterSeconds: body.error.retryAfterSeconds }
+          : {}),
       };
     }
     return { ok: true, data: body as T };
   } catch {
     return { ok: false, code: 'network', message: 'The server could not be reached.' };
   }
+}
+
+/**
+ * One health probe, for callers that want to say what a deployment can do *before* the learner
+ * commits to a wait. `HealthResponse.capabilities.ai` is the meaningful one client-side: with no
+ * AI configured, warning at the point of input is honest; discovering it as a failure four minutes
+ * into a stream is not (`04`: capability_absent is a first-class, explained state).
+ *
+ * Unreachable is a normal answer here — split deployments, offline previews, a CDN without an API
+ * behind it. Callers must treat `!result.ok` as "unknown", never as "capability absent": missing
+ * evidence of a capability is not evidence of its absence.
+ */
+export function fetchHealth(): Promise<
+  | { ok: true; data: HealthResponse }
+  | { ok: false; code: string; message: string; retryAfterSeconds?: number }
+> {
+  return apiFetch<HealthResponse>('/health');
 }
 
 /**
@@ -218,6 +273,14 @@ export function storeBundle(bundle: StoredBundle): boolean {
  * Take the generated bundle: returns it and clears storage (one generation → one load), or null
  * when none is waiting. A corrupt entry is discarded rather than trusted — a half-written bundle
  * must not render.
+ *
+ * The page that takes it — the viewer — becomes the single owner of the answer to "what program
+ * is on screen now". It holds the returned `StoredBundle` in page state and hands `code` (plus
+ * `storedRuntime(bundle)`) down to the share and code panels as props. Nothing re-reads the
+ * storage key afterward, and that is the point: a gallery load or a Generate swap replaces the
+ * model on screen without touching this key, so any later storage peek would go stale and publish
+ * a stale program under the new model's manifest — the exact lie this file once shipped, hidden
+ * behind a comment claiming a panel "re-stores what it needs" (it never did). One owner, no peeks.
  */
 export function takeBundle(): StoredBundle | null {
   try {
@@ -232,22 +295,8 @@ export function takeBundle(): StoredBundle | null {
   }
 }
 
-/** Peek without consuming: the code panel wants the raw output for the CURRENT model even after load. */
-export function peekBundleCode(): string | null {
-  try {
-    // The take on load clears the waiting key; the panel re-stores what it needs under the same
-    // shape, so a peek is the same parse without the remove.
-    const raw = sessionStorage.getItem(BUNDLE_KEY);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw) as StoredBundle;
-    return typeof parsed?.code === 'string' ? parsed.code : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * The instrumented twin of `code`, when the stored bundle carries one.
+ * The instrumented twin of `code`, when the bundle carries one.
  *
  * `raw` is the full wire bundle, which is what makes this free: the server put `runtime` next to
  * `code` and the whole document was stored as-is. Callers that lack it (the reference source, a
@@ -258,25 +307,20 @@ export function storedRuntime(bundle: StoredBundle): string | undefined {
   return typeof runtime === 'string' && runtime.length > 0 ? runtime : undefined;
 }
 
-/** Peek the instrumented runtime without consuming — the share modal publishes it alongside `code`. */
-export function peekBundleRuntime(): string | undefined {
-  try {
-    const raw = sessionStorage.getItem(BUNDLE_KEY);
-    if (raw === null) return undefined;
-    return storedRuntime(JSON.parse(raw) as StoredBundle);
-  } catch {
-    return undefined;
-  }
-}
-
 export function storeTopic(topic: string): void {
   try {
     sessionStorage.setItem('edu3d.topic', topic);
   } catch {
-    /* the loading page reads it from the URL query as a fallback */
+    /* a lost topic costs the learner their words, and the loading page reports that loss honestly
+       — there is no silent fallback to invent one from */
   }
 }
 
+/**
+ * Read the topic back. The single reader is the loading page, and it goes through here rather
+ * than touching the raw key, so `edu3d.topic` has one writer and one reader and the key name
+ * lives in this file alone.
+ */
 export function takeTopic(): string {
   try {
     return (sessionStorage.getItem('edu3d.topic') ?? '').trim();

@@ -14,6 +14,7 @@
 -->
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import type { ModelManifest, QualityPreset, QuizQuestion, RuntimeStats } from '@edu3d/contracts';
   import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import { SandboxHost, sandboxSupported, type HostCallbacks } from '$lib/engine/sandbox-host.ts';
@@ -130,13 +131,19 @@
   // Toasts (V1-style, top-right, slide-in)
   let toasts = $state<Array<{ id: number; message: string }>>([]);
   let toastSeq = 0;
+  /** Per-toast timers, so unmount can stop them firing into a destroyed component. */
+  const toastTimers = new SvelteMap<number, ReturnType<typeof setTimeout>>();
 
   function toast(message: string) {
     const id = (toastSeq += 1);
     toasts = [...toasts, { id, message }];
-    setTimeout(() => {
-      toasts = toasts.filter((entry) => entry.id !== id);
-    }, 4500);
+    toastTimers.set(
+      id,
+      setTimeout(() => {
+        toastTimers.delete(id);
+        toasts = toasts.filter((entry) => entry.id !== id);
+      }, 4500),
+    );
   }
 
   function readThemeColors(): { top: string; bottom: string } {
@@ -366,6 +373,12 @@
 
   onDestroy(() => {
     cancelPendingHover();
+    // Timers with no component left to receive them: a toast dismissal or a gesture-window close
+    // firing after unmount is a write into destroyed state.
+    for (const timer of toastTimers.values()) clearTimeout(timer);
+    toastTimers.clear();
+    if (gestureTimer) clearTimeout(gestureTimer);
+    gestureOpen = false;
     // The handle closes over a SandboxHost that is about to be disposed. Leaving it on `window`
     // means a later caller would postMessage to a terminated worker.
     delete (window as unknown as { __edu3dHost?: unknown }).__edu3dHost;
@@ -421,6 +434,19 @@
 
   // ── Undo/redo: one step per gesture (`03` R4) ──────────────────────────────
   type ParamSnapshot = Record<string, number | boolean | string>;
+  /**
+   * The undo and redo stacks share one cap.
+   *
+   * Both are full parameter snapshots, and both used to grow without bound — the cap was enforced
+   * on the slider path alone, so undo and redo pushes walked past it. A long session of undo/redo
+   * cycles is exactly the flow that leaks.
+   */
+  const SNAPSHOT_CAP = 50;
+
+  function pushCapped(stack: ParamSnapshot[], snapshot: ParamSnapshot): ParamSnapshot[] {
+    return [...stack.slice(-(SNAPSHOT_CAP - 1)), snapshot];
+  }
+
   let undoStack = $state<ParamSnapshot[]>([]);
   let redoStack = $state<ParamSnapshot[]>([]);
   let gestureOpen = false;
@@ -429,7 +455,7 @@
   function noteParameterGesture() {
     if (!gestureOpen) {
       gestureOpen = true;
-      undoStack = [...undoStack.slice(-49), { ...parameterValues }];
+      undoStack = pushCapped(undoStack, { ...parameterValues });
       redoStack = [];
     }
     if (gestureTimer) clearTimeout(gestureTimer);
@@ -440,7 +466,7 @@
     const previous = undoStack[undoStack.length - 1];
     if (!previous) return;
     undoStack = undoStack.slice(0, -1);
-    redoStack = [...redoStack, { ...parameterValues }];
+    redoStack = pushCapped(redoStack, { ...parameterValues });
     applySnapshot(previous);
   }
 
@@ -448,7 +474,7 @@
     const next = redoStack[redoStack.length - 1];
     if (!next) return;
     redoStack = redoStack.slice(0, -1);
-    undoStack = [...undoStack, { ...parameterValues }];
+    undoStack = pushCapped(undoStack, { ...parameterValues });
     applySnapshot(next);
   }
 

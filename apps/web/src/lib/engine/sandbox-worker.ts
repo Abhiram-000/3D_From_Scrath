@@ -59,6 +59,14 @@ import {
 import { PhysicsWorld } from './physics-world.ts';
 import { computeFrameRate } from './frame-rate.ts';
 import { devEnabled } from '../dev-console.ts';
+import { collectModelTextures, reuploadTextures } from './context-restore.ts';
+import {
+  createFrameDisableState,
+  frameCallbackDecision,
+  frameCallbackFailed,
+  frameCallbackRecovered,
+  type FrameDisableState,
+} from './frame-disable.ts';
 import {
   renderGate,
   resetMotionDriven as resetMotionDrivenInto,
@@ -168,10 +176,17 @@ const hostScope = globalThis as unknown as {
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
   addEventListener: (type: string, handler: (event: MessageEvent<WorkerRequest>) => void) => void;
   requestAnimationFrame: (callback: (time: number) => void) => number;
+  setInterval: (callback: () => void, ms: number) => number;
   performance: { now: () => number };
 };
 
 const scheduleFrame = hostScope.requestAnimationFrame.bind(hostScope);
+/**
+ * The heartbeat scheduler, captured at module scope like the frame scheduler above: hardening must
+ * never be able to reach a state where the host-side watchdog can no longer hear this worker, and
+ * the heartbeat is what a *presenting*-stalled worker says with.
+ */
+const scheduleHeartbeat = hostScope.setInterval.bind(hostScope);
 const hostPerformance = hostScope.performance;
 const now = (): number => hostPerformance.now();
 
@@ -222,10 +237,15 @@ const TIMING = {
    */
   statsIntervalMs: 1000,
   /**
-   * Milliseconds between heartbeats.
+   * Milliseconds between heartbeat ticks — the worker's wall-clock liveness proof.
    *
-   * Same reasoning as stats: the watchdog measures *time* without a heartbeat, so the worker must beat on a clock,
-   * not on a frame count. A model rendering at 2 fps still beats every second.
+   * The render loop's stats publish inherits the *presenter's* cadence (rAF), which on a
+   * software-raster device is 0.2–2 fps: a gap of many seconds between messages that a host
+   * cannot distinguish from a hang. This interval beats on the event loop's own clock, so every
+   * window closes with at least one message as long as the event loop turns; only a loop wedged
+   * hard enough to miss its own timers — the actual hang the watchdog exists for — goes silent.
+   * Gated through `statsIntervalMs` with the render loop, so a healthy 60 fps model still
+   * publishes exactly once per window.
    */
   heartbeatIntervalMs: 1000,
   /** Rolling window for frame-time averaging: long enough to ignore a single spike (`08`). */
@@ -333,8 +353,15 @@ interface WorkerState {
   loadStartedAt: number;
   /** Milliseconds the last physics step cost, for the status bar's budget line (`02`). */
   physicsMillis: number;
-  /** True once the model has been paused for repeated overruns, so the notice is sent once. */
-  frameDisabled: boolean;
+  /**
+   * The guest frame callback's circuit breaker (`frame-disable.ts`).
+   *
+   * Scopes to the callback *alone*: declared motion and the transform sync keep running while the
+   * model's own frame code is dark — a broken animation must not freeze the model or detach
+   * physics from its pose. Also recoverable: one probation frame per retry window, cleared the
+   * first time the callback holds its budget again.
+   */
+  frameDisable: FrameDisableState;
 
   /**
    * The live adaptive ladder (`08`). `applied` is the set of rungs already stepped down; the order is
@@ -620,7 +647,10 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     'webglcontextlost',
     (event) => {
       event.preventDefault();
-      // Drawing into a lost context is pure waste and keeps the reclaim from succeeding.
+      // Drawing into a lost context is pure waste and keeps the reclaim from succeeding — and it
+      // is what the old recovery did, while its message claimed the model was fine. The loop keeps
+      // ticking (stats still publish, so the watchdog knows the worker is alive) but presents
+      // nothing until the browser hands the context back.
       CONTEXT_LOST = true;
       post({
         type: 'notice',
@@ -633,9 +663,15 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     'webglcontextrestored',
     () => {
       CONTEXT_LOST = false;
-      // Every GPU-side object died with the context; re-upload from the scene we still hold.
+      // Every GPU-side object died with the context; re-upload from the CPU copies we still hold.
+      // This is the half the old code faked: `RESOURCE_TEXTURES` was declared and iterated but
+      // never populated by anything, so the loop marked nothing, the geometry reappeared (the
+      // renderer re-uploads lazily) and the textures did not. Now they show up honest.
       renderer.resetState();
-      for (const texture of RESOURCE_TEXTURES) texture.needsUpdate = true;
+      reuploadTextures(RESOURCE_TEXTURES);
+      // A restored context must present: without an invalidation the on-demand gate would keep
+      // serving the last-still frame indefinitely.
+      if (state) state.needsRender = true;
       post({
         type: 'notice',
         message: 'Graphics memory restored — the model is back.',
@@ -693,7 +729,7 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     frameTimes: [],
     overruns: 0,
     loadStartedAt: 0,
-    frameDisabled: false,
+    frameDisable: createFrameDisableState(),
     physicsMillis: 0,
 
     ladder: {
@@ -734,13 +770,19 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
  * The swap is atomic in the sense `03` R2 requires — the previous model is disposed only after the new one is
  * fully realized, so a failure anywhere above leaves the learner looking at what they already had.
  *
+ * Exported for the swap-contract test, which runs this pipeline in Node against a state the test
+ * owns (the worker message handler itself needs worker globals no test realm has).
+ *
  * `runtime` is the instrumented twin of `code` and the string that actually executes: `compileGuest`'s
  * guard closes over `__edu3d_tick` calls the instrumentation spliced in, so compiling the clean `code`
  * instead meant no model reaching a browser ever had a loop guard — the cheap layer of the sandbox's
  * five never ran. Old bundles (and the on-disk reference source) carry no `runtime`; they compile the
  * clean string and fall back to the expensive outer layers, exactly as before.
  */
-function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type: 'load' }>): void {
+export function loadProgram(
+  target: WorkerState,
+  request: Extract<WorkerRequest, { type: 'load' }>,
+): void {
   logs.length = 0;
   const buildStart = performance.now();
   target.loadStartedAt = buildStart;
@@ -890,6 +932,17 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
   target.manifest = manifest;
   target.verdict = verdict;
   target.guard = guard;
+  // Nothing of the previous model's session may drive this one. `paramsRecord` is the numeric
+  // record the motion applicator resolves against, built lazily from the *current* builder — a
+  // record left standing here would let model A's `speed: 5` animate model B (whose slider reads
+  // its own default, 1), and ids that exist in neither model would tag along. `setParameter`
+  // nulls it; the swap must too.
+  target.paramsRecord = null;
+  // Bank every texture the new model's materials hold, so a context loss can actually re-upload
+  // them on restore instead of claiming it did. (The old set was iterated on restore and populated
+  // by nothing — the audit's false-recovery bug; see `context-restore.ts`.)
+  RESOURCE_TEXTURES.clear();
+  collectModelTextures(realized.root, RESOURCE_TEXTURES);
 
   // Declared-motion anchors, captured the moment the manifest exists and before any frame runs:
   // the authored transform per motion-driven part (never mutated again — it is what every animated
@@ -926,7 +979,7 @@ function loadProgram(target: WorkerState, request: Extract<WorkerRequest, { type
   target.elapsed = 0;
   target.frame = 0;
   target.overruns = 0;
-  target.frameDisabled = false;
+  target.frameDisable = createFrameDisableState();
   target.selectedPart = null;
   target.hoveredPart = null;
   // Admission decisions ride the new verdict; the live ladder starts clean.
@@ -1246,38 +1299,64 @@ function renderFrame(target: WorkerState, timestamp: number): void {
     // `needsFrame` is a bare clear at this phase (see its field comment); the on-demand gate above
     // is what spares the callback when nothing can have changed.
     target.needsFrame = false;
-    if (target.builder && target.guard && !target.frameDisabled && !CONTEXT_LOST) {
-      target.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
-      const callbackStart = now();
-      // Declared motion composes with what the model writes, so the base reset happens first —
-      // the applicator's contract, not an optimisation.
+    if (target.builder && target.guard && !CONTEXT_LOST) {
+      // The declared-motion base reset composes with the guest's writes, so it precedes the
+      // callback — and it is NOT hostage to the callback's health (see the disable below).
       resetMotionDrivenParts(target, target.paused);
-      try {
-        target.builder.runFrame(target.elapsed, delta, target.paused);
-        const cost = now() - callbackStart;
-        if (cost > SANDBOX_LIMITS.frameDeadlineMs) target.overruns += 1;
-        else target.overruns = Math.max(0, target.overruns - 1);
 
-        if (target.overruns > SANDBOX_LIMITS.frameOverrunLimit) {
-          target.frameDisabled = true;
-          post({
-            type: 'notice',
-            message:
-              'This model’s animation was paused because it was too slow to keep up. The model is still explorable.',
-          });
+      // The guest callback, and only the guest callback, is disposable. The old code gated the
+      // whole block — declared motion, transform sync, the physics pose — on this callback's
+      // health, so one throwing frame froze the model, detached the physics solver from any pose
+      // that was applied, and offered no way back. Now the model keeps breathing while its
+      // animation script is dark, and the dark state is a circuit breaker, not a life sentence.
+      const decision = frameCallbackDecision(target.frameDisable, now());
+      let disable = target.frameDisable;
+      if (decision.run) {
+        target.guard.reset(SANDBOX_LIMITS.frameDeadlineMs, 2_000_000);
+        const callbackStart = now();
+        try {
+          target.builder.runFrame(target.elapsed, delta, target.paused);
+          const cost = now() - callbackStart;
+          if (cost > SANDBOX_LIMITS.frameDeadlineMs) target.overruns += 1;
+          else if (decision.probation) target.overruns = 0;
+          else target.overruns = Math.max(0, target.overruns - 1);
+
+          if (target.overruns > SANDBOX_LIMITS.frameOverrunLimit) {
+            disable = frameCallbackFailed(disable, now());
+            target.overruns = 0;
+            // The notice stays honest about scope: only the model's own frame code is paused.
+            post({
+              type: 'notice',
+              message:
+                'This model’s animation was paused because it was too slow to keep up. The model’s declared motion and physics still run, and it stays explorable. It will retry automatically.',
+            });
+          } else {
+            // A budget-holding run — probation or ordinary — restores full service, quietly.
+            disable = frameCallbackRecovered();
+          }
+        } catch (error) {
+          const wasDisabled = disable.disabled;
+          disable = frameCallbackFailed(disable, now());
+          target.overruns = 0;
+          if (!wasDisabled) {
+            // A throwing frame callback disables itself rather than killing the model: the geometry is still worth
+            // exploring even if the animation is broken. The retry promise is said out loud.
+            const described = describeFailure(error);
+            post({
+              type: 'notice',
+              message: `Animation stopped: ${described.message} The model’s declared motion and physics still run, and it stays explorable; this script retries automatically.`,
+            });
+          }
         }
-      } catch (error) {
-        // A throwing frame callback disables itself rather than killing the model: the geometry is still worth
-        // exploring even if the animation is broken.
-        target.frameDisabled = true;
-        const described = describeFailure(error);
-        post({ type: 'notice', message: `Animation stopped: ${described.message}` });
       }
+      target.frameDisable = disable;
 
       // Declared motion, after the model's own writes and before the renderer copies the pose.
+      // Unconditional: the applicator consumes the manifest, not the guest's code.
       applyDeclaredMotions(target);
 
-      // Push the builder's authored transforms into the Three.js objects.
+      // Push the builder's authored transforms into the Three.js objects — including the physics
+      // solver's pose, which must never be stepped into a void because a guest callback threw.
       syncTransforms(target);
     }
 
@@ -1303,7 +1382,10 @@ function renderFrame(target: WorkerState, timestamp: number): void {
       if (updateHover(target)) target.needsRender = true;
     }
 
-    target.renderer.render(target.scene, target.camera);
+    // A lost context is a reclaim in progress: presenting against it wastes the frame and fights
+    // the browser for the memory. The loop keeps its cadence and its stats (so the watchdog sees a
+    // live worker, not a hang), and restoration re-presents via `needsRender`.
+    if (!CONTEXT_LOST) target.renderer.render(target.scene, target.camera);
 
     const frameTime = now() - frameStart;
     target.frameTimes.push(frameTime);
@@ -1325,20 +1407,14 @@ function renderFrame(target: WorkerState, timestamp: number): void {
     if (updateHover(target)) target.needsRender = true;
   }
 
-  // No heartbeat message. It shared a 1,000ms interval and a start instant with the stats publish
-  // below, so it posted in the same frame, every second, forever - and the host treats *any* message
-  // as proof the worker's event loop is turning, so it proved nothing the stats post did not. The
-  // cadence runs on both paths: a still model still tells the host it is alive, with an honest
-  // frame rate of zero.
-  const clockMs = now();
-  if (clockMs - target.lastStatsMs >= TIMING.statsIntervalMs) {
-    target.lastStatsMs = clockMs;
-    publishStats(target);
-    if (target.builder) {
-      const metrics = target.builder.currentMetrics();
-      if (Object.keys(metrics).length > 0) post({ type: 'metrics', values: metrics });
-    }
-  }
+  // The stats publish stays cadence-gated here so a frame never carries a duplicate of what the
+  // heartbeat is about to say — but it is NOT the liveness proof anymore. The proof moved to the
+  // wall-clock heartbeat below 'init': the stats cadence inherited the rAF cadence, and on a
+  // software-raster device the presenter delivers at 0.2–2 fps, so the between-stats gap ran to
+  // multiple seconds against a ~4 s silence window — an invisible hang written in healthy
+  // arithmetic. The render loop publishes when it happens to be first in the window; it must never
+  // be the only one who can.
+  stepCadence(target);
 }
 
 function syncTransforms(target: WorkerState): void {
@@ -1525,9 +1601,52 @@ function monitorLadder(target: WorkerState, frameTimeMs: number): void {
   // when a pin means the pressure will never be acted on, which is the point of a pin.
 }
 
-/** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */ function publishStats(
-  target: WorkerState,
-): void {
+/**
+ * The cadence step: publish stats (and any metrics) once per window.
+ *
+ * Shared by the render loop and the wall-clock heartbeat, gated on the same `lastStatsMs` stamp so
+ * exactly one of them fires per window — a healthy loop and the heartbeat race for it, and either
+ * winner satisfies the host.
+ */
+function stepCadence(target: WorkerState): void {
+  const clockMs = now();
+  if (clockMs - target.lastStatsMs < TIMING.statsIntervalMs) return;
+  target.lastStatsMs = clockMs;
+  publishStats(target);
+  if (target.builder) {
+    const metrics = target.builder.currentMetrics();
+    if (Object.keys(metrics).length > 0) post({ type: 'metrics', values: metrics });
+  }
+}
+
+/**
+ * The wall-clock heartbeat.
+ *
+ * This is the fix for the second head of the demo-killer. The worker's liveness proof used to ride
+ * entirely on `renderFrame` — whose cadence is the *presenter's* cadence, and on a
+ * software-raster device that is 0.2–2 fps: a healthy worker went silent for 3–10 s between
+ * presented frames while its per-pass JS cost measured ~16 ms, so the host's adaptive silence
+ * window (4 s base + 6× a tiny frameMillis) judged healthy-slow delivery a hang and executed the
+ * model — often right after a tab returned, because that is when the watchdog's clock was
+ * re-armed. `TIMING.heartbeatIntervalMs` was declared with exactly this purpose ("a model
+ * rendering at 2 fps still beats every second") and never wired to anything.
+ *
+ * The interval fires on the event loop's own clock, so it proves what the watchdog actually needs
+ * proving: that the event loop turns. A loop wedged in synchronous guest code cannot service
+ * timers either — that hang still crosses the silence window and still dies. A paused model, a
+ * lost context, a 0-fps presenter — all keep beating. Skips its own turn when the render loop
+ * published inside the window (exactly-once stats, either winner).
+ */
+function startHeartbeat(): void {
+  scheduleHeartbeat(() => {
+    const target = state;
+    if (!target) return;
+    stepCadence(target);
+  }, TIMING.heartbeatIntervalMs);
+}
+
+/** Publish measured runtime cost. Every number measured, never estimated (`03` R9). */
+function publishStats(target: WorkerState): void {
   const publishedAt = now();
 
   const average =
@@ -1622,6 +1741,7 @@ function loop(timestamp: number): void {
         state = initRenderer(request);
         post({ type: 'ready' });
         scheduleFrame(loop);
+        startHeartbeat();
         break;
       }
 

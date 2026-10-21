@@ -29,7 +29,14 @@ import {
   formatModelSummary,
   formatStats,
 } from '../dev-console.ts';
-import { buildGraceMs, heartbeatTimeoutMs } from './watchdog.ts';
+import {
+  WATCHDOG_KILL_REASON,
+  buildGraceMs,
+  heartbeatTimeoutMs,
+  judgeWatchdogTick,
+  renderSuppressed,
+  type WatchdogState,
+} from './watchdog.ts';
 
 /** What the viewer subscribes to. Each callback is optional so a caller takes only what it needs. */
 export interface HostCallbacks {
@@ -143,7 +150,26 @@ export class SandboxHost {
   private readonly tier: DeviceTier;
   private readonly pixelRatio: number;
 
-  private lastHeartbeatAt = 0;
+  /**
+   * The watchdog's judgement state: the last heartbeat (or re-arm), whether the page had its
+   * frame production suppressed since the last visible tick, and the dev-warn latch. The
+   * arithmetic that consumes it lives in `watchdog.ts`, tested without a DOM.
+   */
+  private watchdogState: WatchdogState = {
+    lastHeartbeatAt: 0,
+    wasSuppressed: false,
+    warned: false,
+  };
+  /**
+   * When a main-thread `requestAnimationFrame` last fired.
+   *
+   * `Infinity` until the probe starts: an unmeasurable clock must never read as "stalled", or a
+   * renderer-less environment would enjoy an unlimited silence pass. The probe exists for the
+   * occluded-window case — `document.hidden` stays false there while rAF (ours and the worker's)
+   * stalls — and one do-nothing callback at page refresh rate costs nothing.
+   */
+  private rafLastFiredAt = Number.POSITIVE_INFINITY;
+  private rafProbeRunning = false;
   /** Rolling average frame cost the worker last reported, so the timeout can follow measured reality. */
   private lastFrameMillis = 0;
   /**
@@ -163,10 +189,9 @@ export class SandboxHost {
   /** Retained so a kill can be recovered from by reloading the same program into a fresh worker. */
   private lastProgram: { code: string; seed: number; runtime?: string } | null = null;
   private theme = { top: '#17130f', bottom: '#08070a' };
-  /** Dev-only instrumentation state: load-start clock, stats cadence, one-shot watchdog warning. */
+  /** Dev-only instrumentation state: load-start clock and stats cadence. */
   private loadStartedAt = 0;
   private statsPublished = 0;
-  private watchdogWarned = false;
 
   constructor(
     container: HTMLElement,
@@ -205,8 +230,28 @@ export class SandboxHost {
    */
   start(): void {
     if (this.disposed) return;
+    this.startRenderProbe();
     this.recreateCanvas();
     this.spawnWorker();
+  }
+
+  /**
+   * The occlusion probe: one recurring, do-nothing main-thread `requestAnimationFrame`.
+   *
+   * Fires whenever the compositor produces a frame. In an occluded or minimized window — the case
+   * `document.hidden` cannot see — it stalls, and the watchdog reads that stall as "the page could
+   * not have presented anyway". Guarded on availability: an environment without rAF keeps
+   * `rafLastFiredAt` at infinity, which can never read as stalled.
+   */
+  private startRenderProbe(): void {
+    if (this.rafProbeRunning || typeof window.requestAnimationFrame !== 'function') return;
+    this.rafProbeRunning = true;
+    const beat = (): void => {
+      if (!this.rafProbeRunning) return;
+      this.rafLastFiredAt = performance.now();
+      window.requestAnimationFrame(beat);
+    };
+    window.requestAnimationFrame(beat);
   }
 
   private recreateCanvas(): void {
@@ -230,11 +275,19 @@ export class SandboxHost {
     const worker = new SandboxWorker();
     this.worker = worker;
 
+    // Every event is scoped to the worker it came from — captured here, compared on delivery.
+    // `terminate()` discards messages still queued *inside* a worker, but a `MessageEvent` already
+    // posted to the main thread is still delivered afterwards: a stale `loaded` would set the
+    // panel to the previous model, a stale `stats` would refresh the heartbeat of a worker that
+    // is not running, and a stale `error` would call `kill()` on the *new* worker and destroy the
+    // model in flight. Anything not from the current worker is not this session's news.
     worker.addEventListener('message', (event: MessageEvent<WorkerResponse>) => {
+      if (this.worker !== worker) return;
       this.handleMessage(event.data);
     });
 
     worker.addEventListener('error', (event: ErrorEvent) => {
+      if (this.worker !== worker) return;
       // A worker-level error is not recoverable in place: the realm may be half-hardened. Kill and report.
       const where = [event.filename, event.lineno, event.colno].filter(Boolean).join(':');
       const detail =
@@ -272,7 +325,12 @@ export class SandboxHost {
       devLog(
         `canvas ${width}×${height} @${this.pixelRatio} DPR · tier ${this.tier} · theme ${this.theme.top}`,
       );
-    this.lastHeartbeatAt = performance.now();
+    // A fresh worker starts its watchdog clock now: nothing may be judged across the spawn.
+    this.watchdogState = {
+      lastHeartbeatAt: performance.now(),
+      wasSuppressed: false,
+      warned: false,
+    };
     this.startWatchdog();
   }
 
@@ -286,7 +344,7 @@ export class SandboxHost {
     // Any message is proof the worker's event loop is turning, so it cannot be hung. Treating only the
     // explicit heartbeat this way meant a busy-but-alive worker sending stats and hover events could still be
     // executed once its *frames* outgrew the fixed timeout — which is exactly what the CI failure showed.
-    this.lastHeartbeatAt = performance.now();
+    this.watchdogState.lastHeartbeatAt = performance.now();
 
     // Dev-only console instrumentation (compiled out of production). `08`'s honesty rule applies to
     // developers too: a stalled build must be attributable to a stage, not reconstructed afterwards.
@@ -306,7 +364,7 @@ export class SandboxHost {
       case 'loaded':
         // The build phase is over, so heartbeat monitoring resumes at normal sensitivity.
         this.buildingUntil = 0;
-        this.lastHeartbeatAt = performance.now();
+        this.watchdogState.lastHeartbeatAt = performance.now();
         // A new model has presented no frame yet, so the first frame — the one that compiles every
         // shader — gets the patience the policy gives an unmeasured worker.
         this.hasMeasuredFrame = false;
@@ -398,32 +456,25 @@ export class SandboxHost {
     this.watchdogTimer = window.setInterval(() => {
       if (!this.worker) return;
 
-      // A build legitimately blocks the worker's loop, so monitoring pauses until the grace period expires.
-      const now = performance.now();
-      if (this.buildingUntil > now) return;
+      // The whole tick is one judgement, made by tested arithmetic (`watchdog.ts`): grace first,
+      // then "could the page have produced a frame at all" — a hidden tab *or* an occluded window
+      // (rAF stalled, `document.hidden` still false), then the silence itself, measured only
+      // against a clock that was last re-armed while the page could render.
+      const nowMs = performance.now();
+      const verdict = judgeWatchdogTick({
+        state: this.watchdogState,
+        nowMs,
+        suppressed: renderSuppressed({
+          hidden: document.hidden,
+          msSinceRaf: nowMs - this.rafLastFiredAt,
+        }),
+        graceUntil: this.buildingUntil,
+        timeoutMs: this.currentHeartbeatTimeoutMs(),
+      });
+      this.watchdogState = verdict.state;
 
-      // A hidden tab stops `requestAnimationFrame`, so heartbeats stop legitimately. Killing a model because the
-      // learner switched tabs would be a spectacular own goal.
-      if (document.hidden) {
-        this.lastHeartbeatAt = now;
-        return;
-      }
-
-      if (
-        now - this.lastHeartbeatAt > this.currentHeartbeatTimeoutMs() * 0.7 &&
-        !this.watchdogWarned
-      ) {
-        this.watchdogWarned = true;
-        devWarn(
-          `worker silent ${(now - this.lastHeartbeatAt) / 1000}s — ` +
-            `${this.buildingUntil > 0 ? 'build grace holds, watchdog paused' : `watchdog fires in ~${Math.round(this.currentHeartbeatTimeoutMs() - (now - this.lastHeartbeatAt)) / 1000}s`}`,
-        );
-      }
-      if (now - this.lastHeartbeatAt > this.currentHeartbeatTimeoutMs()) {
-        this.kill(
-          'This model stopped responding and was stopped to keep the page usable. You can try generating it again.',
-        );
-      }
+      if (verdict.warn) devWarn(verdict.warn);
+      if (verdict.kill) this.kill(WATCHDOG_KILL_REASON);
     }, 1_000);
   }
 
@@ -457,12 +508,19 @@ export class SandboxHost {
    */
   kill(reason: string): void {
     if (devEnabled) devError(`worker terminated — ${reason}`);
-    this.watchdogWarned = false;
     this.stopWatchdog();
     this.worker?.terminate();
     this.worker = null;
+    // The grace belonged to the model that just died. A worker that wedges immediately after this
+    // kill must be monitored like any other worker, not sheltered by a grace period it inherited.
+    this.buildingUntil = 0;
     this.callbacks.onKilled?.(reason);
     if (!this.disposed) this.start();
+    // The replacement worker holds no model: nothing can be presented and its idle-orbit loop
+    // would burn frames (60 fps on an empty scene) until the learner retries. Pause it — a tap of
+    // Play or a fresh `load()` hands the decision back to the page, since each load spawns a
+    // worker whose pause state is clean.
+    this.setPaused(true);
   }
 
   /**
@@ -480,7 +538,6 @@ export class SandboxHost {
     this.lastProgram = { code, seed, ...(runtime ? { runtime } : {}) };
     if (devEnabled) {
       this.loadStartedAt = performance.now();
-      this.watchdogWarned = false;
       devLog(
         `load — ${code.length} bytes · seed ${seed} · ${runtime ? 'instrumented runtime' : 'clean source'}`,
       );
@@ -574,6 +631,7 @@ export class SandboxHost {
 
   dispose(): void {
     this.disposed = true;
+    this.rafProbeRunning = false;
     this.stopWatchdog();
     this.send({ type: 'dispose' });
     // Terminating immediately rather than awaiting the `disposed` reply: a worker that is already wedged would

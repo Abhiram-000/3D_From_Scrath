@@ -98,3 +98,126 @@ export function heartbeatTimeoutMs(evidence: LivenessEvidence): number {
 export function buildGraceMs(tier: WatchdogTier): number {
   return WATCHDOG.buildGraceMsByTier[tier];
 }
+
+/**
+ * Page-level evidence about whether the page could have produced a frame at all.
+ *
+ * Both states below stop the *worker's* rAF, which stops its stats and heartbeats — silence that
+ * says "the learner is away", nothing about the worker. A hidden tab is the easy case. The harder
+ * one is the fully occluded (or minimized) window: `document.visibilityState` still says "visible",
+ * but rAF stalls there too. The main thread's own rAF clock is the shared probe — if nothing has
+ * fired a frame callback in a while, the worker's rAF is stalled for the same reason.
+ */
+export interface PageRenderEvidence {
+  /** `document.hidden`, read at tick time. */
+  hidden: boolean;
+  /** Milliseconds since a main-thread `requestAnimationFrame` last fired. */
+  msSinceRaf: number;
+}
+
+/**
+ * How long a "visible" page may go without a frame callback before the window must be treated as
+ * occluded or minimized. A rendering page fires rAF every ~16 ms; the browsers that pause rAF for
+ * occlusion or energy saving pause it for far longer than this. Generous enough never to catch a
+ * busy main thread, far below the minute-scale throttling the states below produce.
+ */
+export const RAF_SILENCE_GAP_MS = 5_000;
+
+/** Whether the worker's silence could be the page's doing rather than the worker's. */
+export function renderSuppressed(evidence: PageRenderEvidence): boolean {
+  return evidence.hidden || evidence.msSinceRaf > RAF_SILENCE_GAP_MS;
+}
+
+/**
+ * The watchdog's mutable judgement state, one instance per worker.
+ *
+ * `wasSuppressed` is the fix for the demo-killer: the old code *refreshed* `lastHeartbeatAt` on
+ * every hidden tick, which kept the value honest until the browser throttled even the refresh —
+ * and then the return tick measured a 60 s gap against a 30 s threshold and executed a healthy
+ * model. Now a suppressed tick records that a suppression happened; the first tick that sees the
+ * suppression lifted re-arms a full fresh window instead of measuring across the gap.
+ */
+export interface WatchdogState {
+  /** The last time the worker proved liveness — or the last re-arm. */
+  lastHeartbeatAt: number;
+  /** True from the first tick that saw suppression until the first tick that sees it lifted. */
+  wasSuppressed: boolean;
+  /** True after the dev warning for the current silence episode has been issued. */
+  warned: boolean;
+}
+
+export interface WatchdogTickInput {
+  state: WatchdogState;
+  nowMs: number;
+  /** The page could not have produced a frame; see `renderSuppressed`. */
+  suppressed: boolean;
+  /** The load grace's deadline, or 0 when no load is in flight. */
+  graceUntil: number;
+  /** The silence threshold for this worker, already adapted to its measured frames. */
+  timeoutMs: number;
+}
+
+export interface WatchdogTickVerdict {
+  /** The state to persist (last heartbeat, suppression latch, warn latch). */
+  state: WatchdogState;
+  /** A dev-only warning for an approaching kill, or null. */
+  warn: string | null;
+  /** Kill the worker: its silence crossed the threshold while the page was provably able to render. */
+  kill: boolean;
+}
+
+/** The single kill sentence, kept beside the judgement that fires it. */
+export const WATCHDOG_KILL_REASON =
+  'This model stopped responding and was stopped to keep the page usable. You can try generating it again.';
+
+/**
+ * One 1 Hz watchdog tick, as pure arithmetic.
+ *
+ * Order matters, and every early return is a case the watchdog must refuse to judge:
+ * the build grace, then the page's own frame suppression, then the suppression *release* — and
+ * only then the silence itself, measured from the last heartbeat or the last re-arm.
+ */
+export function judgeWatchdogTick(tick: WatchdogTickInput): WatchdogTickVerdict {
+  const { state, nowMs, suppressed, graceUntil, timeoutMs } = tick;
+
+  // A build legitimately blocks the worker's loop: judging silence inside the grace period
+  // executes work that was going to finish.
+  if (graceUntil > nowMs) return { state, warn: null, kill: false };
+
+  if (suppressed) {
+    // Do NOT refresh the heartbeat here — that is the old demo-killer's move. Record that the
+    // gap was unwitnessed; the return tick does the forgiving.
+    return {
+      state: { ...state, wasSuppressed: true, warned: false },
+      warn: null,
+      kill: false,
+    };
+  }
+
+  if (state.wasSuppressed) {
+    // First tick after the page can render again. The worker's rAF was stopped for the whole gap,
+    // so the measured silence says how long the learner was away, not whether the worker hung.
+    // Re-arm a full fresh window: a live worker posts within about a second of returning (its own
+    // rAF resumed with the page's), and a wedged one crosses the fresh window as surely as ever.
+    return {
+      state: { lastHeartbeatAt: nowMs, wasSuppressed: false, warned: false },
+      warn: null,
+      kill: false,
+    };
+  }
+
+  const silence = nowMs - state.lastHeartbeatAt;
+  if (silence > timeoutMs) {
+    return { state: { ...state, warned: false }, warn: null, kill: true };
+  }
+
+  const warn =
+    silence > timeoutMs * 0.7 && !state.warned
+      ? `worker silent ${(silence / 1000).toFixed(1)}s — watchdog fires in ~${Math.max(
+          0,
+          Math.round((timeoutMs - silence) / 1000),
+        )}s`
+      : null;
+
+  return { state: warn ? { ...state, warned: true } : state, warn, kill: false };
+}

@@ -167,6 +167,11 @@ viewer pass (panels, reset, story, status, shortcuts) · `592a42f` docs and code
 - **E2E coverage.** 14 of 50 tests skip themselves below 10 fps (`requireRealFrameRate`), which is
   how the story freeze shipped. Making those assertions renderer-independent (dispatch events
   directly; widen windows in proportion to measured frame rate) is the next test-quality job.
+- **Two sources of truth for the drain.** `app.ts` still carries `AppState.draining`/`openStreams`
+  while `services/lifecycle.ts` owns the real drain signal and open-generation count; routes read one,
+  the pipeline and AI client read the other. They agree today, and that is the whole risk — one fact
+  with two homes is the defect class this codebase has already paid for twice (the theme key, the chat
+  persona).
 - **The deployed container** is an image from 2026-10-13 and serves a build eight days old; it must
   be rebuilt for the deployment to match `main`.
 - Streaming chat, notes and export are verified in unit/integration tests and by hand at the DOM

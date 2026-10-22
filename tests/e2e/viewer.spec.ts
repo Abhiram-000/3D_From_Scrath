@@ -169,9 +169,20 @@ test.describe('the viewer', () => {
 
     // The three view modes are toggles, not a radio group: each returns to normal on a second
     // click. There is no `Solid` button — normal is the state you get by turning the others off.
+    //
+    // Located by `title`, not by accessible name: between 769 and 1600 CSS pixels the toolbar hides
+    // its labels, so a button's name becomes its `title` (`button "X-ray Mode (X)"`) and a
+    // `getByRole(..., { name: 'X-ray' })` match finds nothing at all. The desktop profile is 1280
+    // wide, so this is the case that runs.
+    const MODE_TITLES: Record<string, string> = {
+      'X-ray': 'X-ray Mode (X)',
+      Wireframe: 'Wireframe (W)',
+      Explode: 'Explode View (E)',
+    };
+
     for (const mode of ['X-ray', 'Wireframe', 'Explode']) {
       for (const turn of ['on', 'off'] as const) {
-        await page.getByRole('button', { name: mode, exact: true }).click();
+        await page.getByTitle(MODE_TITLES[mode] as string).click();
         // Still rendering after the switch: a mode that kills the loop is the failure this catches.
         // Polled rather than sampled on a fixed sleep — under a software rasterizer a single read can
         // land between frames and report 0 for a loop that is perfectly alive.

@@ -166,11 +166,17 @@
     );
   }
 
-  function readThemeColors(): { top: string; bottom: string } {
+  /**
+   * The three theme values the engine draws with: the backdrop gradient's two stops and the ground
+   * grid's colour. All three come from CSS, so the canvas follows the theme rather than fighting it
+   * (`07`), and the grid token already carries the intended alpha.
+   */
+  function readThemeColors(): { top: string; bottom: string; grid: string } {
     const styles = getComputedStyle(document.documentElement);
     return {
       top: styles.getPropertyValue('--scene-bg-top').trim() || '#17130f',
       bottom: styles.getPropertyValue('--scene-bg-bottom').trim() || '#08070a',
+      grid: styles.getPropertyValue('--scene-grid').trim() || 'rgb(255 255 255 / 6%)',
     };
   }
 
@@ -2009,21 +2015,27 @@
         </div>
       {/if}
 
-      <!-- Loading overlay -->
-      {#if modelLoading}
+      <!--
+        Loading overlay.
+
+        The unsupported branch comes FIRST, and that ordering is the whole point of it: it used to be
+        last in the chain, behind `!engineReady`, so a browser that cannot create a WebGL context —
+        the one case it exists for — was told to wait for an engine that was never going to start,
+        while the explanation sat unreachable below. A state that cannot be reached is not a state.
+      -->
+      {#if !support.supported}
+        <div class="loading-overlay">
+          <div class="loading-content">
+            <h2>This browser cannot run the 3D engine</h2>
+            <p>{support.reason}</p>
+          </div>
+        </div>
+      {:else if modelLoading}
         <div class="loading-overlay">
           <div class="loading-content">
             <div class="spinner-large"></div>
             <h2>Building {topicName}</h2>
             <p>Authoring and realizing on this device…</p>
-          </div>
-        </div>
-      {:else if !engineReady && !loadError}
-        <div class="loading-overlay">
-          <div class="loading-content">
-            <div class="spinner-large"></div>
-            <h2>Loading 3D Model</h2>
-            <p>Authoring, pricing and realizing on this device…</p>
           </div>
         </div>
       {:else if loadError}
@@ -2034,11 +2046,12 @@
             <button class="modal-btn" onclick={() => host?.reload()}>Try again</button>
           </div>
         </div>
-      {:else if !support.supported}
+      {:else if !engineReady}
         <div class="loading-overlay">
           <div class="loading-content">
-            <h2>This browser cannot run the 3D engine</h2>
-            <p>{support.reason}</p>
+            <div class="spinner-large"></div>
+            <h2>Loading 3D Model</h2>
+            <p>Authoring, pricing and realizing on this device…</p>
           </div>
         </div>
       {/if}

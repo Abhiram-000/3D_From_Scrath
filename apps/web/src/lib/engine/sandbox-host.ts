@@ -28,7 +28,12 @@ import type {
   VideoRecordingCapability,
 } from '@edu3d/contracts';
 import { VIDEO_CLIP_LIMITS } from '@edu3d/contracts';
-import type { SerializableVerdict, WorkerRequest, WorkerResponse } from './sandbox-worker.ts';
+import type {
+  SerializableVerdict,
+  ThemeTokens,
+  WorkerRequest,
+  WorkerResponse,
+} from './sandbox-worker.ts';
 import SandboxWorker from './sandbox-worker.ts?worker';
 import {
   devEnabled,
@@ -238,7 +243,7 @@ export class SandboxHost {
 
   /** Retained so a kill can be recovered from by reloading the same program into a fresh worker. */
   private lastProgram: { code: string; seed: number; runtime?: string } | null = null;
-  private theme = { top: '#17130f', bottom: '#08070a' };
+  private theme = { top: '#17130f', bottom: '#08070a', grid: 'rgb(255 255 255 / 6%)' };
   /** Dev-only instrumentation state: load-start clock and stats cadence. */
   private loadStartedAt = 0;
   private statsPublished = 0;
@@ -818,7 +823,13 @@ export class SandboxHost {
     this.send({ type: 'setViewMode', mode });
   }
 
-  setTheme(theme: { top: string; bottom: string }): void {
+  /**
+   * Publish the theme tokens the engine draws with, including the ground grid's `--scene-grid` colour.
+   *
+   * The whole set travels together: a theme change must recolour the backdrop *and* rebuild the grid
+   * (a `GridHelper` bakes its colours into geometry), so the two can never be applied out of step.
+   */
+  setTheme(theme: ThemeTokens): void {
     this.theme = theme;
     this.send({ type: 'setTheme', theme });
   }

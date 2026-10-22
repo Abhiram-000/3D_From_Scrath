@@ -99,6 +99,19 @@ import {
 } from './camera-glide.ts';
 import { ladderDecision } from './quality-pin.ts';
 
+/**
+ * The theme values the page reads from CSS and hands to the engine (`07`).
+ *
+ * `grid` is the `--scene-grid` token, alpha included, on purpose: a `THREE.GridHelper` bakes its two
+ * colours into a geometry attribute at construction, so the token has to travel whole and the worker
+ * has to rebuild the helper when it changes rather than recolour it.
+ */
+export interface ThemeTokens {
+  top: string;
+  bottom: string;
+  grid: string;
+}
+
 /** Messages the page sends into the worker. */
 export type WorkerRequest =
   | {
@@ -108,7 +121,7 @@ export type WorkerRequest =
       height: number;
       pixelRatio: number;
       tier: DeviceTier;
-      theme: { top: string; bottom: string };
+      theme: ThemeTokens;
       /**
        * The learner's pinned quality, or null to let the adaptive ladder decide.
        *
@@ -142,7 +155,7 @@ export type WorkerRequest =
   | { type: 'playShot'; shot: ShotDecl }
   | { type: 'viewPreset'; preset: 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso' }
   | { type: 'setViewMode'; mode: 'normal' | 'xray' | 'wireframe' | 'explode' }
-  | { type: 'setTheme'; theme: { top: string; bottom: string } }
+  | { type: 'setTheme'; theme: ThemeTokens }
   | { type: 'setQuality'; quality: QualityPreset | null }
   | { type: 'snapshot'; width: number; height: number }
   | { type: 'dispose' };
@@ -371,6 +384,15 @@ export interface WorkerState {
   pixelRatio: number;
   width: number;
   height: number;
+
+  /**
+   * Viewer chrome: the ground reference grid, or null before the first theme application.
+   *
+   * It is scene furniture, not model geometry — it is never a child of `model.root`, so a model swap
+   * (which disposes the root) cannot take it down. A theme change rebuilds it rather than recolouring
+   * it; `applyTheme` owns its whole lifecycle, and `disposeGrid`/`disposeAll` release it.
+   */
+  grid: THREE.GridHelper | null;
 
   builder: SceneBuilder | null;
   model: RealizedModel | null;
@@ -641,10 +663,180 @@ function describeFailure(error: unknown): { message: string; timedOut: boolean }
   };
 }
 
-/** Apply the scene backdrop from theme tokens, so the canvas follows the page rather than fighting it. */
-function applyTheme(target: WorkerState, theme: { top: string; bottom: string }): void {
+/**
+ * The ground grid's geometry, matching v1's `SceneRuntime` defaults (size 40, divisions 40).
+ *
+ * 40 units across with 40 divisions puts a line every unit, which is the scale a learner reads a model
+ * against; a finer grid reads as noise, which is the contract's own word for it.
+ */
+const GRID_SIZE = 40;
+const GRID_DIVISIONS = 40;
+
+/**
+ * Where the grid draws relative to the model.
+ *
+ * Below the model's default render order of 0, so the transparent lines are drawn first and can never
+ * punch through geometry in front of them.
+ */
+const GRID_RENDER_ORDER = -10;
+
+/**
+ * How far the ordinary grid lines are pulled toward the backdrop, which is what gives the centre
+ * lines their emphasis.
+ *
+ * A `GridHelper` shares one material — and therefore one opacity — across every line, so "the centre
+ * lines are more opaque" is expressed by receding the grid lines toward the background instead of
+ * introducing a second colour token for the centre. The centre lines keep the token colour itself.
+ */
+const GRID_LINE_RECEDE = 0.45;
+
+/**
+ * The neutral the grid falls back to when its token cannot be parsed: a mid grey at a subtle alpha,
+ * legible against either theme, so a bad token never throws and never hides the grid entirely.
+ */
+const GRID_FALLBACK = { r: 0.5, g: 0.5, b: 0.5, a: 0.1 } as const;
+
+/** One `rgb()` channel as a 0–1 number: percent scales by 100, otherwise the 0–255 channel is normalised. */
+function channelToUnit(value: string): number | null {
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const numeric = Number.parseFloat(trimmed);
+  if (!Number.isFinite(numeric)) return null;
+  const unit = trimmed.endsWith('%') ? numeric / 100 : numeric / 255;
+  return Math.min(1, Math.max(0, unit));
+}
+
+/** One alpha as a 0–1 number: percent scales by 100, otherwise a plain fraction. */
+function alphaToUnit(value: string): number | null {
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  const numeric = Number.parseFloat(trimmed);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.min(1, Math.max(0, trimmed.endsWith('%') ? numeric / 100 : numeric));
+}
+
+/**
+ * Parse a `--scene-grid` token into a colour and an alpha, defensively.
+ *
+ * The shipped tokens are modern CSS (`rgb(255 255 255 / 6%)` dark, `rgb(26 22 18 / 8%)` light), but
+ * the page also supplies a literal fallback and a future author may write hex or the legacy comma
+ * form — so `#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa` and `rgb()`/`rgba()` in both the space-separated and
+ * comma forms, with percent or unit channels, are all accepted. Anything unparseable becomes
+ * `GRID_FALLBACK`: a chrome token must never be able to throw the renderer down.
+ *
+ * The returned colour is converted from sRGB into the renderer's working colour space, because the
+ * token is authored in sRGB and the helper bakes the converted components into its geometry.
+ */
+export function parseGridColor(token: string): { color: THREE.Color; opacity: number } {
+  const raw = token.trim();
+
+  const hex = /^#([0-9a-f]{3,8})$/i.exec(raw);
+  if (hex) {
+    const digits = hex[1] ?? '';
+    const wide = digits.length <= 4 ? digits.replace(/./g, (digit) => digit + digit) : digits;
+    if (wide.length === 6 || wide.length === 8) {
+      const hexChannel = (pair: string): number => Number.parseInt(pair, 16) / 255;
+      const color = new THREE.Color().setRGB(
+        hexChannel(wide.slice(0, 2)),
+        hexChannel(wide.slice(2, 4)),
+        hexChannel(wide.slice(4, 6)),
+        THREE.SRGBColorSpace,
+      );
+      return { color, opacity: wide.length === 8 ? hexChannel(wide.slice(6, 8)) : 1 };
+    }
+  }
+
+  const functional = /^rgba?\(([^)]*)\)$/i.exec(raw);
+  if (functional) {
+    const [rgbPart = '', alphaPart] = (functional[1] ?? '').split('/');
+    const channels = rgbPart.split(/[\s,]+/).filter((part) => part !== '');
+    if (channels.length >= 3) {
+      const r = channelToUnit(channels[0] ?? '');
+      const g = channelToUnit(channels[1] ?? '');
+      const b = channelToUnit(channels[2] ?? '');
+      // Modern syntax puts alpha after a slash; the legacy form carries it as a fourth channel.
+      const alpha =
+        alphaPart !== undefined
+          ? alphaToUnit(alphaPart)
+          : channels[3] !== undefined
+            ? alphaToUnit(channels[3])
+            : 1;
+      if (r !== null && g !== null && b !== null && alpha !== null) {
+        return { color: new THREE.Color().setRGB(r, g, b, THREE.SRGBColorSpace), opacity: alpha };
+      }
+    }
+  }
+
+  return {
+    color: new THREE.Color().setRGB(
+      GRID_FALLBACK.r,
+      GRID_FALLBACK.g,
+      GRID_FALLBACK.b,
+      THREE.SRGBColorSpace,
+    ),
+    opacity: GRID_FALLBACK.a,
+  };
+}
+
+/** The centre colour (the token) and the grid colour (the same colour, receded toward the backdrop). */
+function deriveGridColours(
+  token: THREE.Color,
+  backdrop: THREE.Color,
+): { center: THREE.Color; grid: THREE.Color } {
+  return { center: token, grid: token.clone().lerp(backdrop, GRID_LINE_RECEDE) };
+}
+
+/** Build the ground grid for a token. The caller owns its disposal. */
+function buildSceneGrid(token: string, backdrop: THREE.Color): THREE.GridHelper {
+  const { color, opacity } = parseGridColor(token);
+  const { center, grid } = deriveGridColours(color, backdrop);
+  const helper = new THREE.GridHelper(GRID_SIZE, GRID_DIVISIONS, center, grid);
+  // v1's settings, kept for the same reasons: chrome is translucent, at the token's own alpha.
+  helper.material.transparent = true;
+  helper.material.opacity = opacity;
+  // Chrome must never intercept a pick meant for the model. A no-op raycast means the grid can never
+  // appear in any intersection list — the page's own pick ray, a future scene-wide cast, anything.
+  helper.raycast = () => {};
+  // Transparent chrome writes no depth, so its lines can never occlude geometry behind them.
+  helper.material.depthWrite = false;
+  helper.renderOrder = GRID_RENDER_ORDER;
+  return helper;
+}
+
+/** Release the grid's GPU resources and detach it; the one path a rebuild and a teardown share. */
+export function disposeGrid(target: WorkerState): void {
+  const grid = target.grid;
+  if (!grid) return;
+  target.scene.remove(grid);
+  grid.geometry.dispose();
+  grid.material.dispose();
+  target.grid = null;
+}
+
+/**
+ * Apply the scene backdrop from theme tokens, and rebuild the ground grid to match.
+ *
+ * The grid is rebuilt here rather than recoloured: a `GridHelper` bakes its two colours into a
+ * geometry attribute at construction, so a theme change that only rewrote the material would leave
+ * the old theme's lines on the new backdrop. The old helper's geometry and material are disposed
+ * first — every temporary resource in this repo is released explicitly.
+ *
+ * The grid is viewer chrome and is on by default (v1 shipped it on, and the user asked for it), which
+ * also satisfies an authored `environment.grid === true`. A model cannot switch it off: `grid`
+ * defaults to `false` in the contract, so an authored `false` is indistinguishable from a model that
+ * said nothing — a contract question, deliberately not guessed at here.
+ *
+ * It is added to the scene, never to `realized.root`, so a model swap (which disposes the root)
+ * cannot take the chrome down with it.
+ */
+export function applyTheme(target: WorkerState, theme: ThemeTokens): void {
   const top = new THREE.Color().setStyle(theme.top, THREE.SRGBColorSpace);
   target.scene.background = top;
+
+  disposeGrid(target);
+  target.grid = buildSceneGrid(theme.grid, top);
+  target.scene.add(target.grid);
+
   // Fog is not applied by default: it hides distant parts, and a model's own `environment.fog` is the only place
   // that should decide to do that.
 }
@@ -1140,6 +1332,8 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     pixelRatio: request.pixelRatio,
     width: request.width,
     height: request.height,
+    // Built by `applyTheme` below, which owns the grid's whole lifecycle.
+    grid: null,
 
     builder: null,
     model: null,
@@ -2762,6 +2956,9 @@ function disposeAll(): void {
   // The clip's encoder holds a codec instance and the chunks hold the encoded bytes; both die here
   // rather than waiting for the realm to be collected.
   releaseRecording(state);
+  // The grid lives on the scene, not the model root, so only teardown (and a theme rebuild) disposes
+  // it: geometry and material are GPU resources and would otherwise wait on the realm's collection.
+  disposeGrid(state);
   state.physics?.dispose();
   state.builder?.dispose();
   state.renderer.dispose();

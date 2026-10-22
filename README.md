@@ -45,13 +45,24 @@ pnpm dev            # server + web, in parallel
 ## Deploy (production)
 
 One container serves everything — the built frontend and the API on one port, same-origin — with
-**no required configuration**: no login, no database, no CORS setup. Add an AI key and generation
-unlocks; add nothing and the viewer, reference model and gallery still work.
+**no required configuration for browsing, viewing and generating**: no login, no database, no CORS
+setup. Add an AI key and generation unlocks; add nothing and the viewer, reference model and gallery
+still work.
+
+**Publishing and deleting need one more thing, on purpose.** Production refuses to boot with open
+writes (`04`, `06`): an unauthenticated default let any visitor publish and delete. So give it a
+token in the same file —
 
 ```sh
-cp deploy.env.example deploy.env   # optional: add AI_API_KEY to unlock generation
+cp deploy.env.example deploy.env
+printf 'EDU3D_WRITE_TOKEN=%s\n' "$(openssl rand -hex 32)" >> deploy.env   # required to publish
+# optional: add AI_API_KEY to the same file to unlock generation
 docker compose up                  # → http://localhost:8787
 ```
+
+The browser asks for that token once, the first time a learner publishes, and remembers it. If you are
+running an actual sandbox where open writes _are_ the point, set `EDU3D_ALLOW_OPEN_WRITES: 'true'` in
+`docker-compose.yml` and own the choice — the server will still fail closed to 401s on every write.
 
 What the compose file handles so you don't have to: production mode, `0.0.0.0` binding, proxy-aware
 rate limits, the gallery persisted to a named volume (survives redeploys), a health check wired to

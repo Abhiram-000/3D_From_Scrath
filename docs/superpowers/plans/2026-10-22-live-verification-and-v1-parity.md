@@ -172,6 +172,27 @@ lattice reads as a drafting floor, the fine lines resolve and then fade instead 
 no plane edge, and the frame rate is unchanged (55–69 fps, versus 39–79 before). Part picking is
 unaffected: the plane's `raycast` is a no-op.
 
+### X-ray and Explode, ported from v1 (on request)
+
+v1 is `src/engine/runtime/ViewEffects.js` in the reference repo, and its header already names the two
+bugs its own earlier version had — which turned out to be ours too. Ours mutated each part's authored
+material in place for x-ray (keeping its colour, emissive and metalness, `side` untouched so interiors
+stayed z-culled, and writing `depthWrite = true` on exit for parts that legitimately had it off), and
+exploded by writing a world-space offset into a parent-space `position` with a fixed 0.35-unit distance
+and no animation — so nested subassemblies flew off sideways and animated parts lost their offset on the
+next frame.
+
+The port: one shared double-sided shell material restored by reference, its colour derived from the
+backdrop's luminance; explode targets captured once per model in parent space, travel scaled by the
+model's own bounding box and the part's radial distance, a 1.1 s cubic ease with a from→to progress so a
+mid-flight reversal is smooth, and a per-frame pass that **adds** its delta after `syncTransforms` so
+animating and exploding compose.
+
+Verified live (`live/32`–`live/38`): the blueprint read in both themes (pale shell on dark, deeper blue
+on light), radial separation with the compressor stages spreading along the axis rather than sideways, an
+exact restore from both modes, and — while paused — the exploded set changing (draws 89 → 75) with the
+clock frozen at 00:13. No console errors; frame rate unchanged (48–58 fps).
+
 ### Verified live after the final rebuild
 
 Panels reachable at 390×844 · story opens, advances to `2 / 5`, closes, console empty · Reset returns

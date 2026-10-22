@@ -17,6 +17,7 @@ import * as THREE from 'three';
 import type * as SandboxModule from '@edu3d/sandbox';
 import type { ShotDeclInput } from '@edu3d/contracts';
 import type * as WorkerModule from './sandbox-worker.ts';
+import { ViewEffects } from './view-effects.ts';
 
 const posted: Array<Record<string, unknown>> = [];
 // The worker module captures these worker-globals at import time, before anything else runs.
@@ -139,6 +140,7 @@ function makeFakeState(): WorkerModule.WorkerState {
     hoveredPart: null,
     selectedPart: null,
     viewMode: 'normal',
+    effects: new ViewEffects(),
     hoverPending: false,
 
     raycaster: new THREE.Raycaster(),

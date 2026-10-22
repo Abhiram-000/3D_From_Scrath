@@ -243,7 +243,12 @@ export class SandboxHost {
 
   /** Retained so a kill can be recovered from by reloading the same program into a fresh worker. */
   private lastProgram: { code: string; seed: number; runtime?: string } | null = null;
-  private theme = { top: '#17130f', bottom: '#08070a', grid: 'rgb(255 255 255 / 6%)' };
+  private theme = {
+    top: '#17130f',
+    bottom: '#08070a',
+    grid: 'rgb(255 255 255 / 14%)',
+    gridMajor: 'rgb(255 255 255 / 40%)',
+  };
   /** Dev-only instrumentation state: load-start clock and stats cadence. */
   private loadStartedAt = 0;
   private statsPublished = 0;
@@ -824,10 +829,11 @@ export class SandboxHost {
   }
 
   /**
-   * Publish the theme tokens the engine draws with, including the ground grid's `--scene-grid` colour.
+   * Publish the theme tokens the engine draws with, including both ground-grid tokens.
    *
-   * The whole set travels together: a theme change must recolour the backdrop *and* rebuild the grid
-   * (a `GridHelper` bakes its colours into geometry), so the two can never be applied out of step.
+   * The whole set travels together so the backdrop and the grid's two weights can never be applied
+   * out of step. The grid keeps them as shader uniforms, so a theme change recolours it in place
+   * rather than rebuilding it.
    */
   setTheme(theme: ThemeTokens): void {
     this.theme = theme;

@@ -160,7 +160,15 @@
   /* The 3D backdrop. The engine reads these so the canvas follows the theme rather than fighting it. */
   --scene-bg-top: #17130f;
   --scene-bg-bottom: #08070a;
-  --scene-grid: rgb(255 255 255 / 6%);
+
+  /* The ground grid's own weights, not a borrow from the surface/border tokens: these are floor
+     lines composited over `--scene-bg-top` (the scene background is this one flat colour), and a
+     1-px line at distance needs more weight than a UI border to be seen at all. `--scene-grid` is
+     the fine 1-unit lattice; `--scene-grid-major` the 10-unit structure. Against `#17130f` the fine
+     lines land at roughly 1.5:1 and the major lines at roughly 3.9:1 — a visible floor with a
+     readable plan, not the old 6% smear that vanished into the backdrop. */
+  --scene-grid: rgb(255 255 255 / 14%);
+  --scene-grid-major: rgb(255 255 255 / 40%);
 }
 
 /* ── Light theme ────────────────────────────────────────────────────────────
@@ -204,7 +212,10 @@
 
   --scene-bg-top: #f4ecd8;
   --scene-bg-bottom: #ddd0b6;
-  --scene-grid: rgb(26 22 18 / 8%);
+  /* Same roles as the dark block, retuned for the light backdrop: fine lines ~1.4:1 and the major
+     lines ~2.6:1 against `#f4ecd8`, so the floor carries the same weight in either theme. */
+  --scene-grid: rgb(26 22 18 / 16%);
+  --scene-grid-major: rgb(26 22 18 / 42%);
 }
 
 /*

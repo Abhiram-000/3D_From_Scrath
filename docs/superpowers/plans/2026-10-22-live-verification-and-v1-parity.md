@@ -145,6 +145,33 @@ overtook boot hit `if (!state) return` and vanished — a viewer that loaded not
 Verified live afterwards: a model declaring a world, a body and a speed probe reports
 `Physics 0.1–0.2 ms` in the status bar and the solver steps (`live/21-physics-running.png`).
 
+### The ground grid (added on request, after the run above)
+
+The viewer had none, and the contract already asked for one: `environment.grid` was accepted by
+`scene.environment({ grid: true })` and then read by nothing — a promise the viewer silently ignored.
+The first implementation copied v1's `GridHelper` structure but took the token's alpha (6%) as the
+line opacity, which measured **9/255 (3.7%) above the dark backdrop** — present in the framebuffer,
+invisible to a person, and additionally moiréd at grazing angles.
+
+It is now a shader-drawn plane at v1's visual weight rather than its 1px-line approximation: screen-space
+antialiased lines via `fwidth` (so a line is ~1px at any distance), a fine 1-unit lattice, a stronger
+10-unit structure, a density fade that drops the fine lines when a unit projects below a pixel (the
+moiré fix), and a radial distance fade so the plane has no visible edge. Two theme tokens carry the two
+weights (`--scene-grid` 14%/16%, `--scene-grid-major` 40%/42%), and a theme change is two uniform writes
+rather than a rebuild.
+
+Measured the same way as before, from a column through empty canvas:
+
+|                         | peak deviation | p90 deviation |
+| ----------------------- | -------------- | ------------- |
+| before (GridHelper, 6%) | 13/255         | 0/255         |
+| after (shader, 14%/40%) | **86/255**     | **10/255**    |
+
+Verified live in both themes (`live/29`, `live/30`) and at a near-horizon camera angle (`live/31`): the
+lattice reads as a drafting floor, the fine lines resolve and then fade instead of shimmering, there is
+no plane edge, and the frame rate is unchanged (55–69 fps, versus 39–79 before). Part picking is
+unaffected: the plane's `raycast` is a no-op.
+
 ### Verified live after the final rebuild
 
 Panels reachable at 390×844 · story opens, advances to `2 / 5`, closes, console empty · Reset returns

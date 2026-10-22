@@ -229,6 +229,15 @@ describe('the cost of a frame', () => {
     // The frame budget is 50ms for the *model's own callback*; the whole engine frame must sit far
     // under it, so 5ms p99 is a generous ceiling that still fails loudly on a regression that costs
     // real time.
+    //
+    // Read the two figures together when this fails, because they answer different questions and a
+    // wall-clock tail is the one measurement on a shared machine that is not about this code. A
+    // regression raises the *median*; a host that is busy raises only the p99. Observed exactly that
+    // during a verification run with other work in flight: p99 5.5458 ms against a median of
+    // 0.0144 ms, and the same test passing in isolation 1.9 s later. The ceiling is deliberately not
+    // loosened for it — a suite that cannot fail on real time is not measuring anything — but a
+    // tail-only breach with a healthy median is a reason to re-run alone, not to go looking in the
+    // frame path.
     expect(
       p99,
       `frame path p99 was ${p99.toFixed(4)}ms, over the ${MAX_P99_FRAME_MILLIS}ms ceiling ` +

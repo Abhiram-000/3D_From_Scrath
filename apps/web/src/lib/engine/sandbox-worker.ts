@@ -83,6 +83,7 @@ import {
   resetMotionDriven as resetMotionDrivenInto,
   syncTransforms as syncManifestTransforms,
 } from './frame-compose.ts';
+import { ViewEffects } from './view-effects.ts';
 import {
   createGlide,
   dollyPose,
@@ -102,14 +103,17 @@ import { ladderDecision } from './quality-pin.ts';
 /**
  * The theme values the page reads from CSS and hands to the engine (`07`).
  *
- * `grid` is the `--scene-grid` token, alpha included, on purpose: a `THREE.GridHelper` bakes its two
- * colours into a geometry attribute at construction, so the token has to travel whole and the worker
- * has to rebuild the helper when it changes rather than recolour it.
+ * Both grid tokens travel whole, alpha included, and the shader keeps them as uniforms: a theme
+ * change only rewrites uniform values, so the grid is never rebuilt for a theme (the old
+ * `THREE.GridHelper` baked its colours into a geometry attribute, which is why it had to be).
  */
 export interface ThemeTokens {
   top: string;
   bottom: string;
+  /** `--scene-grid`: the colour and alpha of the fine (1-unit) lattice. */
   grid: string;
+  /** `--scene-grid-major`: the colour and alpha of the 10-unit structure. */
+  gridMajor: string;
 }
 
 /** Messages the page sends into the worker. */
@@ -386,13 +390,13 @@ export interface WorkerState {
   height: number;
 
   /**
-   * Viewer chrome: the ground reference grid, or null before the first theme application.
+   * Viewer chrome: the shader-drawn ground grid, or null before the first theme application.
    *
    * It is scene furniture, not model geometry — it is never a child of `model.root`, so a model swap
-   * (which disposes the root) cannot take it down. A theme change rebuilds it rather than recolouring
-   * it; `applyTheme` owns its whole lifecycle, and `disposeGrid`/`disposeAll` release it.
+   * (which disposes the root) cannot take it down. The material is created once and a theme change
+   * only rewrites its uniforms, so the mesh is built once and lives until `disposeGrid`/`disposeAll`.
    */
-  grid: THREE.GridHelper | null;
+  grid: SceneGrid | null;
 
   builder: SceneBuilder | null;
   model: RealizedModel | null;
@@ -579,6 +583,15 @@ export interface WorkerState {
   selectedPart: string | null;
   viewMode: 'normal' | 'xray' | 'wireframe' | 'explode';
   /**
+   * X-ray and explode, owned by the effects module and re-bound to each model.
+   *
+   * The shared shell material and the per-part explode poses belong to a model, not to the page:
+   * `loadProgram` calls `setRoot` on every swap, which disposes the old shell and re-captures, so
+   * nothing from a disposed model is ever written again. Wireframe stays inline — it flips a flag
+   * on the authored materials directly.
+   */
+  effects: ViewEffects;
+  /**
    * Set by pointer-move messages, consumed by the next frame. Hovering is the highest-rate input the worker
    * receives, and a raycast per message means a fast pointer delivers dozens of full-scene casts between two
    * frames — all but the last are wasted. Coalescing to once per frame is `08`'s frame-loop scheduling rule;
@@ -664,37 +677,54 @@ function describeFailure(error: unknown): { message: string; timedOut: boolean }
 }
 
 /**
- * The ground grid's geometry, matching v1's `SceneRuntime` defaults (size 40, divisions 40).
+ * The ground grid: a shader-drawn plane, not a `GridHelper`.
  *
- * 40 units across with 40 divisions puts a line every unit, which is the scale a learner reads a model
- * against; a finer grid reads as noise, which is the contract's own word for it.
+ * v1 shipped a `THREE.GridHelper` and it was invisible. A helper draws 1-px, non-antialiased lines at
+ * one opacity, and at the old 6% over `#17130f` a line sat ~7/255 from the backdrop — present in the
+ * framebuffer, absent to a person. It also shimmered at grazing angles, because lines whose spacing
+ * projects below a pixel alias into a moiré. One plane and one fragment shader fix both halves: lines
+ * are measured in pixels (so they stay a crisp pixel wide at any distance and any window size), the
+ * fine lattice fades where it can no longer be resolved, and the whole plane dissolves radially so it
+ * has no visible edge.
+ *
+ * The mesh is viewer chrome: added to `state.scene`, never to `realized.root`, on a render order
+ * below the model's, with a no-op raycast. It is created once and survives model swaps and theme
+ * changes; only `disposeGrid`/`disposeAll` release its geometry and material.
  */
-const GRID_SIZE = 40;
-const GRID_DIVISIONS = 40;
+
+/** The mesh type the grid is, so the material is known without a cast at every use. */
+type SceneGrid = THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+
+/** The plane's extent in world units. Larger than the fade radius, so an edge never ends the grid. */
+const GRID_PLANE_SIZE = 240;
+
+/** The mesh name, so tests and diagnostics can identify chrome without inspecting materials. */
+export const GRID_MESH_NAME = 'scene-grid';
 
 /**
  * Where the grid draws relative to the model.
  *
- * Below the model's default render order of 0, so the transparent lines are drawn first and can never
- * punch through geometry in front of them.
+ * Below the model's default render order of 0, so the transparent grid is drawn first and can never
+ * punch through geometry in front of it.
  */
 const GRID_RENDER_ORDER = -10;
 
 /**
- * How far the ordinary grid lines are pulled toward the backdrop, which is what gives the centre
- * lines their emphasis.
+ * The radial fade, in world units from the plane's centre.
  *
- * A `GridHelper` shares one material — and therefore one opacity — across every line, so "the centre
- * lines are more opaque" is expressed by receding the grid lines toward the background instead of
- * introducing a second colour token for the centre. The centre lines keep the token colour itself.
+ * A model is a few metres across and the camera orbits at a similar radius, so the grid is solid
+ * under the whole model by 26 units and fully gone by 110 — well before the plane's 120-unit edge
+ * could ever show as a straight line across the floor.
  */
-const GRID_LINE_RECEDE = 0.45;
+const GRID_FADE_START = 26;
+const GRID_FADE_END = 110;
 
 /**
- * The neutral the grid falls back to when its token cannot be parsed: a mid grey at a subtle alpha,
- * legible against either theme, so a bad token never throws and never hides the grid entirely.
+ * The neutral the grid falls back to when a token cannot be parsed: a mid grey at a visible alpha —
+ * roughly between the two shipped weights — so a bad or absent token never throws and never leaves
+ * the floor invisible.
  */
-const GRID_FALLBACK = { r: 0.5, g: 0.5, b: 0.5, a: 0.1 } as const;
+const GRID_FALLBACK = { r: 0.5, g: 0.5, b: 0.5, a: 0.18 } as const;
 
 /** One `rgb()` channel as a 0–1 number: percent scales by 100, otherwise the 0–255 channel is normalised. */
 function channelToUnit(value: string): number | null {
@@ -716,18 +746,37 @@ function alphaToUnit(value: string): number | null {
 }
 
 /**
- * Parse a `--scene-grid` token into a colour and an alpha, defensively.
+ * The neutral colour a token falls back to, as its own value constructor so both the empty-token and
+ * the missing-token paths return the same thing.
+ */
+function fallbackGridColour(): { color: THREE.Color; opacity: number } {
+  return {
+    color: new THREE.Color().setRGB(
+      GRID_FALLBACK.r,
+      GRID_FALLBACK.g,
+      GRID_FALLBACK.b,
+      THREE.SRGBColorSpace,
+    ),
+    opacity: GRID_FALLBACK.a,
+  };
+}
+
+/**
+ * Parse a grid token (`--scene-grid` or `--scene-grid-major`) into a colour and an alpha, defensively.
  *
- * The shipped tokens are modern CSS (`rgb(255 255 255 / 6%)` dark, `rgb(26 22 18 / 8%)` light), but
- * the page also supplies a literal fallback and a future author may write hex or the legacy comma
- * form — so `#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa` and `rgb()`/`rgba()` in both the space-separated and
- * comma forms, with percent or unit channels, are all accepted. Anything unparseable becomes
+ * The shipped tokens are modern CSS (`rgb(255 255 255 / 14%)` dark, `rgb(26 22 18 / 16%)` light for
+ * the fine lattice), but the page also supplies a literal fallback and a future author may write hex
+ * or the legacy comma form — so `#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa` and `rgb()`/`rgba()` in both the
+ * space-separated and comma forms, with percent or unit channels, are all accepted. Anything
+ * unparseable — including a token that never arrived from a page that does not send it — becomes
  * `GRID_FALLBACK`: a chrome token must never be able to throw the renderer down.
  *
- * The returned colour is converted from sRGB into the renderer's working colour space, because the
- * token is authored in sRGB and the helper bakes the converted components into its geometry.
+ * The returned colour is converted from sRGB into the renderer's working colour space; the shader
+ * converts it back on output, so the token composites at its authored weight.
  */
 export function parseGridColor(token: string): { color: THREE.Color; opacity: number } {
+  if (typeof token !== 'string') return fallbackGridColour();
+
   const raw = token.trim();
 
   const hex = /^#([0-9a-f]{3,8})$/i.exec(raw);
@@ -767,43 +816,163 @@ export function parseGridColor(token: string): { color: THREE.Color; opacity: nu
     }
   }
 
+  return fallbackGridColour();
+}
+
+/**
+ * The vertex stage: carry the world-space ground coordinates to the fragment stage and place the
+ * plane. The plane is authored in XY and rotated onto the ground elsewhere, so its world `xz` are the
+ * coordinates the grid is measured in — the lattice stays aligned to the world axes however the mesh
+ * is posed.
+ */
+export const GRID_VERTEX_SHADER = /* glsl */ `
+varying vec2 vGround;
+
+void main() {
+  vec4 world = modelMatrix * vec4(position, 1.0);
+  vGround = world.xz;
+  gl_Position = projectionMatrix * viewMatrix * world;
+}
+`;
+
+/**
+ * The fragment stage: two screen-space antialiased line sets and two fades, composed so the floor
+ * reads at a weight the tokens set and never aliases.
+ *
+ * Each term is here for a stated reason:
+ *   - `gridLines` measures a line's distance in *pixels*, by dividing the fractional coordinate by
+ *     `fwidth` (the coordinate's change across the pixel). The `min` takes the nearer axis and the
+ *     clamp holds the line at one pixel wide at any distance and any window size, so a distant
+ *     lattice stays a lattice instead of dissolving into dots.
+ *   - two scales: a fine 1-unit lattice for local texture and a 10-unit structure that reads as a
+ *     floor plan — v1's 1-unit cells kept, plus a structure the eye can measure a model against.
+ *   - the density fade applies to the fine lines only: when a whole unit falls inside one pixel
+ *     (`fwidth` of the ground coordinate against the unit spacing) the fine lines cannot be resolved
+ *     and only beat against each other as moiré, so they are faded out there.
+ *   - the distance fade is radial from the plane's centre, giving the plane no visible edge.
+ *   - the weight is `max(fine, major)` — the stronger line wins — and the colour follows whichever
+ *     weight won, so a 10-unit line crossing the fine lattice carries the major token.
+ */
+export const GRID_FRAGMENT_SHADER = /* glsl */ `
+uniform vec3 uMinorColor;
+uniform vec3 uMajorColor;
+uniform float uMinorAlpha;
+uniform float uMajorAlpha;
+uniform float uFadeStart;
+uniform float uFadeEnd;
+
+varying vec2 vGround;
+
+float gridLines(vec2 coord, float spacing) {
+  vec2 c = coord / spacing;
+  vec2 toLine = abs(fract(c - 0.5) - 0.5) / fwidth(c);
+  return 1.0 - min(min(toLine.x, toLine.y), 1.0);
+}
+
+void main() {
+  float fine = gridLines(vGround, 1.0);
+  float major = gridLines(vGround, 10.0);
+
+  float unitsPerPixel = max(fwidth(vGround.x), fwidth(vGround.y));
+  float density = 1.0 - smoothstep(0.5, 1.0, unitsPerPixel);
+
+  float distanceFade = smoothstep(uFadeStart, uFadeEnd, length(vGround));
+
+  float fineAlpha = uMinorAlpha * fine * density;
+  float majorAlpha = uMajorAlpha * major;
+
+  vec3 color = mix(uMinorColor, uMajorColor, step(fineAlpha, majorAlpha));
+  gl_FragColor = vec4(color, max(fineAlpha, majorAlpha) * (1.0 - distanceFade));
+
+  // A plain ShaderMaterial does not colour-manage its output the way Three's built-in materials do.
+  // This injects the renderer's own linear-to-output conversion, so a token parsed in sRGB reaches
+  // the sRGB drawing buffer at its authored weight rather than looking darker than the CSS says.
+  #include <colorspace_fragment>
+}
+`;
+
+/**
+ * The grid's uniform surface.
+ *
+ * A named type rather than `Record<string, THREE.IUniform>` so the runtime code and the tests read
+ * each uniform without `noUncheckedIndexedAccess` widening every lookup to `IUniform | undefined` —
+ * the grid's uniforms are a fixed contract with the fragment shader, not an arbitrary bag.
+ */
+export type GridUniforms = {
+  uMinorColor: THREE.IUniform<THREE.Color>;
+  uMajorColor: THREE.IUniform<THREE.Color>;
+  uMinorAlpha: THREE.IUniform<number>;
+  uMajorAlpha: THREE.IUniform<number>;
+  uFadeStart: THREE.IUniform<number>;
+  uFadeEnd: THREE.IUniform<number>;
+};
+
+/**
+ * The grid's uniforms, from both tokens.
+ *
+ * Pure and exported on purpose: a test can pin the exact names the fragment shader declares and the
+ * values they carry, because a typo in a GLSL identifier compiles fine in Node and only fails at
+ * render time — nothing else in the suite would notice it.
+ */
+export function buildGridUniforms(theme: ThemeTokens): GridUniforms {
+  const fine = parseGridColor(theme.grid);
+  const major = parseGridColor(theme.gridMajor);
   return {
-    color: new THREE.Color().setRGB(
-      GRID_FALLBACK.r,
-      GRID_FALLBACK.g,
-      GRID_FALLBACK.b,
-      THREE.SRGBColorSpace,
-    ),
-    opacity: GRID_FALLBACK.a,
+    uMinorColor: { value: fine.color },
+    uMajorColor: { value: major.color },
+    uMinorAlpha: { value: fine.opacity },
+    uMajorAlpha: { value: major.opacity },
+    uFadeStart: { value: GRID_FADE_START },
+    uFadeEnd: { value: GRID_FADE_END },
   };
 }
 
-/** The centre colour (the token) and the grid colour (the same colour, receded toward the backdrop). */
-function deriveGridColours(
-  token: THREE.Color,
-  backdrop: THREE.Color,
-): { center: THREE.Color; grid: THREE.Color } {
-  return { center: token, grid: token.clone().lerp(backdrop, GRID_LINE_RECEDE) };
-}
+/** Create the grid mesh for a theme. `applyTheme`/`disposeGrid` own its lifecycle. */
+function buildSceneGrid(theme: ThemeTokens): SceneGrid {
+  const material = new THREE.ShaderMaterial({
+    vertexShader: GRID_VERTEX_SHADER,
+    fragmentShader: GRID_FRAGMENT_SHADER,
+    uniforms: buildGridUniforms(theme),
+    // Chrome composites over the backdrop: translucency is the point, and a transparent plane that
+    // wrote depth would occlude the model with an invisible surface.
+    transparent: true,
+    depthWrite: false,
+    // A floor is looked at from above; drawing the underside would only show a grid to a camera that
+    // has slipped under the model, where it means nothing.
+    side: THREE.FrontSide,
+  });
 
-/** Build the ground grid for a token. The caller owns its disposal. */
-function buildSceneGrid(token: string, backdrop: THREE.Color): THREE.GridHelper {
-  const { color, opacity } = parseGridColor(token);
-  const { center, grid } = deriveGridColours(color, backdrop);
-  const helper = new THREE.GridHelper(GRID_SIZE, GRID_DIVISIONS, center, grid);
-  // v1's settings, kept for the same reasons: chrome is translucent, at the token's own alpha.
-  helper.material.transparent = true;
-  helper.material.opacity = opacity;
+  const grid = new THREE.Mesh(new THREE.PlaneGeometry(GRID_PLANE_SIZE, GRID_PLANE_SIZE), material);
+  grid.name = GRID_MESH_NAME;
+  // Lay the XY plane onto the ground.
+  grid.rotation.x = -Math.PI / 2;
   // Chrome must never intercept a pick meant for the model. A no-op raycast means the grid can never
   // appear in any intersection list — the page's own pick ray, a future scene-wide cast, anything.
-  helper.raycast = () => {};
-  // Transparent chrome writes no depth, so its lines can never occlude geometry behind them.
-  helper.material.depthWrite = false;
-  helper.renderOrder = GRID_RENDER_ORDER;
-  return helper;
+  grid.raycast = () => {};
+  grid.renderOrder = GRID_RENDER_ORDER;
+  return grid;
 }
 
-/** Release the grid's GPU resources and detach it; the one path a rebuild and a teardown share. */
+/**
+ * Rewrite a live grid's uniforms for a new theme. No rebuild: the colours and alphas are uniforms, so
+ * a theme change is six value assignments. Values are copied into the live material's uniforms rather
+ * than reassigned wholesale — Three captures the uniform object when it builds the program, so a new
+ * object would not be seen.
+ */
+function updateGridTheme(grid: SceneGrid, theme: ThemeTokens): void {
+  // The material's own uniforms object, typed back to the contract the shader declares. This is the
+  // same object `buildSceneGrid` handed to the material, so writing through it updates the program.
+  const uniforms = grid.material.uniforms as unknown as GridUniforms;
+  const next = buildGridUniforms(theme);
+  uniforms.uMinorColor.value.copy(next.uMinorColor.value);
+  uniforms.uMajorColor.value.copy(next.uMajorColor.value);
+  uniforms.uMinorAlpha.value = next.uMinorAlpha.value;
+  uniforms.uMajorAlpha.value = next.uMajorAlpha.value;
+  uniforms.uFadeStart.value = next.uFadeStart.value;
+  uniforms.uFadeEnd.value = next.uFadeEnd.value;
+}
+
+/** Release the grid's GPU resources and detach it; the one path a build and a teardown share. */
 export function disposeGrid(target: WorkerState): void {
   const grid = target.grid;
   if (!grid) return;
@@ -814,12 +983,11 @@ export function disposeGrid(target: WorkerState): void {
 }
 
 /**
- * Apply the scene backdrop from theme tokens, and rebuild the ground grid to match.
+ * Apply the scene backdrop from theme tokens, and give the ground grid its weight.
  *
- * The grid is rebuilt here rather than recoloured: a `GridHelper` bakes its two colours into a
- * geometry attribute at construction, so a theme change that only rewrote the material would leave
- * the old theme's lines on the new backdrop. The old helper's geometry and material are disposed
- * first — every temporary resource in this repo is released explicitly.
+ * The grid is created once and then only recoloured: its two colours and alphas are shader uniforms,
+ * so a theme change rewrites those values and nothing is rebuilt or disposed. (The old `GridHelper`
+ * baked its colours into geometry, which is why it used to be torn down and rebuilt here.)
  *
  * The grid is viewer chrome and is on by default (v1 shipped it on, and the user asked for it), which
  * also satisfies an authored `environment.grid === true`. A model cannot switch it off: `grid`
@@ -833,9 +1001,17 @@ export function applyTheme(target: WorkerState, theme: ThemeTokens): void {
   const top = new THREE.Color().setStyle(theme.top, THREE.SRGBColorSpace);
   target.scene.background = top;
 
-  disposeGrid(target);
-  target.grid = buildSceneGrid(theme.grid, top);
-  target.scene.add(target.grid);
+  // The x-ray shell is coloured from the backdrop's luminance, so it has to know the backdrop.
+  // A live shell re-tints here when the theme changes mid-session; a dark backdrop gets the pale
+  // shell and a light one the deeper shell (see `xrayShellStyle`).
+  target.effects.setBackdrop(top);
+
+  if (!target.grid) {
+    target.grid = buildSceneGrid(theme);
+    target.scene.add(target.grid);
+  } else {
+    updateGridTheme(target.grid, theme);
+  }
 
   // Fog is not applied by default: it hides distant parts, and a model's own `environment.fog` is the only place
   // that should decide to do that.
@@ -1395,6 +1571,7 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     hoveredPart: null,
     selectedPart: null,
     viewMode: 'normal',
+    effects: new ViewEffects(),
     hoverPending: false,
 
     raycaster: new THREE.Raycaster(),
@@ -1617,6 +1794,20 @@ export function loadProgram(
   }
   target.lastProbes = {};
 
+  // X-ray and explode re-bind to the new model here: the shared shell material is disposed with the
+  // old root and a fresh one is captured against these parts, and every explode pose is measured
+  // from the assembled model's world bounds. The authored `explodeOffset` (when a part has one) is
+  // resolved through the realized object's part id, because only this side holds the manifest. The
+  // sticky mode flags survive, so a model generated while inspecting arrives in the same mode.
+  const explodeOffsets = new Map<string, readonly number[]>();
+  for (const node of manifest.parts) {
+    if (node.explodeOffset) explodeOffsets.set(node.id, node.explodeOffset);
+  }
+  target.effects.setRoot(realized.root, (object) => {
+    const partId = realized.partOf.get(object);
+    return partId ? (explodeOffsets.get(partId) ?? null) : null;
+  });
+
   // A new model starts with a clean camera: a move in flight belonged to the old one — pose
   // moves and fov pulls alike.
   cancelCameraMove(target);
@@ -1702,85 +1893,32 @@ export function loadProgram(
     post({ type: 'notice', message: adjustment.message });
 }
 
-/** Apply a view mode across the model. */
-/** How translucent x-ray makes a part. Named so the ladder, the tests and the viewer share one value. */
-const XRAY_OPACITY = 0.35;
-
 /**
- * Each material's authored transparency, captured on x-ray entry so leaving restores the model's
- * own material rather than forcing it opaque. Weak, so a disposed material stays collectable.
+ * Apply the viewer's view mode across the model.
+ *
+ * Wireframe stays inline — it flips `wireframe` on the authored materials themselves, and that is
+ * its own pre-existing contract. X-ray and explode are delegated to the effects module: x-ray
+ * because a shared shell swap plus an exact restore belongs with the material's lifetime (and the
+ * old inline pass mutated the authored materials, kept every part's own colour, never set `side`,
+ * and forced `depthWrite` back on for glass and fluid on exit), and explode because a toggle must
+ * start an animation rather than write one snapped pose.
  */
-const XRAY_ORIGINALS = new WeakMap<THREE.Material, { transparent: boolean; opacity: number }>();
-
-function applyViewMode(target: WorkerState): void {
+export function applyViewMode(target: WorkerState): void {
   const model = target.model;
+
+  target.effects.setXray(target.viewMode === 'xray');
+  target.effects.setExplode(target.viewMode === 'explode');
+
   if (!model) return;
 
-  const explodeScale = target.viewMode === 'explode' ? 1 : 0;
-  const center = new THREE.Vector3();
-  new THREE.Box3().setFromObject(model.root).getCenter(center);
-
+  // Wireframe last: entering x-ray swaps the shared shell in, and leaving it has just restored the
+  // authored materials, so this writes the wireframe flag onto the real material either way.
   model.root.traverse((object: THREE.Object3D) => {
-    if (!(object instanceof THREE.Mesh) && !(object instanceof THREE.InstancedMesh)) return;
-    const material = object.material as THREE.Material & {
-      wireframe?: boolean;
-      opacity?: number;
-      transparent?: boolean;
-    };
-
-    // Shared materials mean a mode change touches every part using them, which is exactly the intent: x-ray is a
-    // scene-wide state, not a per-part one.
-    if (target.viewMode === 'wireframe') {
-      if ('wireframe' in material) material.wireframe = true;
-    } else if ('wireframe' in material) {
-      material.wireframe = false;
-    }
-
-    if (target.viewMode === 'xray') {
-      // Captured on entry, not recomputed on exit: a glass or fluid part is legitimately
-      // translucent, and restoring to "opaque" would silently rewrite the model's own material.
-      // Without this capture, leaving x-ray left every material permanently transparent — the
-      // model stayed ghostly AND lost early-Z, which costs every device a permanent multiple of
-      // its fragment work for the rest of the session.
-      if (!XRAY_ORIGINALS.has(material)) {
-        XRAY_ORIGINALS.set(material, {
-          transparent: material.transparent,
-          opacity: material.opacity,
-        });
-      }
-      material.transparent = true;
-      material.opacity = XRAY_OPACITY;
-      material.depthWrite = false;
-    } else {
-      const original = XRAY_ORIGINALS.get(material);
-      if (original) {
-        material.transparent = original.transparent;
-        material.opacity = original.opacity;
-        XRAY_ORIGINALS.delete(material);
-      }
-      material.depthWrite = true;
-    }
+    if (!(object instanceof THREE.Mesh)) return;
+    const material = object.material as THREE.Material & { wireframe?: boolean };
+    if (!('wireframe' in material)) return;
+    material.wireframe = target.viewMode === 'wireframe';
   });
-
-  if (explodeScale > 0) {
-    // Explode offsets are derived from each part's direction away from the model centre when the model did not
-    // author one, so a model that never thought about exploding still explodes sensibly (`00`).
-    for (const [partId, object] of model.parts) {
-      const node = target.manifest?.parts.find((part) => part.id === partId);
-      const direction = node?.explodeOffset
-        ? new THREE.Vector3(...node.explodeOffset)
-        : object.position.clone().sub(center).normalize();
-      object.userData.explodeBase ??= object.position.clone();
-      object.position.copy(
-        (object.userData.explodeBase as THREE.Vector3).clone().add(direction.multiplyScalar(0.35)),
-      );
-    }
-  } else {
-    for (const object of model.parts.values()) {
-      const base = object.userData.explodeBase as THREE.Vector3 | undefined;
-      if (base) object.position.copy(base);
-    }
-  }
 }
 
 /**
@@ -2008,6 +2146,14 @@ function renderFrame(target: WorkerState, timestamp: number): void {
   // fov pulls both live in `advanceShot` — see there for the allocation discipline.
   advanceShot(target, rawDelta);
 
+  // The explode transition advances here for the same reason the camera move does: a paused model
+  // can still be exploded, and a transition waiting on a gate that only a *change* opens would
+  // never start on an otherwise-still model. `advance` reports the frame it completes as moved
+  // too, so the final pose is presented rather than left unwritten.
+  if (target.effects.advance(Math.min(TIMING.maxDelta, Math.max(0, rawDelta)))) {
+    target.needsRender = true;
+  }
+
   // The on-demand gate (`08`): a paused model with nothing marked dirty presents nothing — no
   // physics step, no guest callback, no declared motion, no sync, no cast, no render. `paused`
   // composes with `hasRunsWhilePaused`: a paused glow that pulses is never still, a paused fan
@@ -2114,6 +2260,11 @@ function renderFrame(target: WorkerState, timestamp: number): void {
       // Push the builder's authored transforms into the Three.js objects — including the physics
       // solver's pose, which must never be stepped into a void because a guest callback threw.
       syncTransforms(target);
+
+      // The explode delta composes on top of the pose the motions and the guest just wrote: it is
+      // *added*, never assigned, so a part that is animated can both move and explode instead of
+      // losing its offset to the next `syncTransforms`. A no-op at progress 0.
+      target.effects.apply();
     }
 
     // Gestured camera state (orbit/zoom/pan messages) applies once per frame — the messages carry
@@ -2956,9 +3107,11 @@ function disposeAll(): void {
   // The clip's encoder holds a codec instance and the chunks hold the encoded bytes; both die here
   // rather than waiting for the realm to be collected.
   releaseRecording(state);
-  // The grid lives on the scene, not the model root, so only teardown (and a theme rebuild) disposes
-  // it: geometry and material are GPU resources and would otherwise wait on the realm's collection.
+  // The grid lives on the scene, not the model root, so only teardown disposes it: geometry and
+  // material are GPU resources and would otherwise wait on the realm's collection.
   disposeGrid(state);
+  // The x-ray shell is a GPU material the model's disposal does not own; release it here.
+  state.effects.dispose();
   state.physics?.dispose();
   state.builder?.dispose();
   state.renderer.dispose();

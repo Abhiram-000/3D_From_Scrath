@@ -16,6 +16,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import type * as SandboxModule from '@edu3d/sandbox';
+import { ViewEffects } from './view-effects.ts';
 
 const posted: Array<Record<string, unknown>> = [];
 // The worker module captures these worker-globals at import time, before anything else runs.
@@ -155,6 +156,7 @@ function makeFakeState() {
     hoveredPart: null,
     selectedPart: null,
     viewMode: 'normal',
+    effects: new ViewEffects(),
     hoverPending: false,
 
     raycaster: new THREE.Raycaster(),

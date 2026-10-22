@@ -167,16 +167,17 @@
   }
 
   /**
-   * The three theme values the engine draws with: the backdrop gradient's two stops and the ground
-   * grid's colour. All three come from CSS, so the canvas follows the theme rather than fighting it
-   * (`07`), and the grid token already carries the intended alpha.
+   * The four theme values the engine draws with: the backdrop gradient's two stops and the ground
+   * grid's two weights. All four come from CSS, so the canvas follows the theme rather than fighting
+   * it (`07`), and each grid token already carries the intended alpha.
    */
-  function readThemeColors(): { top: string; bottom: string; grid: string } {
+  function readThemeColors(): { top: string; bottom: string; grid: string; gridMajor: string } {
     const styles = getComputedStyle(document.documentElement);
     return {
       top: styles.getPropertyValue('--scene-bg-top').trim() || '#17130f',
       bottom: styles.getPropertyValue('--scene-bg-bottom').trim() || '#08070a',
-      grid: styles.getPropertyValue('--scene-grid').trim() || 'rgb(255 255 255 / 6%)',
+      grid: styles.getPropertyValue('--scene-grid').trim() || 'rgb(255 255 255 / 14%)',
+      gridMajor: styles.getPropertyValue('--scene-grid-major').trim() || 'rgb(255 255 255 / 40%)',
     };
   }
 

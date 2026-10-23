@@ -1,111 +1,116 @@
-# Logo — generation prompt
+# The mark — "The Fold"
 
-## Read this first (it's the difference between a usable result and a wasted hour)
-
-1. **Never ask the image model for the words "EDU-3D".** Generative image models cannot
-   render text reliably — you will get letter-shaped mush. Generate the **mark only**; keep
-   "EDU-3D" as live text beside it (which is what the app already does, and it stays crisp at
-   any size and readable by a screen reader).
-2. **Ask for a flat vector mark, not a 3D render or a mockup.** A logo is geometry. Anything
-   with gloss, bevel, reflections or a drop shadow is unrecoverable at 16 px.
-3. **Pin the colours to this product's real tokens**, or it will look bolted on:
-   amber `#d4a055` · bronze `#a56f3f` · cream `#faf6ee` · graphite `#0a0b0e`.
-4. **Generate square at 1024 px or larger**, then export a transparent-background copy.
-5. **The result is a raster.** A generated logo will look soft at small sizes and cannot be
-   recoloured for light mode. The honest finish is to trace it into SVG and put _that_ in the
-   app — ask and I'll do it, and add it to the header, favicon and social card.
+**Status: this is the platform's mark.** One concept, chosen and defended. `#d4a055` amber /
+`#a56f3f` bronze / `#0a0b0e` graphite — the app's existing tokens.
 
 ---
 
-## The concept (why this shape)
+## The idea, in one sentence
 
-The product's one idea: **an AI writes code, and the code becomes a real 3D object** — with the
-ceiling set by the API, not a fixed catalogue. The most honest mark for that is _structure
-built from layers_: a stack of isometric plates, the top one lifted, as if a part has been
-picked out and is being examined. That reads as three things at once — 3D geometry, layers of a
-model building up, and the learner lifting a part to look at it — and it stays legible at
-favicon size. It also continues the layered mark the app already ships, so nothing looks new.
+**A flat plane folding up into a solid** — because that is exactly what the platform does: a
+typed description becomes a dimensional object.
 
----
+That is the whole logo. If it needs a second sentence, it is the wrong mark.
 
-## PRIMARY PROMPT — paste this
+## Why this and not the obvious thing
 
-```
-A minimal flat vector logo mark: three thin isometric rhombus plates stacked vertically with
-even spacing, in a 30-degree isometric projection with no perspective. The top plate floats
-slightly higher than the two beneath it, lifted as if picked up for inspection. The top plate is
-filled solid amber (#d4a055). The lower two plates are hairline outlines in warm bronze
-(#a56f3f), each slightly fainter than the one above it. Pure geometric precision: equal line
-weight, sharp corners, no rounded edges. The mark is centred on a plain very dark charcoal
-backdrop (#0a0b0e) with generous even padding, occupying about half the frame. Flat vector
-illustration, crisp clean edges, high contrast, restrained and technical.
+The first concept I proposed was an isometric cube or stack of plates. **It failed the test.**
+The standard is that _a mark which executes the category default is competent, not distinct_ —
+and "3D cube" is the default for anything 3D: it is a stock illustration category ("3D isometric
+cube logo"), it is what a competitor in AI-for-education (Learning Commons) already uses, and
+because every isometric form collapses to the same hexagon at 16 px, a cube mark silently
+dissolves into every other 3D product's icon.
 
-no text, no letters, no words, no numbers, no watermark, no signature, no mockup, no
-photograph, no 3D render, no gloss, no bevel, no drop shadow, no reflection, no gradient, no
-glow, no lens flare, no extra shapes, no border, no frame
-```
+The education clichés are just as crowded: open books, lightbulbs, graduation caps, rockets,
+puzzle pieces, knowledge trees. The dev-tool clichés are triangles and arrows (Vercel owns one of
+those silhouettes outright).
 
-## VARIANT B — light background (for print, documents, slides)
+A **fold** sidesteps all of them. It is not a closed volume — it is a transformation, which is the
+honest thing to draw about a product whose input is text and whose output is a 3D scene.
 
-Same prompt, but swap the last descriptive sentence for:
+## It also fits the brand's one real differentiator
 
-```
-centred on a plain warm cream backdrop (#faf6ee) with generous even padding, the top plate
-filled solid deep bronze (#8a5a2e) and the two lower plates hairline outlines in bronze
-(#a56f3f)
-```
+Most AI products are dark backgrounds with neon gradients and vague promises — that is now a
+recognisable _look_, and it is a liability. This brand is warm bronze on graphite, cream and
+amber, which reads as considered and human instead of generated. The fold gives the amber
+somewhere to land: the upright face catches the light.
 
-## VARIANT C — single colour (favicon, stamps, embroidery, one-colour print)
+## Construction rules (non-negotiable — these are what make it survive)
 
-```
-A minimal flat vector logo mark: three thin isometric rhombus plates stacked vertically with
-even spacing, 30-degree isometric projection, no perspective, the top plate floating slightly
-higher than the two beneath it. Entirely in ONE flat solid colour — cream (#faf6ee) — thin
-uniform strokes with the top plate filled and the two lower plates as outlines, all the same
-single colour. Centred on a plain very dark charcoal backdrop (#0a0b0e), generous even padding,
-mark occupying about half the frame. Flat vector, crisp edges, high contrast, technical and
-restrained.
-
-no text, no letters, no words, no watermark, no mockup, no photograph, no 3D render, no gloss,
-no bevel, no shadow, no gradient, no glow, no second colour, no extra shapes, no border
-```
-
-## ALTERNATE CONCEPT — "the edge becomes solid" (if the stack feels too quiet)
-
-```
-A minimal flat vector logo mark: a single isometric cube drawn as thin amber (#d4a055) wireframe
-edges on its two visible side faces, while its top face is filled solid amber — the form caught
-mid-way between a wireframe drawing and a real solid object. 30-degree isometric projection, no
-perspective, hairline uniform line weight, sharp corners. Centred on a plain very dark charcoal
-backdrop (#0a0b0e), generous even padding, mark occupying about half the frame. Flat vector
-illustration, crisp edges, high contrast, technical and restrained.
-
-no text, no letters, no words, no watermark, no mockup, no photograph, no 3D render, no gloss,
-no bevel, no shadow, no reflection, no gradient, no glow, no extra shapes, no border
-```
+1. **Two shapes only**: a flat rhombus (the plane) and an upright quadrilateral (the folded face).
+   Nothing else. A mark needing more than two or three shapes to be recognised will not survive
+   small sizes.
+2. **A thin, even gap of background between the two faces.** This is the whole trick: the negative
+   space separates them, so the mark still reads when it is reduced to **one colour**. Without the
+   gap it is two flat tones that merge into a blob in black and white.
+3. **No outline stroke.** The form is defined by fills and the gap, so it scales cleanly and can be
+   recoloured for light mode without redrawing.
+4. **30° isometric, no perspective.** The fold line is vertical; the plane's edges are parallel.
+5. **Sharp corners, no rounding.**
 
 ---
 
-## Palette (the app's real tokens — use these, not whatever the model likes)
+## THE PROMPT — paste this
 
-| Token            | Hex       | Use                                 |
-| ---------------- | --------- | ----------------------------------- |
-| `--amber-500`    | `#d4a055` | primary accent, the filled plate    |
-| `--amber-400`    | `#e8c882` | highlight on dark, if needed        |
-| `--bronze-600`   | `#a56f3f` | secondary strokes                   |
-| `--bronze-700`   | `#8a5a2e` | the accent on cream backgrounds     |
-| `--cream-100`    | `#faf6ee` | ink on dark, the monochrome variant |
-| `--graphite-950` | `#0a0b0e` | the app's dark backdrop             |
+```
+A minimalist flat vector logo mark: a single flat square plane drawn in clean 30-degree isometric
+projection, folding upward along its vertical centre line so that one half rises into an upright
+face — a flat surface becoming a three-dimensional corner, like a sheet of card folded to stand.
+Two shapes only: the flat half and the upright folded half. The two faces are separated by a thin,
+perfectly even gap of background, running the length of the fold, so the mark still reads clearly
+in a single colour. No outline, no stroke — the form is defined by the two flat fills and the gap.
+The flat half is filled solid warm bronze (#a56f3f); the upright folded half is filled solid amber
+(#d4a055), as if catching the light. Perfect geometric symmetry, parallel edges, sharp corners,
+even proportions. The mark is centred on a plain solid white background with generous even padding,
+occupying about half the frame.
 
-## Picking the result
+flat vector logo, minimalist, icon only, solid white background, no gradients, no shadows
+```
 
-Reject a candidate if: it has any visible text; it uses more than two colours; it has gloss,
-bevel or a shadow; the plates are not parallel (isometric rule broken); or the silhouette stops
-reading when you shrink it to 32 px and squint. Generate 8–12 candidates, shrink the survivors
-to 32 px, and only then choose — a mark that dies at 32 px dies in the toolbar.
+**Negative prompt** (Midjourney: append as `--no`, or paste into the negative field):
+
+```
+text, letters, words, numbers, signature, watermark, mockup, photograph, 3D render, glossy, bevel,
+drop shadow, reflection, gradient, glow, lens flare, texture, outline, second colour, extra shapes,
+border, frame, bookmark, page curl, paper note, book
+```
+
+**For DALL·E / GPT-image / Ideogram** — those models handle negatives poorly and tend to paint the
+thing you told them to avoid. Drop the negative block and instead end the prose with:
+
+```
+Nothing else appears in the image: no text, no other objects, no shadow, no outline, no second
+colour. Just the two flat shapes on plain white.
+```
+
+## Judging the candidates — in this order
+
+Generate **8–12**, then:
+
+1. **Squint at the silhouette at 50 px.** Judge only the shape. If the silhouette is weak, colour
+   and detail will never save it.
+2. **Shrink to 16 px.** It must still read as _a plane with something standing up on it_. A mark
+   that dies at 16 px dies in the browser tab.
+3. **Remove all colour.** It must still read. Colour is the last layer, never a crutch.
+4. **Cover the name.** Would someone know it is this and not a competitor?
+5. **Put it on the shelf** next to a generic isometric cube and a Vercel-style triangle. Does it
+   stand apart, or dissolve into the set?
+
+Reject immediately: any text in the image; a page-curl or bookmark reading (the fold must read as
+dimensional, not as paper); more than two colours; any gloss, bevel or shadow.
+
+## Responsive system (how it actually ships)
+
+| Where                    | What shows                                                                 |
+| ------------------------ | -------------------------------------------------------------------------- |
+| 16 px favicon / app icon | the two-shape fold, no padding trickery — it is already minimal            |
+| Header / toolbar         | fold + `EDU-3D` wordmark + the `Beta` chip, at the designed lockup spacing |
+| Light mode               | bronze `#8a5a2e` for the flat half, amber `#d4a055` for the upright half   |
+| One colour               | all-fill single cream `#faf6ee` on graphite — the gap does the separating  |
 
 ## Then
 
-Give me the one you pick and I'll redraw it as clean **SVG**, wire it into the header, set the
-favicon and the social preview card, and keep the current mark as the fallback. That's the step
-that makes it a logo rather than a picture.
+Send me the candidate you pick and I will **redraw it as clean SVG** — exact geometry, not a
+traced approximation — then wire it into the header, the favicon set and the social preview card,
+and keep the current layered mark as the fallback. A generated raster cannot be recoloured for
+light mode and goes soft when small; the SVG is what makes it a logo rather than a picture.

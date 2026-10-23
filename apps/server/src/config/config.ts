@@ -125,6 +125,13 @@ export interface ServerConfig {
     readonly csp: CspMode;
     readonly hsts: boolean;
     readonly forceHttps: boolean;
+    /**
+     * Whether a successful generation saves itself to the gallery store (`EDU3D_AUTO_SAVE_GENERATIONS`,
+     * default true). This is the server persisting its OWN output — it is NOT gated by the write token,
+     * which guards the public `POST /api/gallery` route only. Set false to restore the old behaviour
+     * where a model exists only in the learner's browser until someone explicitly publishes.
+     */
+    readonly autoSaveGenerations: boolean;
   };
 
   readonly limits: {
@@ -406,6 +413,10 @@ export function resolveConfig(
       csp,
       hsts: parseBoolean(env.EDU3D_HSTS, false),
       forceHttps,
+      // Default ON: the whole point of the change. A generation that only lives in the learner's
+      // browser is lost on reload; persisting it makes the next visit's gallery show it. The flag
+      // exists so an operator can restore the old, browser-only behaviour explicitly.
+      autoSaveGenerations: parseBoolean(env.EDU3D_AUTO_SAVE_GENERATIONS, true),
     },
 
     limits: {
@@ -445,6 +456,9 @@ export function formatStartupReport(config: ServerConfig): string {
     `ai concurrency   ${config.ai.maxConcurrency} at a time (queue wait cap ${Math.round(config.ai.queueMaxWaitMs / 1000)}s)`,
   );
   lines.push(`writes           ${config.security.writeToken ? 'token required' : 'OPEN'}`);
+  lines.push(
+    `auto-save        ${config.security.autoSaveGenerations ? 'on (successful generations are saved)' : 'off'}`,
+  );
   lines.push(`csp              ${config.security.csp}`);
   lines.push(`trust proxy      ${config.trustProxy}`);
   lines.push(

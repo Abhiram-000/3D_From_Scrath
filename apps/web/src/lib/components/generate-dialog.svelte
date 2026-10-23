@@ -18,8 +18,9 @@
     ongenerated,
   }: {
     onclose: () => void;
-    /** `runtime` is the instrumented twin of `code` — what the worker actually compiles. */
-    ongenerated: (code: string, name: string, runtime?: string) => void;
+    /** `runtime` is the instrumented twin of `code` — what the worker actually compiles.
+     *  `galleryId` is the entry auto-save minted, so a later publish updates it, not duplicates it. */
+    ongenerated: (code: string, name: string, runtime?: string, galleryId?: string) => void;
   } = $props();
 
   let topic = $state('');
@@ -91,8 +92,14 @@
         code: outcome.bundle.code,
         manifest: outcome.bundle.manifest,
         raw: outcome.bundle,
+        ...(outcome.galleryId ? { galleryId: outcome.galleryId } : {}),
       });
-      ongenerated(outcome.bundle.code, outcome.bundle.manifest.name, outcome.bundle.runtime);
+      ongenerated(
+        outcome.bundle.code,
+        outcome.bundle.manifest.name,
+        outcome.bundle.runtime,
+        outcome.galleryId,
+      );
     } else if (outcome.code === 'aborted') {
       failureMessage = null;
     } else {

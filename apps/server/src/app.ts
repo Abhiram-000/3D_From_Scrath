@@ -22,6 +22,7 @@ import {
   type ChatEvent,
   type ErrorCode,
   type GenerationEvent,
+  type ModelBundle,
 } from '@edu3d/contracts';
 import type { ServerConfig } from './config/config.ts';
 import { type AiClient, type CompletionRequest } from './services/ai-client.ts';
@@ -168,6 +169,71 @@ function requireWriteToken(state: AppState, authorization: string | undefined): 
 }
 
 type PipelineResult = Awaited<ReturnType<typeof runPipeline>>;
+
+/**
+ * The reserved tag marking an entry as a SERVER auto-save rather than an explicit publish.
+ *
+ * Provenance without a contract change: `GalleryEntry.tags` already exists and is already returned
+ * by `list`, so a reserved tag is the whole story — a future moderation pass can select auto-saved
+ * entries with it, and a published entry simply does not carry it (the publish path writes its own
+ * tag list). The string is reserved and documented here and in the `generation.ts` contract comment.
+ */
+export const AUTO_SAVE_TAG = 'auto';
+
+/**
+ * Persist a successful generation to the gallery store, swallowing any failure.
+ *
+ * This lives at the route/state boundary, NOT in `services/pipeline.ts`: the pipeline is the
+ * testable core and is deliberately store-free, so a store handle is never threaded into it. It runs
+ * exactly once per successful run, and ONLY on success — a failed, cancelled, drained or timed-out
+ * generation never reaches here because the caller only invokes it on `result.ok`.
+ *
+ * The single most important behaviour: a store failure is LOGGED AND SWALLOWED. The learner already
+ * waited minutes for their model; a gallery write that throws must never fail the generation. This is
+ * the repo's "degrade, never die" rule — the returned id is null on any failure and the terminal
+ * `ready` event simply carries no `galleryId`.
+ */
+async function autoSaveGeneration(state: AppState, bundle: ModelBundle): Promise<string | null> {
+  if (!state.config.security.autoSaveGenerations) return null;
+  try {
+    const manifest = bundle.manifest ?? {};
+    const tags = [AUTO_SAVE_TAG, ...(manifest.domain ? [manifest.domain] : [])];
+    for (const parameter of manifest.parameters ?? []) {
+      if (tags.length >= 8) break;
+      if (
+        typeof parameter.id === 'string' &&
+        parameter.id.length > 0 &&
+        !tags.includes(parameter.id)
+      ) {
+        tags.push(parameter.id);
+      }
+    }
+    // `subdomain` is a finer hint than `domain`, but `GalleryEntry.subject` caps at 48 chars, so an
+    // over-long subdomain falls back to the always-short domain. This keeps an auto-saved entry
+    // parseable by the same `GalleryEntry` schema the gallery list is read with.
+    const subdomain = manifest.subdomain;
+    const subject =
+      typeof subdomain === 'string' && subdomain.length > 0 && subdomain.length <= 48
+        ? subdomain
+        : (manifest.domain ?? 'other');
+    const record = await state.store.put({
+      name: manifest.name ?? 'Untitled model',
+      subject,
+      tags,
+      bundle,
+      // No server-rendered snapshot: the server never renders a pixel, so an auto-saved entry has
+      // no thumbnail. The gallery renders that honestly (a labelled placeholder), never a broken img.
+      snapshotUrl: null,
+    });
+    return record.id;
+  } catch (error) {
+    // Logged with intent, never swallowed silently (`09`): the generation still succeeds.
+    console.warn(
+      `[auto-save] a generation could not be saved to the gallery: ${(error as Error).message}`,
+    );
+    return null;
+  }
+}
 
 /**
  * Run the generation pipeline holding one generation slot when the state carries a queue.
@@ -427,10 +493,14 @@ export function buildApp(state: AppState): Hono<AppContext> {
           ERROR_STATUS[failure.code] as 400 | 401 | 404 | 413 | 429 | 500 | 502 | 503,
         );
       }
+      // Auto-save the successful run (store-free pipeline; the boundary persists). A store failure
+      // yields null and the response is byte-identical to one with auto-save off.
+      const galleryId = await autoSaveGeneration(state, result.bundle);
       return context.json({
         bundle: result.bundle,
         audit: result.audit,
         requestId,
+        ...(galleryId ? { galleryId } : {}),
       });
     }
 
@@ -478,7 +548,17 @@ export function buildApp(state: AppState): Hono<AppContext> {
             ),
           );
           if (result.ok) {
-            write({ type: 'ready', bundle: result.bundle, audit: result.audit, at: Date.now() });
+            // Auto-save before the terminal event, so the ready event can carry the id the share
+            // path uses to update this entry in place. A store failure yields null — and the learner
+            // STILL receives `ready`. The gallery must never take the model down with it.
+            const galleryId = await autoSaveGeneration(state, result.bundle);
+            write({
+              type: 'ready',
+              bundle: result.bundle,
+              audit: result.audit,
+              ...(galleryId ? { galleryId } : {}),
+              at: Date.now(),
+            });
           } else {
             write({
               type: 'error',
@@ -774,12 +854,19 @@ export function buildApp(state: AppState): Hono<AppContext> {
     // wire shape the gallery list renders) carries `snapshotUrl`, so the store persists it in its
     // own column and both `list` and `get` return it (B3). The bundle stays exactly the payload
     // the client sent — the model program and manifest the viewer loads.
+    //
+    // `galleryId` targets an existing entry — the one auto-save minted for this generation, or the
+    // one the model was loaded from — so this publish UPDATES that row in place rather than adding a
+    // duplicate. `put` already replaces by id, and `id: undefined` mints a fresh one exactly as
+    // before, so an older client that sends no id is unaffected. Deliberately NOT gated by the write
+    // token any differently: the token check ran above, unchanged — this only chooses the row.
     const record = await state.store.put({
       name: parsed.data.bundle.manifest?.name ?? 'Untitled model',
       subject: parsed.data.bundle.manifest?.domain ?? 'other',
       tags: [],
       bundle: parsed.data.bundle,
       snapshotUrl,
+      ...(parsed.data.galleryId ? { id: parsed.data.galleryId } : {}),
     });
     return context.json({ id: record.id, shareUrl: `/viewer?model=${record.id}`, requestId }, 201);
   });

@@ -129,6 +129,7 @@
   const {
     manifest,
     program,
+    galleryId,
     onclose,
     requestSnapshot,
   }: {
@@ -139,6 +140,12 @@
      * Publishing reads it directly — never a storage peek, which goes stale on any model swap.
      */
     program: { code: string; runtime?: string } | null;
+    /**
+     * The gallery entry this model already occupies — the id auto-save minted, or the id it was
+     * loaded from. Sent as `PublishRequest.galleryId` so publishing UPDATES that row instead of
+     * adding a duplicate. Null when the model has no entry yet, where publishing mints one.
+     */
+    galleryId: string | null;
     onclose: () => void;
     /**
      * Capture the live viewer as a PNG blob for the gallery thumbnail. Owned by the viewer page,
@@ -224,6 +231,10 @@
           // The exact field the server reads: `PublishRequest.snapshot`, base64 (no data-URL prefix
           // needed — the server strips one if present and sniffs the bytes either way).
           ...(snapshot.data !== null ? { snapshot: snapshot.data } : {}),
+          // Update the entry this model already occupies instead of adding a second one. Absent for
+          // a model with no entry yet (the reference model, a pre-auto-save session), where the
+          // server mints a fresh id exactly as before.
+          ...(galleryId ? { galleryId } : {}),
         }),
       });
       if (response.ok) {

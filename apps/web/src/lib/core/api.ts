@@ -76,7 +76,13 @@ export interface GenerateOptions {
 }
 
 export type GenerateOutcome =
-  | { ok: true; bundle: ModelBundle; audit?: { score: number; deficiencies: string[] } }
+  | {
+      ok: true;
+      bundle: ModelBundle;
+      audit?: { score: number; deficiencies: string[] };
+      /** The gallery entry auto-save minted for this generation, when the server saved it. */
+      galleryId?: string;
+    }
   | { ok: false; code: string; message: string; retryAfterSeconds?: number };
 
 /**
@@ -170,6 +176,7 @@ export async function generateStream(options: GenerateOptions): Promise<Generate
             ok: true,
             bundle: event.bundle,
             ...(event.audit ? { audit: event.audit } : {}),
+            ...(event.galleryId ? { galleryId: event.galleryId } : {}),
           };
         } else if (event.type === 'error') {
           terminal = {
@@ -409,6 +416,13 @@ export interface StoredBundle {
   manifest: unknown;
   /** The full wire bundle, kept for the diagnostics/code panel. */
   raw?: unknown;
+  /**
+   * The gallery entry the server auto-saved this generation into, when it did. Travels with the
+   * bundle so the viewer can hand it to the share/publish path: a later Publish then UPDATES that
+   * entry instead of minting a duplicate. Absent on a pre-auto-save bundle, and on a server with
+   * auto-save off — both handled by simply publishing a fresh entry, as before.
+   */
+  galleryId?: string;
 }
 
 /** Store the generated bundle. Returns false when storage is unavailable (private mode). */

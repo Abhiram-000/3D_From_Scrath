@@ -179,6 +179,9 @@
         code: outcome.bundle.code,
         manifest: outcome.bundle.manifest,
         raw: outcome.bundle,
+        // The id auto-save minted, kept with the bundle it names so the viewer's Publish updates
+        // that same entry rather than adding a second one for this model.
+        ...(outcome.galleryId ? { galleryId: outcome.galleryId } : {}),
       });
       // A short beat so the completed state is actually seen (V1's 900ms).
       setTimeout(() => {

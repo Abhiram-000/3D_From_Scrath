@@ -21,9 +21,18 @@
     onload,
   }: {
     onclose: () => void;
-    /** `runtime` is the instrumented twin of `code` — absent on entries published before the guard. */
-    onload: (code: string, name: string, runtime?: string) => void;
+    /** `runtime` is the instrumented twin of `code` — absent on entries published before the guard.
+     *  `galleryId` is the entry's own id, so the viewer can update it in place on a later publish. */
+    onload: (code: string, name: string, runtime?: string, galleryId?: string) => void;
   } = $props();
+
+  /**
+   * The reserved tag the server's auto-save writes on an entry it saved itself (see
+   * `AUTO_SAVE_TAG` in `apps/server/src/app.ts`). A published entry carries no such tag, so its
+   * presence is how the gallery distinguishes provenance without a wider contract change — useful
+   * for a future moderation story. Kept in sync by the same literal on both sides.
+   */
+  const AUTO_SAVE_TAG = 'auto';
 
   interface Entry {
     id: string;
@@ -32,6 +41,11 @@
     tags: string[];
     snapshotUrl: string | null;
     createdAt: number;
+  }
+
+  /** True when this entry was saved by the server rather than published by a person. */
+  function isAutoSaved(entry: Entry): boolean {
+    return entry.tags.includes(AUTO_SAVE_TAG);
   }
 
   let entries = $state<Entry[]>([]);
@@ -89,7 +103,7 @@
     );
     loadingModel = null;
     if (result.ok && result.data.bundle?.code) {
-      onload(result.data.bundle.code, entry.name, result.data.bundle.runtime);
+      onload(result.data.bundle.code, entry.name, result.data.bundle.runtime, entry.id);
     } else {
       error = 'That model could not be loaded.';
     }
@@ -173,15 +187,30 @@
                     onerror={() => markThumbFailed(entry.id)}
                   />
                 {:else}
-                  <!-- No snapshot, or one that failed to load: an honest initial-letter tile. -->
+                  <!--
+                    No usable snapshot: either the entry has none (an auto-saved model — the server
+                    never renders a pixel, so `snapshotUrl` is null) or its image failed to load.
+                    An initial-letter tile with an explicit "No preview" label, so this reads as a
+                    deliberate placeholder rather than a broken image. The label is a sibling, not a
+                    background: a background cannot report a failed load, which is why the thumbnail
+                    is an `<img>` with an `error` handler above.
+                  -->
                   <span class="gallery-thumb-fallback" aria-hidden="true">
                     {initial(entry.name)}
                   </span>
+                  <span class="gallery-thumb-note">No preview</span>
                 {/if}
               </div>
               <div class="gallery-card-body">
                 <span class="gallery-name">{entry.name}</span>
                 <span class="gallery-meta">{entry.subject} · {timeAgo(entry.createdAt)}</span>
+                {#if isAutoSaved(entry)}
+                  <!-- Provenance, shown honestly: the server saved this on its own; no one pressed
+                       Publish. A moderation pass can find the same entries by their reserved tag. -->
+                  <span class="gallery-provenance" title="Saved automatically when it was generated"
+                    >Auto-saved</span
+                  >
+                {/if}
               </div>
               {#if loadingModel === entry.id}
                 <div class="gallery-loading"><div class="spinner"></div></div>
@@ -280,6 +309,21 @@
     text-transform: uppercase;
   }
 
+  /* The two fallback pieces (letter + note) share the grid cell as a stacked column, so the
+     placeholder reads as one deliberate tile rather than two competing centred children. */
+  .gallery-thumb:has(.gallery-thumb-note) {
+    grid-auto-flow: row;
+    align-content: center;
+    gap: 2px;
+  }
+
+  .gallery-thumb-note {
+    font-size: 0.625rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+
   .gallery-card-body {
     padding: var(--space-2) var(--space-3);
     display: flex;
@@ -300,6 +344,20 @@
     font-size: 0.6875rem;
     color: var(--text-muted);
     text-transform: capitalize;
+  }
+
+  /* Provenance chip: a small, quiet marker that says who saved this entry. */
+  .gallery-provenance {
+    align-self: start;
+    margin-top: 2px;
+    padding: 1px 6px;
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-pill, 999px);
   }
 
   .gallery-load {

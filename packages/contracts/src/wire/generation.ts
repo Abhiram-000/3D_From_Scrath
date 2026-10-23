@@ -117,6 +117,15 @@ const readyEvent = z.object({
   audit: AuditSummary.optional(),
   /** Gallery id when the pipeline persisted the model as part of the run. */
   modelId: z.string().uuid().optional(),
+  /**
+   * The gallery entry the server's AUTO-SAVE minted for this generation, when one exists.
+   *
+   * The viewer hands this id to the share/publish path, so pressing Publish UPDATES that entry in
+   * place (the store is put-by-id) instead of adding a second row for one model. Optional on
+   * purpose: with auto-save off, or on a server predating the feature, the field is simply absent
+   * and every existing client — including the topic battery — keeps working unchanged.
+   */
+  galleryId: z.string().uuid().optional(),
   at: z.number().int().nonnegative(),
 });
 

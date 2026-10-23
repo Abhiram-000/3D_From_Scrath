@@ -228,6 +228,13 @@ export const PublishRequest = z.object({
   bundle: ModelBundle,
   /** Data-URL or base64 PNG/JPEG/WebP snapshot; sniffed by magic bytes server-side, never trusted (`06`). */
   snapshot: z.string().max(4_000_000).optional(),
+  /**
+   * The gallery entry to UPDATE in place, when this publish is for a model the server already
+   * auto-saved (the `galleryId` from the terminal `ready` event) or one loaded from the gallery.
+   * Optional: a first publish with no id mints a new entry exactly as before; the store is
+   * put-by-id, so an id that no longer exists is simply (re)created under that id, never duplicated.
+   */
+  galleryId: Uuid.optional(),
 });
 export type PublishRequest = z.infer<typeof PublishRequest>;
 

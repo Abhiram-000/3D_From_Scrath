@@ -107,6 +107,15 @@
    */
   let currentProgram = $state<{ code: string; runtime?: string } | null>(null);
 
+  /**
+   * The gallery entry the current model already occupies, if any — the id auto-save minted for a
+   * fresh generation, or the id a gallery load came from (`/viewer?model=<id>`). The share modal
+   * sends it so Publish UPDATES that entry in place instead of adding a second row for one model.
+   * Null for the reference model and for a pre-auto-save session, where publishing mints a new entry
+   * exactly as it always did.
+   */
+  let currentGalleryId = $state<string | null>(null);
+
   // V1 shell state
   let leftOpen = $state(true);
   let rightOpen = $state(true);
@@ -327,6 +336,7 @@
       // model its browser-side loop guard. The page keeps this program (below) as the current one,
       // so share/code panels display exactly what is on screen.
       currentProgram = { code: generated.code, runtime: storedRuntime(generated) };
+      currentGalleryId = generated.galleryId ?? null;
       host.load(generated.code, 7, storedRuntime(generated));
       topicName =
         typeof (generated.manifest as { name?: string })?.name === 'string'
@@ -336,6 +346,7 @@
       // The honest reference fallback: nothing was generated or shared in this session. Null is
       // meaningful — the share modal labels it rather than passing the reference off as generated.
       currentProgram = null;
+      currentGalleryId = null;
       host.load(referenceModel, 7);
     }
 
@@ -497,11 +508,14 @@
       // Entries published before the guard carry no runtime; they load clean, as they always did.
       const { code, runtime } = result.data.bundle;
       currentProgram = runtime ? { code, runtime } : { code };
+      // A model loaded FROM the gallery already occupies `id`: publishing must update it, not add one.
+      currentGalleryId = id;
       host?.load(code, 7, runtime);
       return;
     }
     // The failure fallback is the reference model, and the current-program tracking says so.
     currentProgram = null;
+    currentGalleryId = null;
     toast('That shared model could not be loaded; showing the reference model instead.');
     host?.load(referenceModel, 7);
   }
@@ -884,13 +898,17 @@
   }
 
   /** A generated or gallery model lands through the same atomic swap as every load (`03` R2). */
-  function swapInModel(code: string, name: string, runtime?: string) {
+  function swapInModel(code: string, name: string, runtime?: string, galleryId?: string) {
     modelLoading = true;
     loadError = null;
     topicName = name;
     // Whoever just produced this load owns "what is on screen" from here on — including the
     // share/code panels reading `currentProgram`.
     currentProgram = runtime ? { code, runtime } : { code };
+    // A gallery-loaded model or a just-auto-saved generation already occupies a gallery entry; keep
+    // its id so Publish updates it rather than adding a duplicate. Omitted for the reference model
+    // and for a server with auto-save off, where publishing mints a new entry as before.
+    currentGalleryId = galleryId ?? null;
     generateOpen = false;
     galleryOpen = false;
     host?.load(code, Math.floor(Math.random() * 0xffffffff), runtime);
@@ -2349,6 +2367,7 @@
     <ShareModal
       {manifest}
       program={currentProgram}
+      galleryId={currentGalleryId}
       requestSnapshot={captureSnapshot}
       onclose={() => (shareModalOpen = false)}
     />

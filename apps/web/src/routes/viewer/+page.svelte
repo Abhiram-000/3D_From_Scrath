@@ -26,7 +26,7 @@
     ShotDecl,
     VideoRecordingCapability,
   } from '@edu3d/contracts';
-  import { REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
+  import { HEART_MODEL_SOURCE, REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
   import {
     SandboxHost,
     sandboxSupported,
@@ -323,7 +323,7 @@
       // The honest reference fallback: nothing was generated or shared in this session. Null is
       // meaningful — the share modal labels it rather than passing the reference off as generated.
       currentProgram = null;
-      host.load(REFERENCE_MODEL_SOURCE, 7);
+      host.load(referenceModel, 7);
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -490,8 +490,18 @@
     // The failure fallback is the reference model, and the current-program tracking says so.
     currentProgram = null;
     toast('That shared model could not be loaded; showing the reference model instead.');
-    host?.load(REFERENCE_MODEL_SOURCE, 7);
+    host?.load(referenceModel, 7);
   }
+
+  // A reference preview only ever applies when nothing better exists to load: below the shared link and
+  // below this session's generation - exactly the rung the on-disk turbofan holds, with a param that lets a
+  // second reference model be previewed without faking gallery data.
+  const referenceModel =
+    typeof window === 'undefined'
+      ? REFERENCE_MODEL_SOURCE
+      : new URLSearchParams(window.location.search).get('reference') === 'heart'
+        ? HEART_MODEL_SOURCE
+        : REFERENCE_MODEL_SOURCE;
 
   function togglePaused() {
     paused = !paused;

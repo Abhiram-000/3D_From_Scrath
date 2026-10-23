@@ -125,6 +125,7 @@ export {
 // The hand-authored reference model: the on-disk fallback, the few-shot exemplar, and the test fixture.
 export { WATCH_MODEL_SOURCE } from './reference/watch.ts';
 export { REFERENCE_MODEL_SOURCE, MINIMAL_MODEL_SOURCE } from './reference/turbofan.ts';
+export { HEART_MODEL_SOURCE } from './reference/heart.ts';
 
 // Pure math, exported both for the guest namespace and for host-side geometry work.
 export * as M from './math/index.ts';

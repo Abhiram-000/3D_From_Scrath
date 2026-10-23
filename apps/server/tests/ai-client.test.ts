@@ -453,7 +453,7 @@ describe('backoff is abortable', () => {
  */
 describe('the cascade never advances a generation onto a model that cannot hold it', () => {
   it(
-    'skips qwen3.6-35b (8,192-token ceiling) for a 131,072-token request, keeps unknown-ceiling models',
+    'skips qwen3.6-35b (8,192-token ceiling) for a 131,072-token request, keeps models that meet it',
     { timeout: 45_000 },
     async () => {
       const freeinference = resolveConfig({
@@ -483,12 +483,14 @@ describe('the cascade never advances a generation onto a model that cannot hold 
         });
         expect(result.ok).toBe(false);
         // The configured model first, then ONLY the models that can hold 131,072 output tokens.
-        // `qwen3.6-35b` (ceiling 8,192) is skipped with a warning; `glm-5.1` has no known ceiling
-        // so it is NOT excluded on suspicion.
+        // `qwen3.6-35b` (ceiling 8,192) is skipped with a warning; `glm-5.3-flash` declares exactly
+        // 131,072, which MEETS the request (only a ceiling strictly below it is a truncation), so it
+        // stays in the chain. Both names are checked against the provider's own /models, because the
+        // previous entry here — `glm-5.1` — was a retired name that 404'd on every throttle.
         expect([...new Set(requestedModels)]).toEqual([
           'primary-model',
           'deepseek-v4-flash',
-          'glm-5.1',
+          'glm-5.3-flash',
         ]);
         expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('qwen3.6-35b'))).toBe(
           true,

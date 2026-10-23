@@ -117,8 +117,20 @@ const MAX_ATTEMPTS = 3;
  * exact bug this table fixes. The configured model always goes first; these follow, newest first.
  */
 const MODEL_CASCADES: Readonly<Record<string, readonly string[]>> = {
-  'freeinference.org': ['deepseek-v4-flash', 'glm-5.1', 'qwen3.6-35b'],
-  'generativelanguage.googleapis.com': ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+  // Verified against the provider's own /models on 2026-10-23: it serves
+  // glm-5.3-flash, qwen3.6-35b, diffusiongemma, deepseek-v4-flash, bge-m3.
+  //
+  // It said `glm-5.1` until that check — a retired name, contradicted by the ceilings table a few
+  // lines below, which has always carried glm-5.3-flash. The cost was silent: the second hop 404'd
+  // on every throttle, and since the third hop (qwen3.6-35b) is below the generation floor and gets
+  // skipped, FreeInference had NO working fallback at all. Degrade-never-die was, in practice,
+  // fail-on-first-429. This table is hand-maintained against a free tier that rotates model names
+  // often, so it needs re-checking whenever the primary throttles.
+  'freeinference.org': ['deepseek-v4-flash', 'glm-5.3-flash', 'qwen3.6-35b'],
+  // Verified against this provider's /models on 2026-10-23. It served gemini-3.8-flash,
+  // gemini-3.5-flash and gemini-2.5-flash, but NOT gemini-2.0-flash — which is what the third hop
+  // used to be, so the last resort of the last resort never existed. Newest first, per the note above.
+  'generativelanguage.googleapis.com': ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-2.5-flash'],
 };
 
 /**

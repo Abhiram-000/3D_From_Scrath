@@ -1,7 +1,7 @@
 /* ============================================================
    EDU-3D · Landing page
    Centered single-viewport hero:
-     eyebrow → animated headline → prompt bar → quick starts
+     animated headline → prompt bar → quick starts
    Premium palette: warm cream / amber / bronze gradient
    ============================================================ */
 
@@ -185,47 +185,6 @@ body {
   align-items: center;
   text-align: center;
   gap: clamp(0.875rem, 2vh, 1.375rem);
-}
-
-/* Eyebrow pill — warm coral accent */
-.hero-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0.4375rem 0.9375rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--coral-300);
-  background: var(--coral-glass);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--coral-border);
-  border-radius: var(--radius-pill);
-  animation: riseIn 0.7s var(--ease-out) 0.05s both;
-}
-
-.hero-eyebrow::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--coral);
-  box-shadow: 0 0 10px var(--coral);
-  animation: pulseDot 2.4s ease-in-out infinite;
-}
-
-@keyframes pulseDot {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.5;
-    transform: scale(0.8);
-  }
 }
 
 /* Headline — premium tri-tone gradient: amber → coral → violet */

@@ -408,8 +408,6 @@
 
   <main class="hero-section">
     <div class="hero-center">
-      <p class="hero-eyebrow" data-parallax="8">AI-powered interactive learning</p>
-
       <h1 class="hero-title" data-parallax="14">
         <!--
           The full headline is always in the DOM; the animation only reveals it. Mutating the text

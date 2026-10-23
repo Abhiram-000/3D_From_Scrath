@@ -73,13 +73,26 @@
  * to its mechanism), and the domain-archetype classification step that must name its choice before
  * building.
  *
+ * v9 adds the layer the battery never measured and the failure it kept producing: models that are
+ * structurally valid and factually plausible yet NOT UNDERSTANDABLE — a learner sees an assembly of
+ * shapes and cannot tell what any of it is, which part matters, or why it moves. Every other version
+ * specified what the model must BE; none specified how it must READ. The evidence is unusually
+ * strong and unusually ignored: spatial contiguity (a word must sit beside the object it names)
+ * measures a median effect of 1.10 across 22 of 22 tests, and REMOVING decorative-but-attractive
+ * material measures g ≈ 1.00 — the largest single effect in the multimedia-learning literature. So
+ * v9 adds a VISUAL LAYER section (words on the model, signal-and-mute, cut away what hides the
+ * lesson, state scale, proportions before surfaces, material and light for legibility, nothing
+ * decorative), a LEGIBLE rubric line, a NEVER entry for decorative geometry, and contract item 14.
+ * ACCURATE and UNDERSTANDABLE stay rubric-only; LEGIBLE is rubric-only for the same reason — no
+ * manifest field can prove a label is legible or a cutaway reveals.
+ *
  * Versioned, because a prompt change is a code change; battery-history.jsonl holds the numbers
  * this version must beat.
  */
 import { describeApiSurface, REFERENCE_MODEL_SOURCE } from '@edu3d/engine';
 import type { ComplexityPreference } from '@edu3d/contracts';
 
-export const PROMPT_VERSION = '2026-10-v8-physics-and-graphing';
+export const PROMPT_VERSION = '2026-10-v9-visual-legibility';
 
 /** The domain grammar table from `00`, compressed to the rows the model can act on. */
 const DOMAIN_GRAMMARS: ReadonlyArray<{ domain: string; entities: string; motion: string }> = [
@@ -357,6 +370,11 @@ NEVER (each of these broke a real generated model):
   decides the subject, and the reference is a craftsmanship bar, not a template to resize
 - a source with no edge to the mechanism it drives — the floating-battery failure; a source that
   powers nothing teaches nothing
+- decorative geometry that carries no information — background scenery, meaningless particles,
+  shapes added to look busy. These measurably REDUCE learning: they spend the learner's attention
+  without buying understanding. If a part does not explain the concept, delete it
+- hiding the lesson behind an opaque shell and relying on the learner to discover X-ray — section it
+  or make the shell translucent so the inside is visible on the opening frame
 
 TEXTBOOK FIDELITY — the bar your model is audited against:
 - Correct entities: every part the textbook names exists, named as the textbook names it.
@@ -366,6 +384,47 @@ TEXTBOOK FIDELITY — the bar your model is audited against:
 - Real constants and formulas in principles/metrics — numbers a physics teacher would sign.
 - The quiz's tempting wrong answer is the real misconception from Pass 1, and the explanation
   says why it is tempting AND why it is wrong.
+
+=== THE VISUAL LAYER — how it becomes understandable ===
+A model can be factually right and still teach nothing, because the learner cannot see what matters.
+Understanding is BUILT, not hoped for: every rule below is a measured effect on comprehension, and
+every one of them is something you must construct in the program.
+
+- WORDS SIT BESIDE THE THING THEY NAME. The strongest measured effect in instructional design is
+  spatial contiguity — a word and the object it names must be physically together. A name that lives
+  only in a side panel, while the learner hunts for the part on screen, is exactly the separation
+  that costs comprehension. For the 4–12 parts that carry the lesson, build an on-model marker with
+  a thin leader line to the part (a short geom.pipe or geom.path from a small marker toward the
+  feature), so the eye is LED to the feature instead of left to search. Label the parts that teach,
+  not all three hundred.
+- SIGNAL THE LESSON, MUTE THE REST. The eye goes where the contrast is. The part currently being
+  explained must be the most prominent thing on screen — brighter, more saturated, or emissive —
+  while everything that is merely context goes quiet: dimmed, desaturated, or translucent. If every
+  part is equally loud, nothing reads as the point. Tie this to the same parameter or story beat
+  that is explaining the part, so the emphasis moves with the lesson.
+- IF THE LESSON IS INSIDE, CUT IT OPEN. Chambers, gears inside a housing, a nucleus, a bore: make the
+  inside visible BY DEFAULT — remove the anterior shell with geom.clip as a real section, or make the
+  outer layer genuinely translucent — and keep the intact version as a visibility-toggled twin.
+  A cutaway keeps the outer context: a sliced-open shell, not a vanished one, so the learner still
+  sees where the inside sits in the whole. Never rely on the learner discovering X-ray.
+- GIVE SCALE. Nobody can judge size from an object floating in space. State the real overall
+  dimensions in the description, and give the learner something to measure against — a fact carrying
+  the true value, or a reference object at true scale. Where you exaggerate for the lesson, declare it.
+- PROPORTIONS COME BEFORE SURFACES. Get the RELATIVE SIZES right before the finish: estimate each
+  part's real size in metres from the real object and build to that, so a 4 mm valve cusp beside a
+  100 mm chamber looks like what it is. Correct proportions do more for realism than any material.
+- EVERYTHING IS ATTACHED. Parts sit where they physically sit — a rotor inside its housing, a valve
+  in its seat, a leaf on its stem. Nothing floats unexplained; nothing intersects implausibly. The
+  only exception is a part the lesson deliberately separates, and then the narration says so.
+- MATERIAL AND LIGHT ARE FOR LEGIBILITY. Choose each material from what the thing actually is —
+  steel is metallic and smooth, glass transmits, rubber and tissue are matte and rough, muscle is
+  warm and subsurface. A plastic-looking gear reads as wrong no matter how correct its teeth are.
+  Light so the lesson is visible from the opening camera: a key light on the hero part, enough fill
+  that the shadowed side is not black, and an emissive or tight spotlight accent when the lesson IS
+  a flow, a charge, or a heat path.
+- NOTHING DECORATIVE. Every part must carry information. Background scenery, particles that mean
+  nothing, and shapes that exist to look busy MEASURABLY REDUCE learning — they spend the learner's
+  attention without buying understanding. If a part does not help explain the concept, delete it.
 
 AUTHORING METHOD — inside a block comment at the top, fill in these lines before any code:
 // PLAN: the core idea in one sentence — the thing a learner will remember.
@@ -383,7 +442,11 @@ is the canonical defect. Domain grammar for classification:
 ${DOMAIN_GRAMMARS.map((row) => `  - ${row.domain}: ${row.entities}; moves by: ${row.motion}`).join('\n')}
 
 HARD CONTRACT:
-1. scene.describe({...}) first, with concept, objectives, principles, honest simplifications.
+1. scene.describe({...}) first, with concept, objectives, principles, honest simplifications, and
+   relationships — the named cause-and-effect edges between your parts (from → to, plus what the
+   link IS). Relationships are the one part of the causal map the platform can check, so a model
+   whose mechanisms are right but whose relationships array is empty reads as an unexplained
+   assembly of shapes: declare every load-bearing edge, naming part ids that exist.
 2. Real units: metres, kilograms, seconds. Every parameter that drives a motion rate or a physics
    quantity declares its unit (rad/s, m/s, Hz, rpm, kg/s, N, …); a dimensionless factor says so
    explicitly (unit: '×' or 'ratio'). Declare any exaggeration in simplifications.
@@ -419,6 +482,12 @@ HARD CONTRACT:
     floating-battery failure and is rejected — a battery glowing alone in space that powers nothing
     teaches the opposite of the lesson. Every relationship names existing part ids, and every flow
     has a real source, direction and destination.
+14. Visual legibility is part of the contract, not decoration: the parts that carry the lesson are
+    marked with an on-model leader so the eye is led to them, the part currently being explained is
+    the most prominent thing on screen while context is muted, anything hiding the lesson is
+    sectioned or made translucent, real dimensions are stated, relative proportions are right
+    before surfaces are, materials and light are chosen so the lesson reads from the opening
+    camera, and no part is built that does not carry information.
 
 BEFORE YOU ANSWER — grade your draft against this rubric and fix anything that fails. This rubric is
 wider than the machine audit: lines marked [audit] are the parts the audit measures and can send back
@@ -431,6 +500,10 @@ as refinement instructions; the others only you can check, and the platform does
     constants and formulas are textbook-true; exaggerations declared. Would a subject teacher sign it?
 [ ] UNDERSTANDABLE: [rubric only] every info summary and story beat is plain language, one idea per
     sentence; a teenager could restate the concept after playing.
+[ ] LEGIBLE: [rubric only — no manifest field can prove a label is legible or a section reveals]
+    the model explains itself without a side panel: the lesson-bearing parts are marked on the
+    model, the part being explained is the loudest thing on screen while context is muted, what
+    hides the lesson is cut away or translucent, scale is stated, and no part exists for decoration.
 [ ] ALIVE: [audit: liveliness + parameterLeverage] the model moves by default; every parameter
     produces a distinct visible change; every metric you declared is published from onFrame each
     frame and its value changes when the model does — the audit flags a read-out that never moves.

@@ -86,6 +86,13 @@
  * ACCURATE and UNDERSTANDABLE stay rubric-only; LEGIBLE is rubric-only for the same reason — no
  * manifest field can prove a label is legible or a cutaway reveals.
  *
+ * The strongest of those rules — a word beside the object it names — was unreachable until the engine
+ * could render one: the guest surface had no text or label member at all. `scene.label` (part-anchored,
+ * bounded, projected by the worker through the pipeline the learner's own notes already proved) closes
+ * that gap, and this prompt names it. The engine had to land first: the static gate validates every
+ * call against the real surface, so instructing a call that does not exist yet would fail EVERY
+ * generation. Both halves ship as v9 because v9 is the legibility release, not the rubric-line release.
+ *
  * Versioned, because a prompt change is a code change; battery-history.jsonl holds the numbers
  * this version must beat.
  */
@@ -392,11 +399,13 @@ every one of them is something you must construct in the program.
 
 - WORDS SIT BESIDE THE THING THEY NAME. The strongest measured effect in instructional design is
   spatial contiguity — a word and the object it names must be physically together. A name that lives
-  only in a side panel, while the learner hunts for the part on screen, is exactly the separation
-  that costs comprehension. For the 4–12 parts that carry the lesson, build an on-model marker with
-  a thin leader line to the part (a short geom.pipe or geom.path from a small marker toward the
-  feature), so the eye is LED to the feature instead of left to search. Label the parts that teach,
-  not all three hundred.
+  only in a side panel, while the learner hunts for it on screen, is exactly the separation that costs
+  comprehension. So NAME THE PARTS ON THE MODEL: scene.label({ id, partId, text, offset }) anchors a
+  short label to a part you actually built, and the viewer keeps it glued to that part as the camera
+  moves. Label the 4–12 parts that carry the lesson — the hero part, whatever the story points at,
+  anything the quiz asks about — not all three hundred; sixty-four is the ceiling for the whole model,
+  so spend them where they teach. Keep each to a few words: a part name, or a name plus one qualifier.
+  Where a part wants a pointer rather than a name, a thin geom.pipe leader from a small marker reads.
 - SIGNAL THE LESSON, MUTE THE REST. The eye goes where the contrast is. The part currently being
   explained must be the most prominent thing on screen — brighter, more saturated, or emissive —
   while everything that is merely context goes quiet: dimmed, desaturated, or translucent. If every
@@ -435,7 +444,7 @@ AUTHORING METHOD — inside a block comment at the top, fill in these lines befo
 // ENTITIES: every part the concept requires, with its textbook name.
 // REPRESENTATION: the shape whose BEHAVIOR matches each entity's behavior.
 
-Then, in order: describe → colorRole → param → metric → materials → groups → parts → motion →
+Then, in order: describe → colorRole → param → metric → materials → groups → parts → label → motion →
 onFrame → story → quiz → camera. Choose shapes whose motion is correct: gears must be involute
 (geom.gear), springs true helical sweeps, flow particles along a declared path. A static lookalike
 is the canonical defect. Domain grammar for classification:
@@ -501,9 +510,10 @@ as refinement instructions; the others only you can check, and the platform does
 [ ] UNDERSTANDABLE: [rubric only] every info summary and story beat is plain language, one idea per
     sentence; a teenager could restate the concept after playing.
 [ ] LEGIBLE: [rubric only — no manifest field can prove a label is legible or a section reveals]
-    the model explains itself without a side panel: the lesson-bearing parts are marked on the
-    model, the part being explained is the loudest thing on screen while context is muted, what
-    hides the lesson is cut away or translucent, scale is stated, and no part exists for decoration.
+    the model explains itself without a side panel: the lesson-bearing parts are named on the
+    model itself, the part being explained is the loudest thing on screen while context is muted,
+    what hides the lesson is cut away or translucent, scale is stated, and no part exists for
+    decoration.
 [ ] ALIVE: [audit: liveliness + parameterLeverage] the model moves by default; every parameter
     produces a distinct visible change; every metric you declared is published from onFrame each
     frame and its value changes when the model does — the audit flags a read-out that never moves.

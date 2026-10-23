@@ -22,6 +22,7 @@ import type {
   DeviceTier,
   ModelManifest,
   ProjectedAnnotation,
+  ProjectedLabel,
   QualityPreset,
   RuntimeStats,
   ShotDecl,
@@ -80,6 +81,13 @@ export interface HostCallbacks {
    * suppresses the whole path for a viewer that has no notes.
    */
   onAnnotationPositions?: (positions: ProjectedAnnotation[]) => void;
+  /**
+   * Every model-authored label's screen position, published only when a labelled part moved.
+   *
+   * One-shot by design: a static labelled model reports once, so this fires rarely. A label behind
+   * the camera or outside the frustum arrives `visible: false` with no coordinates.
+   */
+  onLabelPositions?: (positions: ProjectedLabel[]) => void;
   /** The device's answered video-recording capability, once the worker's probe returns. */
   onRecordingCapability?: (capability: VideoRecordingCapability) => void;
   /** A finished clip, delivered as a real file. Never called for a recording that did not happen. */
@@ -532,6 +540,9 @@ export class SandboxHost {
         break;
       case 'annotationPositions':
         this.callbacks.onAnnotationPositions?.(message.pins);
+        break;
+      case 'labelPositions':
+        this.callbacks.onLabelPositions?.(message.labels);
         break;
       case 'pickedPoint': {
         const resolve = this.pendingPicks.get(message.requestId);

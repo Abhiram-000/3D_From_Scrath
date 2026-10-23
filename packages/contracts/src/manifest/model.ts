@@ -14,7 +14,7 @@
  * referenced by id.
  */
 import { z } from 'zod';
-import { AuthoredId, EpochMillis, finite, optionalText, shortText } from '../primitives.ts';
+import { AuthoredId, EpochMillis, Vec3, finite, optionalText, shortText } from '../primitives.ts';
 import { PartTree } from './parts.ts';
 import { MetricDecl, ParameterDecl } from './parameters.ts';
 import {
@@ -112,6 +112,47 @@ export const CallbackRegistry = z.object({
 });
 export type CallbackRegistry = z.infer<typeof CallbackRegistry>;
 
+/**
+ * A model-authored word anchored to a part — the label the learner reads *beside* the thing it names.
+ *
+ * `01` requires parts to be self-describing, but a name that lives only in a side panel or a hover
+ * tooltip violates spatial contiguity — Mayer's own meta-analysis puts words-near-the-picture at a
+ * median effect of 1.10, and a name in a panel beside a separate picture is exactly the failure it
+ * measures. This is the contract for the fix: a bounded string the model attaches to a declared part,
+ * which the viewer renders as a read-only pin at that part's projected screen position.
+ *
+ * It is PURE MANIFEST DATA. The server's audit runs headless in `node:vm` with no DOM, so nothing
+ * here may require a renderer: the audit may count labels and score their presence, but the label is
+ * realisable only on the learner's device, from this description alone.
+ *
+ * `partId` names a part in `parts`; the authoring facade checks it exists before a manifest is
+ * emitted, so a label can never dangle. `offset` is an optional local offset in metres from the
+ * part's authored position, letting a model lift a label clear of the geometry it names.
+ */
+export const ModelLabel = z.object({
+  id: AuthoredId,
+  /** The declared part this label names. Must exist in `parts`. */
+  partId: AuthoredId,
+  /**
+   * The short word or phrase shown on the model. Bounded to 64 — a pin is a name, not a paragraph
+   * (the part's own `info.summary` is where prose belongs). Rendered as a text node, never markup.
+   */
+  text: shortText(64),
+  /** Local offset from the part's position, metres. Absent means the label sits on the part. */
+  offset: Vec3.optional(),
+});
+export type ModelLabel = z.infer<typeof ModelLabel>;
+
+/**
+ * Upper bound on labels in one model.
+ *
+ * A pin is a word beside a thing, so this is a ceiling on how many words the learner reads at once,
+ * not on ambition — 64 is the same bound learner notes carry (`MAX_ANNOTATIONS_PER_MODEL`), because
+ * both feed the same overlay and the same de-collision budget. It also stops a runaway loop from
+ * allocating an unbounded label list before the device budget can price the model.
+ */
+export const MAX_LABELS = 64;
+
 export const ModelManifest = z.object({
   /** Manifest format version. Bumped only for breaking shape changes; readers must check it. */
   formatVersion: z.literal(1),
@@ -122,6 +163,11 @@ export const ModelManifest = z.object({
   pedagogy: Pedagogy,
 
   parts: PartTree,
+  /**
+   * Model-authored, 3D-anchored labels (`01`: parts self-describing; spatial contiguity). Empty is
+   * the common case and costs nothing downstream — the viewer checks before doing any projection.
+   */
+  labels: z.array(ModelLabel).max(MAX_LABELS).default([]),
   colorRoles: z.array(ColorRole).max(16).default([]),
   lights: z.array(LightDecl).max(24).default([]),
   /**

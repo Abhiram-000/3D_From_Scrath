@@ -986,6 +986,73 @@ describe('scalar sources and enum fields are validated at the authoring boundary
 });
 
 /**
+ * Model-authored, 3D-anchored labels.
+ *
+ * The capability `01` requires in place: a part that names itself beside the thing it names, so the
+ * learner reads the word without opening a panel. These tests pin the two halves that must hold at
+ * the authoring boundary — a valid label reaches the manifest, and an unknown `partId` is refused
+ * where the generator can still fix it (exactly as `motion` refuses a dangling part).
+ */
+describe('model-authored labels', () => {
+  const PROGRAM = (declaration: string) => `
+    scene.describe({ name: 'Labelled', description: 'Names on the model.', concept: 'labels', objectives: ['read a name'] });
+    scene.mesh({ id: 'axle', geometry: geom.cylinder({ radius: 0.02, height: 0.3 }), material: mat.metal({}) });
+    ${declaration}
+  `;
+
+  it('records a label and emits it into the manifest', () => {
+    const result = author(PROGRAM(`scene.label({ id: 'lblAxle', partId: 'axle', text: 'Axle' });`));
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.labels).toHaveLength(1);
+    expect(result.manifest.labels[0]).toEqual({ id: 'lblAxle', partId: 'axle', text: 'Axle' });
+  });
+
+  it('carries an optional offset through to the manifest', () => {
+    const result = author(
+      PROGRAM(
+        `scene.label({ id: 'lblAxle', partId: 'axle', text: 'Axle', offset: [0, 0.08, 0] });`,
+      ),
+    );
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.labels[0]?.offset).toEqual([0, 0.08, 0]);
+  });
+
+  it('refuses a label naming a part that does not exist, as loudly as a dangling motion', () => {
+    const result = author(
+      PROGRAM(`scene.label({ id: 'lblX', partId: 'nowhere', text: 'Ghost' });`),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/label 'lblX'/);
+    expect(result.message).toMatch(/nowhere/);
+    expect(result.message).toMatch(/does not exist/);
+  });
+
+  it('refuses a duplicate label id', () => {
+    const result = author(
+      PROGRAM(`
+        scene.label({ id: 'lblA', partId: 'axle', text: 'Axle' });
+        scene.label({ id: 'lblA', partId: 'axle', text: 'Shaft' });
+      `),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toMatch(/already used/);
+  });
+
+  it('truncates over-long label text and records a warning rather than failing the build', () => {
+    const long = 'x'.repeat(80);
+    const result = author(PROGRAM(`scene.label({ id: 'lblA', partId: 'axle', text: '${long}' });`));
+    expect(result.ok, result.ok ? '' : result.message).toBe(true);
+    if (!result.ok) return;
+    expect(result.manifest.labels[0]?.text).toHaveLength(64);
+    expect(result.manifest.warnings.join(' ')).toMatch(/truncated/);
+  });
+});
+
+/**
  * The hardened guest realm.
  *
  * The browser guest runs in a realm where `@edu3d/sandbox` has replaced `Function` with a thrower and

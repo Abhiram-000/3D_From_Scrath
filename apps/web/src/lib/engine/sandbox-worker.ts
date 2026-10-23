@@ -35,11 +35,13 @@ import {
   type ShotEasing,
   type AnnotationPin,
   type ProjectedAnnotation,
+  type ProjectedLabel,
   type VideoRecordingCapability,
   type PointPickRequest,
   type SetAnnotationsRequest,
   type PointPickResponse,
   type AnnotationProjectionResponse,
+  type LabelProjectionResponse,
   VIDEO_CLIP_LIMITS,
 } from '@edu3d/contracts';
 import {
@@ -182,6 +184,7 @@ export type WorkerResponse =
   | { type: 'recordingFailed'; message: string }
   | PointPickResponse
   | AnnotationProjectionResponse
+  | LabelProjectionResponse
   | { type: 'disposed' };
 
 /** The admission verdict, minus the `Map`/`Set` fields that do not survive structured cloning cleanly. */
@@ -491,6 +494,18 @@ export interface WorkerState {
    * worker must not pay for a feature nobody used (`03` R7).
    */
   annotations: readonly AnnotationPin[];
+  /**
+   * Model-authored labels, taken from the manifest at load. Empty is the common case and the frame
+   * loop checks it before any projection: a model that names nothing on itself pays nothing.
+   */
+  labels: readonly ModelManifest['labels'][number][];
+  /**
+   * The world pose each labelled part's object held when labels were last projected, keyed by label
+   * id. Comparing it lets a label be recomputed exactly when its anchor moved — no per-frame matrix
+   * walk over parts that never move, and no stale label over a part that did. An empty map means
+   * nothing has been projected yet, which is the first-frame case.
+   */
+  labelAnchors: Map<string, number[]>;
   /**
    * What the device can do about video export, probed once at init.
    *
@@ -1546,6 +1561,8 @@ function initRenderer(request: Extract<WorkerRequest, { type: 'init' }>): Worker
     physicsMillis: 0,
     physicsUnavailableReason: null,
     annotations: [],
+    labels: [],
+    labelAnchors: new Map(),
     videoCapability: null,
     recording: null,
 
@@ -1767,6 +1784,12 @@ export function loadProgram(
   // by nothing — the audit's false-recovery bug; see `context-restore.ts`.)
   RESOURCE_TEXTURES.clear();
   collectModelTextures(realized.root, RESOURCE_TEXTURES);
+
+  // Model-authored labels: the manifest's list is the whole source. `labelAnchors` starts empty so
+  // the first dirty frame projects every label once; from then on a label recomputes only when its
+  // part's world pose actually changed.
+  target.labels = manifest.labels;
+  target.labelAnchors = new Map();
 
   // Declared-motion anchors, captured the moment the manifest exists and before any frame runs:
   // the authored transform per motion-driven part (never mutated again — it is what every animated
@@ -2059,6 +2082,140 @@ export function projectAnnotations(target: WorkerState): void {
   post({ type: 'annotationPositions', pins });
 }
 
+/** Minimum on-screen separation, in pixels, before a second label is dropped as a collision. */
+const LABEL_MIN_SEPARATION_PX = 24;
+
+/** Projection scratch for labels, module-level: reused vectors instead of one per label per frame. */
+const LABEL_WORLD = new THREE.Vector3();
+const LABEL_PART = new THREE.Vector3();
+const LABEL_OFFSET = new THREE.Vector3();
+const LABEL_QUAT = new THREE.Quaternion();
+
+/**
+ * The world point a label names: the part's live world position, plus its authored offset.
+ *
+ * The offset is applied in the part's own frame (through the object's world rotation), so a label
+ * authored `[0, 0.08, 0]` stays above the part however the part is turned. `updateWorldMatrix` is
+ * forced first: a labelled part written by `onFrame` or the physics solver this frame has a stale
+ * `matrixWorld` until it is composed, and a label read off the stale matrix would lag its part.
+ */
+function labelWorldPoint(
+  object: THREE.Object3D,
+  offset: readonly [number, number, number] | undefined,
+): THREE.Vector3 {
+  object.updateWorldMatrix(true, false);
+  object.getWorldPosition(LABEL_PART);
+  if (!offset) return LABEL_WORLD.copy(LABEL_PART);
+  // Rotation only: a direction rotated into the part's frame, not a point (which would add the
+  // part's translation back on top of the world position we already have).
+  object.getWorldQuaternion(LABEL_QUAT);
+  LABEL_OFFSET.set(offset[0], offset[1], offset[2]).applyQuaternion(LABEL_QUAT);
+  return LABEL_WORLD.copy(LABEL_PART).add(LABEL_OFFSET);
+}
+
+/**
+ * Publish model-authored labels as read-only, 3D-anchored pins.
+ *
+ * A twin of `projectAnnotations` reusing `projectPointToCanvas` verbatim, with three differences that
+ * are the whole design:
+ *
+ *   1. **One-shot.** The labels are recomputed only when a labelled part's world pose changed since
+ *      the last publish (`syncTransforms` sets `labelsDirty`). A model whose labelled parts are static
+ *      posts its positions once and never again, so a label costs nothing at the steady state.
+ *   2. **De-collision.** A label within `LABEL_MIN_SEPARATION_PX` of one already drawn is dropped
+ *      rather than stacked — two words on top of each other is less readable than one. The earlier
+ *      label in declaration order wins, which is the model author's own priority.
+ *   3. **Honest invisibility.** A label behind the camera or outside the frustum travels as
+ *      `visible: false` with no coordinates, exactly as a pin does; a mirrored coordinate would place
+ *      the word on the opposite side of the screen from the part it names.
+ */
+export function projectLabels(target: WorkerState): void {
+  if (target.labels.length === 0) return;
+  const model = target.model;
+  if (!model) return;
+
+  // Re-publish only when a labelled part's world pose changed since the last publish. `syncTransforms`
+  // has already written this frame's poses (it runs before the render), so the comparison here is
+  // against the pose the labels were last drawn from. A static labelled model matches on every later
+  // frame and does no further work — the whole reason a label is a one-shot cost. A moved part (an
+  // onFrame write, a declared motion, the solver, an explode) fails the match and re-projects.
+  let moved = target.labelAnchors.size === 0;
+  if (!moved) {
+    for (const label of target.labels) {
+      const object = model.parts.get(label.partId);
+      const anchor = target.labelAnchors.get(label.id);
+      if (!object || !anchor) {
+        moved = true;
+        break;
+      }
+      object.updateWorldMatrix(true, false);
+      const e = object.matrixWorld.elements;
+      if (
+        anchor[0] !== e[12] ||
+        anchor[1] !== e[13] ||
+        anchor[2] !== e[14] ||
+        anchor[3] !== object.id
+      ) {
+        moved = true;
+        break;
+      }
+    }
+  }
+  if (!moved) return;
+
+  const projected: ProjectedLabel[] = [];
+  const drawnX: number[] = [];
+  const drawnY: number[] = [];
+
+  for (const label of target.labels) {
+    const object = model.parts.get(label.partId);
+    if (!object) {
+      projected.push({ id: label.id, visible: false });
+      continue;
+    }
+    const world = labelWorldPoint(object, label.offset);
+    // Remember the pose this projection was computed from, so the next frame can tell whether this
+    // label's anchor moved. Cheap (three numbers + the object id) and exact for the decision it feeds.
+    target.labelAnchors.set(label.id, [
+      object.matrixWorld.elements[12] as number,
+      object.matrixWorld.elements[13] as number,
+      object.matrixWorld.elements[14] as number,
+      object.id,
+    ]);
+
+    const point = projectPointToCanvas(target.camera, target.width, target.height, [
+      world.x,
+      world.y,
+      world.z,
+    ]);
+    if (!point.visible) {
+      projected.push({ id: label.id, visible: false });
+      continue;
+    }
+
+    // De-collision: drop a label that lands within the minimum separation of one already kept.
+    let collides = false;
+    for (let i = 0; i < drawnX.length; i += 1) {
+      const dx = (drawnX[i] as number) - point.x;
+      const dy = (drawnY[i] as number) - point.y;
+      if (Math.hypot(dx, dy) < LABEL_MIN_SEPARATION_PX) {
+        collides = true;
+        break;
+      }
+    }
+    if (collides) {
+      projected.push({ id: label.id, visible: false });
+      continue;
+    }
+
+    drawnX.push(point.x);
+    drawnY.push(point.y);
+    projected.push({ id: label.id, visible: true, x: point.x, y: point.y });
+  }
+
+  post({ type: 'labelPositions', labels: projected });
+}
+
 /**
  * Reset motion-driven parts to their authored base, before the model's own frame code runs.
  *
@@ -2302,6 +2459,10 @@ function renderFrame(target: WorkerState, timestamp: number): void {
     // Pin projection, once per presented frame (`03` R7). A still frame does not reach here, which is
     // correct: nothing moved, so the positions the page already holds are still the positions.
     projectAnnotations(target);
+
+    // Model-authored labels beside it. One-shot: it re-projects only when a labelled part moved, so a
+    // still static label is not recomputed frame after frame.
+    projectLabels(target);
 
     const frameTime = now() - frameStart;
     target.frameTimes.push(frameTime);

@@ -1236,6 +1236,13 @@ export const API_REFERENCE: Readonly<Record<string, ApiReferenceEntry>> = Object
     example:
       "scene.points({ id: 'stars', geometry: cloud, material: mat.emissive({ color: '#ffffff' }) })",
   },
+  'scene.label': {
+    signature:
+      'scene.label({ id: string, partId: string, text: string, offset?: [x,y,z] }): string',
+    summary:
+      'Put a word ON the model, beside the part it names (max 64 chars, ≤64 labels) — the learner reads the name without a click. `partId` must name a declared part; `offset` lifts the label off the part, in metres.',
+    example: "scene.label({ id: 'lblDemo', partId: 'demo', text: 'Demo part' })",
+  },
   'scene.defineComponent': {
     signature: 'scene.defineComponent(name: string, body: (ctx: ComponentContext) => void): void',
     summary:

@@ -9,7 +9,7 @@
  */
 import { z } from 'zod';
 import { AuthoredId, finite, shortText } from '../primitives.ts';
-import { ModelManifest } from '../manifest/model.ts';
+import { MAX_LABELS, ModelManifest } from '../manifest/model.ts';
 import { DeviceTier } from '../budgets.ts';
 import { MAX_ANNOTATIONS_PER_MODEL } from '../settings.ts';
 
@@ -282,6 +282,39 @@ export const AnnotationProjectionResponse = z.object({
   pins: z.array(ProjectedAnnotation).max(MAX_ANNOTATIONS_PER_MODEL),
 });
 export type AnnotationProjectionResponse = z.infer<typeof AnnotationProjectionResponse>;
+
+/**
+ * One model-authored label's screen position.
+ *
+ * The same honesty rule as `ProjectedAnnotation`, for the same reason: a labelled part behind the
+ * camera or outside the frustum has no screen position, and projecting it anyway mirrors it to the
+ * wrong side of the screen. `visible: false` with no coordinates is the whole answer.
+ *
+ * Unlike a pin, a label's *prose* does not travel here. The word is manifest data the page already
+ * holds (`manifest.labels`), keyed by `id`; re-sending it every frame would pay to clone prose the
+ * overlay can look up. `id` is the join key.
+ */
+export const ProjectedLabel = z.object({
+  id: z.string().min(1).max(64),
+  visible: z.boolean(),
+  /** Canvas-space pixels, origin top-left. Absent unless `visible`. */
+  x: finite.optional(),
+  y: finite.optional(),
+});
+export type ProjectedLabel = z.infer<typeof ProjectedLabel>;
+
+/**
+ * Worker → host: every model label's position, recomputed only when a labelled part may have moved.
+ *
+ * One-shot by design: a label on a static part is projected once and not again, so a model with
+ * labels the learner is not looking at costs nothing per frame. The id set is bounded by `MAX_LABELS`,
+ * the same ceiling the manifest enforces.
+ */
+export const LabelProjectionResponse = z.object({
+  type: z.literal('labelPositions'),
+  labels: z.array(ProjectedLabel).max(MAX_LABELS),
+});
+export type LabelProjectionResponse = z.infer<typeof LabelProjectionResponse>;
 
 /**
  * The hard stops every clip is bounded by.

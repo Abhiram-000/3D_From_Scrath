@@ -96,6 +96,7 @@ const LOAD_BEARING_MEMBERS = [
   'scene.place',
   'scene.motion',
   'scene.onFrame',
+  'scene.label',
   'geom.gear',
   'geom.helix',
   'geom.sweep',

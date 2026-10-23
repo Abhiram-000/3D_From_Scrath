@@ -25,6 +25,7 @@ import {
   type Domain,
   type InteractionDecl,
   type MetricDecl,
+  type ModelLabel,
   type ModelManifest,
   type MotionDecl,
   type ParameterDecl,
@@ -44,6 +45,7 @@ import {
   JointKind,
   LightKind,
   MAX_INSTANCES_PER_SET,
+  MAX_LABELS,
   MAX_PARTS,
   MotionKind,
   ParameterChannel,
@@ -672,6 +674,14 @@ export class SceneBuilder {
   private readonly shots = new Map<string, ShotDecl>();
   private readonly story: StoryBeat[] = [];
   private readonly quiz: QuizQuestion[] = [];
+  /**
+   * Model-authored, 3D-anchored labels: a word the learner reads beside the part it names.
+   *
+   * Kept as a list (order is display order) plus an id set, so a duplicate id is refused the same
+   * way a duplicate part id is — a label the viewer cannot key is a label it cannot render.
+   */
+  private readonly labels: ModelLabel[] = [];
+  private readonly labelIds = new Set<string>();
   private readonly components = new Map<string, (ctx: ComponentContext) => void>();
   private readonly warnings: string[] = [];
 
@@ -752,6 +762,8 @@ export class SceneBuilder {
     this.callbacks.parameterChange.length = 0;
     this.callbacks.select.length = 0;
     this.callbacks.interactions.clear();
+    this.labels.length = 0;
+    this.labelIds.clear();
   }
 
   // ── Validation helpers ────────────────────────────────────────────────────
@@ -2032,6 +2044,46 @@ export class SceneBuilder {
           this.warnings.push(message.slice(0, 240));
         }
       },
+
+      /**
+       * Put a word on the model, beside the part it names.
+       *
+       * The label is what makes a part self-describing *in place*: `01` requires it, and a name that
+       * lives only in a side panel or a hover tooltip is the spatial-contiguity failure Mayer's
+       * evidence measures (median 1.10 for words near the picture). A generated model that names its
+       * own parts this way is understandable without a click.
+       *
+       * `id` keys the label (unique, like every authored id); `partId` must name a declared part —
+       * checked here, where the generator can still fix it, exactly as `motion`/`story` resolve their
+       * references. `offset` lifts the label off the part's own position, in metres.
+       */
+      label: (spec: { id: string; partId: string; text: string; offset?: unknown }): string => {
+        const id = this.requireId(spec?.id, 'label.id');
+        if (this.labelIds.has(id)) {
+          throw new SceneError(`Label id '${id}' is already used. Every label needs a unique id.`);
+        }
+        if (this.labels.length >= MAX_LABELS) {
+          throw new SceneError(
+            `This model declares more than ${MAX_LABELS} labels. A label is a word beside a part, not a paragraph — name the parts the lesson is about.`,
+          );
+        }
+        const partId = this.requireId(spec?.partId, `label '${id}' partId`);
+        if (!this.parts.has(partId)) {
+          throw new SceneError(
+            `label '${id}' names part '${partId}', which does not exist. Declare the part before labelling it.`,
+          );
+        }
+        this.labels.push({
+          id,
+          partId,
+          text: this.requireText(spec?.text, `label '${id}' text`, 64),
+          ...(spec?.offset !== undefined
+            ? { offset: this.vec3(spec.offset, `label '${id}' offset`) }
+            : {}),
+        });
+        this.labelIds.add(id);
+        return id;
+      },
     };
 
     return Object.freeze(facade);
@@ -2411,6 +2463,7 @@ export class SceneBuilder {
       ...(this.subdomain ? { subdomain: this.subdomain } : {}),
       pedagogy: this.pedagogy,
       parts: nodes,
+      labels: this.labels,
       colorRoles: this.materials.declaredRoles().map((role) => ({
         id: role.id,
         label: role.label,

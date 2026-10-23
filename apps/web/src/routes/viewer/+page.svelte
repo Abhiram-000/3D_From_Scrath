@@ -18,8 +18,10 @@
   import type {
     Annotation,
     DeviceTier,
+    ModelLabel,
     ModelManifest,
     ProjectedAnnotation,
+    ProjectedLabel,
     QualityPreset,
     QuizQuestion,
     RuntimeStats,
@@ -53,6 +55,7 @@
   import GenerateDialog from '$lib/components/generate-dialog.svelte';
   import SettingsModal from '$lib/components/settings-modal.svelte';
   import AnnotationLayer from '$lib/components/annotation-layer.svelte';
+  import ModelLabels from '$lib/components/model-labels.svelte';
   import ExportMenu from '$lib/components/export-menu.svelte';
   import { AnnotationStore, annotationId, toAnnotationPins } from '$lib/annotations/annotations.ts';
 
@@ -190,6 +193,11 @@
       manifest = loadedManifest;
       verdict = loadedVerdict;
 
+      // The model's own words, beside the parts they name. The worker projects them and answers with
+      // `onLabelPositions`; until that reply lands the overlay has no positions and draws nothing.
+      modelLabels = loadedManifest.labels;
+      projectedLabels = [];
+
       loadError = null;
       topicName = loadedManifest.name;
       const defaults: Record<string, number | boolean | string> = {};
@@ -229,6 +237,8 @@
     onNotice: (message) => toast(message),
     onKilled: (reason) => {
       manifest = null;
+      modelLabels = [];
+      projectedLabels = [];
       stats = null;
       loadError = reason;
       toast(reason);
@@ -250,6 +260,9 @@
     },
     onAnnotationPositions: (positions) => {
       projectedAnnotations = positions;
+    },
+    onLabelPositions: (positions) => {
+      projectedLabels = positions;
     },
     onRecordingCapability: (capability) => {
       recordingCapability = capability;
@@ -584,6 +597,13 @@
   let annotationStore: AnnotationStore | null = null;
   let notes = $state.raw<Annotation[]>([]);
   let projectedAnnotations = $state.raw<ProjectedAnnotation[]>([]);
+  /**
+   * Model-authored labels: the words come from the loaded manifest, the positions from the worker's
+   * `labelPositions` reply. Both are cleared on a model swap so a previous model's words cannot linger
+   * over a new model's parts.
+   */
+  let projectedLabels = $state.raw<ProjectedLabel[]>([]);
+  let modelLabels = $state.raw<ModelLabel[]>([]);
   let placingNote = $state(false);
   let draftAnnotation = $state.raw<Annotation | null>(null);
 
@@ -1971,6 +1991,12 @@
         role="application"
         aria-label="3D model view. Use the part list to select parts with a keyboard."
       ></div>
+
+      <!--
+        The model's own labels (`01`: parts self-describing). Beneath the learner notes and inert to
+        every pointer event, so a caption can never intercept an orbit or a part selection.
+      -->
+      <ModelLabels labels={modelLabels} projected={projectedLabels} />
 
       <!--
         Learner notes (`03` R7). Inside the canvas holder so a pin's canvas-space coordinates are its

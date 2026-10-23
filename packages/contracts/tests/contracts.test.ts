@@ -14,6 +14,8 @@ import {
   ErrorCode,
   AUDIT_WEIGHTS,
   AuditDimension,
+  MAX_LABELS,
+  ModelLabel,
   ModelManifest,
   ParameterDecl,
   PartNode,
@@ -235,11 +237,77 @@ describe('model manifest', () => {
     expect(parsed.callbacks.hasFrame).toBe(false);
     expect(parsed.story).toEqual([]);
     expect(parsed.quiz).toEqual([]);
+    expect(parsed.labels).toEqual([]);
   });
 
   it('refuses a manifest with an empty part tree, because a blank scene is never shipped', () => {
     const result = ModelManifest.safeParse({ ...minimalManifest, parts: [] });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('model labels', () => {
+  const valid = { id: 'lblAxle', partId: 'axle', text: 'Axle' };
+
+  it('accepts a bounded label with an optional offset and no offset by default', () => {
+    const parsed = ModelLabel.parse(valid);
+    expect(parsed.id).toBe('lblAxle');
+    expect(parsed.partId).toBe('axle');
+    expect(parsed.text).toBe('Axle');
+    expect(parsed.offset).toBeUndefined();
+
+    const withOffset = ModelLabel.parse({ ...valid, offset: [0, 0.08, 0] });
+    expect(withOffset.offset).toEqual([0, 0.08, 0]);
+  });
+
+  it('refuses label text past 64 characters, so a pin stays a name and not a paragraph', () => {
+    expect(ModelLabel.safeParse({ ...valid, text: 'x'.repeat(64) }).success).toBe(true);
+    expect(ModelLabel.safeParse({ ...valid, text: 'x'.repeat(65) }).success).toBe(false);
+  });
+
+  it('refuses an empty string label — a pin with no word names nothing', () => {
+    expect(ModelLabel.safeParse({ ...valid, text: '' }).success).toBe(false);
+  });
+
+  it('refuses a malformed partId, because a label must name a real part id shape', () => {
+    expect(ModelLabel.safeParse({ ...valid, partId: '9bad' }).success).toBe(false);
+    expect(ModelLabel.safeParse({ ...valid, partId: '<script>' }).success).toBe(false);
+  });
+
+  it('refuses a non-finite offset — a label floating at NaN has no honest place on screen', () => {
+    expect(ModelLabel.safeParse({ ...valid, offset: [0, Number.NaN, 0] }).success).toBe(false);
+    expect(ModelLabel.safeParse({ ...valid, offset: [0, 0] }).success).toBe(false);
+  });
+
+  it('caps a manifest at MAX_LABELS labels', () => {
+    const label = (index: number) => ({ id: `lbl${index}`, partId: 'root', text: 'Root' });
+    const manifest = (count: number) => ({
+      formatVersion: 1 as const,
+      name: 'Labelled',
+      description: 'Enough labels to exercise the cap.',
+      domain: 'mechanics' as const,
+      pedagogy: { concept: 'labels', objectives: ['read a name on the model'] },
+      parts: [{ id: 'root', parentId: null, kind: 'group' as const, name: 'Root', transform: {} }],
+      labels: Array.from({ length: count }, (_, index) => label(index)),
+      camera: { initial: { position: [3, 2, 4] } },
+      cost: {
+        parts: 1,
+        uniqueGeometries: 0,
+        uniqueMaterials: 0,
+        triangles: 0,
+        vertices: 0,
+        drawCalls: 0,
+        instancedSets: 0,
+        instances: 0,
+        shadowCastingLights: 0,
+        physicsBodies: 0,
+        authorMillis: 1,
+      },
+      createdAt: 1,
+    });
+    expect(MAX_LABELS).toBe(64);
+    expect(ModelManifest.safeParse(manifest(MAX_LABELS)).success).toBe(true);
+    expect(ModelManifest.safeParse(manifest(MAX_LABELS + 1)).success).toBe(false);
   });
 });
 

@@ -93,6 +93,32 @@ body {
   letter-spacing: -0.02em;
 }
 
+/*
+ * The early-beta marker beside the wordmark.
+ *
+ * A solid accent chip, not a tinted outline: at 11px this is the smallest text on the page, so the
+ * highest-contrast surface the system offers is the honest choice. Fill is `--accent-strong` and ink
+ * is `--accent-contrast` — the one pair that clears WCAG AA in *both* themes (dark 4.68:1, light
+ * 5.72:1), because the accent's own light/dark value already flips the filling side with it. No hex
+ * literal and no new token; both variables come from tokens.css.
+ *
+ * It leans against the wordmark (negative gap) so "EDU-3D Beta" reads as one lockup rather than two
+ * separate items, and uppercase tracking keeps it legible at this size.
+ */
+.beta-badge {
+  margin-left: calc(var(--space-1) * -1);
+  padding: 0.125rem 0.4375rem;
+  border-radius: var(--radius-full, 999px);
+  background: var(--accent-strong, var(--accent));
+  color: var(--accent-contrast);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
 .theme-toggle {
   position: relative;
   /* 42px visual, 44px hit area: the ring stays the size it was designed at, and the extra 2px
@@ -432,6 +458,23 @@ body {
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+}
+
+/*
+ * The beta sentence under the prompt card.
+ *
+ * Muted but present: it is information a visitor wants before they commit, not a warning, so it uses
+ * the same quiet `--text-muted` voice as the demo note rather than a status colour. Narrow measure
+ * and centred so it reads as a caption to the card above it, and `text-wrap: pretty` keeps the
+ * em-dash clause from orphaning a single word on the last line.
+ */
+.beta-note {
+  max-width: 58ch;
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--text-muted);
+  text-wrap: pretty;
 }
 
 .input-counter.warning {

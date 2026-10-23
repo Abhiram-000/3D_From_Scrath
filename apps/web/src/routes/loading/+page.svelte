@@ -353,6 +353,17 @@
       <div class="status-message" aria-live="polite">{statusText}</div>
 
       <!--
+        One short line, so the wait feels attributed rather than broken: it names who is doing the
+        work (an AI writing a real program) and sets the honest expectation that coverage is uneven.
+        It sits under the status line, where a learner staring at a paused-looking bar is already
+        reading. Deliberately not a copy of the viewer chip's sentence — this one explains the wait.
+      -->
+      <p class="beta-note">
+        Early beta — a real 3D program is being written from scratch, and some topics land better
+        than others.
+      </p>
+
+      <!--
         The server's own notice (a repair pass, a provider retry, a quality downgrade), kept out of
         the status line so it can neither move the milestone wording nor be mistaken for progress —
         it is an explanation of what changed about the *how*, and it sits beside the bar where a

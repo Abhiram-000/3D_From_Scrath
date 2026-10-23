@@ -355,6 +355,12 @@
         </defs>
       </svg>
       <span class="brand-name">EDU-3D</span>
+      <!--
+        The "Beta" marker sits beside the wordmark, where a first-time visitor meets the product.
+        It is a plain span, not a control: there is nothing to press, so it needs no keyboard path
+        and must not steal focus. Real text, never an image, so it is part of the accessible name.
+      -->
+      <span class="beta-badge">Beta</span>
     </div>
 
     <button
@@ -532,6 +538,17 @@
           </button>
         </div>
       </div>
+
+      <!--
+        The honest beta sentence, immediately under the thing it is talking about — the prompt card.
+        It sets expectations before the wait instead of explaining a miss afterwards: every model is
+        a real program written by an AI, so coverage is uneven and feedback is the way it improves.
+        Confident and plain — it says what the product is, not "sorry, this may not work".
+      -->
+      <p class="beta-note">
+        Early beta. Every model is a real 3D program written by an AI, so some topics land better
+        than others — when one misses, tell us.
+      </p>
 
       <!--
         What the chosen level costs, stated before the learner waits rather than discovered as a

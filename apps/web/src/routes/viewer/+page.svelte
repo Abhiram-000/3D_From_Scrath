@@ -1352,6 +1352,21 @@
       <span class="brand-text">EDU-3D</span>
       <span class="topic-separator">›</span>
       <span class="topic-name">{topicName}</span>
+      <!--
+        The compact beta chip, parked after the model name.
+
+        It is a status marker, not a control: no shortcut is bound to it and it is not focusable, so
+        it can never swallow a keystroke the viewer's global handler owns. The visible word is the
+        full text ("Beta"); the longer sentence that explains it is the `title` for pointer users and
+        a visually-hidden span for assistive tech — the same contract, without putting an aria-label
+        on a generic span.
+
+        `flex: none` is what stops a long model name from squeezing it: the name shrinks and ellipsises
+        first, the chip keeps its size, so the toolbar never reflows around it.
+      -->
+      <span class="beta-chip" title="Early beta — some models land better than others."
+        >Beta<span class="sr-only">. Early beta — some models land better than others.</span></span
+      >
     </div>
 
     <nav class="toolbar-controls">

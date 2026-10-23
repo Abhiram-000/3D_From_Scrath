@@ -12,13 +12,13 @@ human action per channel.
 
 The first instinct — K-12 teachers — is the wrong beachhead for an AI product, on evidence:
 
-| | K-12 teachers | Technical explainer builders |
-| --- | --- | --- |
-| Attitude to AI | **25% say net harm, 6% net good** (Pew 2024) | Already use AI tooling daily |
-| Hardware | ~**59% Chromebooks**, district-filtered | Developer machines |
-| Budget | Essentially none | Content / DevRel budgets |
-| What they pay for | time saved | **the thing we actually fix — comprehensibility** |
-| Channel | hostile to promotion | HN, r/threejs, r/webdev, DevRel — peers who welcome a show-and-tell |
+|                   | K-12 teachers                                | Technical explainer builders                                        |
+| ----------------- | -------------------------------------------- | ------------------------------------------------------------------- |
+| Attitude to AI    | **25% say net harm, 6% net good** (Pew 2024) | Already use AI tooling daily                                        |
+| Hardware          | ~**59% Chromebooks**, district-filtered      | Developer machines                                                  |
+| Budget            | Essentially none                             | Content / DevRel budgets                                            |
+| What they pay for | time saved                                   | **the thing we actually fix — comprehensibility**                   |
+| Channel           | hostile to promotion                         | HN, r/threejs, r/webdev, DevRel — peers who welcome a show-and-tell |
 
 Lead with **"build an interactive explainer of anything"**, aimed at people who already hand-build
 these artifacts (the animagraffs / Animated Engines / ciechanow.ski genre — weeks of work each).
@@ -29,8 +29,8 @@ Education is expansion, not the opening.
 ## 1. Show HN — the primary channel
 
 **Why here:** the audience is technical, and the genuinely interesting claim is not "AI makes 3D" but
-*"the AI writes real code and we execute it safely, on your device, with a headless audit and no GPU
-server."* Lead with the engineering.
+_"the AI writes real code and we execute it safely, on your device, with a headless audit and no GPU
+server."_ Lead with the engineering.
 
 **Title** (HN has no API — paste by hand):
 
@@ -82,7 +82,7 @@ looked at the result.
 
 **Rules that matter on HN:** answer every question in the thread, including the hostile ones;
 never argue about the downvotes; do not ask for upvotes; if someone finds a bug, thank them and
-fix it *in the thread*. Post between roughly 08:00–10:00 US Eastern on a weekday. Expect the
+fix it _in the thread_. Post between roughly 08:00–10:00 US Eastern on a weekday. Expect the
 sandbox to be the most questioned part — that's the interesting discussion, not a distraction.
 
 ---
@@ -113,17 +113,19 @@ Different subs, different framings. **Do not cross-post the same text.** Nothing
 "marketing" in tone — each is a maker talking to peers.
 
 **r/SideProject** (welcomes launches, low scrutiny):
+
 > I built a thing that turns any topic into an interactive 3D model, and I've finally got it
 > online. The AI writes real Three.js code rather than filling in a template, so it can at least
-> *attempt* anything. It's a beta and some topics flop badly — happy to hear which ones.
+> _attempt_ anything. It's a beta and some topics flop badly — happy to hear which ones.
 
 **r/threejs** (technically curious, tolerant of self-promo if there's engineering substance):
+
 > I've been running LLM-written Three.js in a hardened Web Worker with an OffscreenCanvas — no
 > DOM, no network, deleted globals, instrumented loops, a watchdog that kills it. Here's what it
 > produces and the sandbox design. Interested in where people think the boundary leaks.
 
 **r/webdev / r/InternetIsBeautiful:** lead with the artifact, not the AI. A working, weird,
-interactive 3D model on an arbitrary topic *is* the hook.
+interactive 3D model on an arbitrary topic _is_ the hook.
 
 **Avoid:** r/Teachers, r/edtech, r/homeschool. The evidence says those communities punish exactly
 this post — 25% of teachers consider AI net-harmful, and self-promotion is against their rules.
@@ -133,11 +135,13 @@ this post — 25% of teachers consider AI net-harmful, and self-promotion is aga
 ## 4. Product Hunt
 
 **Tagline (≤60 chars):**
+
 ```
 Type any topic, get an interactive 3D model of it
 ```
 
 **First comment** (the maker's intro — this is what people actually read):
+
 ```
 I built this because every "learn X visually" tool I liked was a fixed catalogue. You could have
 any of their 120 simulations, but never the one your class was stuck on.
@@ -155,13 +159,13 @@ It's early. Some topics are great, some are shallow, and I'm most interested in 
 
 Rehearse these; the replies are the launch.
 
-| Objection | Answer |
-| --- | --- |
-| "How do I know it's not wrong?" | "You can read the generated program in the app — there's a code panel. Parameters are real numbers, not hallucinated pixels. And every model declares its own simplifications; if a proportion is exaggerated, it says so and gives the real value." |
-| "Isn't running LLM code dangerous?" | Name the five layers: static gate on the server, AST loop instrumentation, lexical shadowing, realm hardening with irrecoverable cap drop, worker terminate. "Containment, not prohibition — it has full power over its own scene and none over anything else." |
-| "It's just AI slop." | Agree with the failure mode and be specific: "Most of it is. I spent this week on exactly that — models that were structurally fine and unreadable. Labels, cutaways and scale are now required." |
-| "Will it run on a school Chromebook?" | Answer honestly with what's measured, and what isn't yet. This is the one to fix before pitching education. |
-| "What does it cost?" | "Free tier now, one generation at a time. Paid tier exists if it's useful." |
+| Objection                             | Answer                                                                                                                                                                                                                                                          |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "How do I know it's not wrong?"       | "You can read the generated program in the app — there's a code panel. Parameters are real numbers, not hallucinated pixels. And every model declares its own simplifications; if a proportion is exaggerated, it says so and gives the real value."            |
+| "Isn't running LLM code dangerous?"   | Name the five layers: static gate on the server, AST loop instrumentation, lexical shadowing, realm hardening with irrecoverable cap drop, worker terminate. "Containment, not prohibition — it has full power over its own scene and none over anything else." |
+| "It's just AI slop."                  | Agree with the failure mode and be specific: "Most of it is. I spent this week on exactly that — models that were structurally fine and unreadable. Labels, cutaways and scale are now required."                                                               |
+| "Will it run on a school Chromebook?" | Answer honestly with what's measured, and what isn't yet. This is the one to fix before pitching education.                                                                                                                                                     |
+| "What does it cost?"                  | "Free tier now, one generation at a time. Paid tier exists if it's useful."                                                                                                                                                                                     |
 
 ---
 
@@ -170,8 +174,8 @@ Rehearse these; the replies are the launch.
 - **The domain.** `edu3d.onrender.com` is honest but undersells the repositioned audience. A real
   domain would help HN credibility — it costs ~$10/yr and needs a human purchase.
 - **The cold start.** Render's free tier sleeps after ~15 min idle, so the first visitor after a
-  quiet spell waits ~60 s. On HN, that landing visit *is* the product demo. Worth a paid instance
-  (~$7/mo) for launch day, or accept it and say so in the post.
+  quiet spell waits ~~60 s. On HN, that landing visit _is_ the product demo. Worth a paid instance
+  (~~$7/mo) for launch day, or accept it and say so in the post.
 - **AI capacity.** The free provider allows **one** concurrent generation. A front-page HN post
   would queue everyone after the first and many would leave. This is the single biggest launch-day
   risk and it is a budget decision.

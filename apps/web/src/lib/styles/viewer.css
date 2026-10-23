@@ -104,6 +104,10 @@ body {
   align-items: center;
   gap: var(--spacing-sm);
   min-width: 200px;
+  /* The brand takes only the space its content needs and gives it back under pressure; the topic
+     name inside is the child that ellipsises, so the fixed-size Beta chip and the controls are never
+     pushed off the row by a long model name. */
+  flex: 0 1 auto;
 }
 
 .brand-icon {
@@ -136,6 +140,39 @@ body {
   color: var(--text-secondary);
   font-size: 14px;
   font-weight: 500;
+  /* The one flexible child of the brand lockup: a long generated name ellipsises here instead of
+     widening the toolbar or crowding the Beta chip beside it. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * The early-beta chip in the toolbar.
+ *
+ * A marker, not a button: it carries no onclick and no keyboard binding, so it cannot consume a
+ * shortcut. Sized to the toolbar's own text rhythm so it reads as part of the model-name lockup.
+ *
+ * Fill `--accent-strong` on ink `--accent-contrast` is the one accent pair that clears WCAG AA in
+ * both themes (dark 4.68:1, light 5.72:1); because the accent flips light or dark per theme and the
+ * ink flips with it, one declaration serves both. Tokens only — no hex, no new variable.
+ *
+ * `flex: none` is the layout guarantee: when the model name is long the name shrinks, this does not.
+ */
+.beta-chip {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--accent-strong, var(--accent));
+  color: var(--accent-contrast);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.6;
+  white-space: nowrap;
+  cursor: default;
 }
 
 /* Toolbar Controls */

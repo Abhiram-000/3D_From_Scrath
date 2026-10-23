@@ -38,6 +38,10 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
+# Tool config belonging to other agents, not to this project. A stray `opencode.json`
+# here once failed the formatting gate and has no business in the repo or its history.
+opencode.json
+
 # Logs
 *.log
 npm-debug.log*

@@ -395,8 +395,16 @@ export class SandboxHost {
         event.error instanceof Error && event.error.stack
           ? ` ${event.error.stack.split('\n')[1]?.trim() ?? ''}`
           : '';
+      // An `error` event with a populated message is guest code that threw. An `error` event with
+      // NOTHING populated — no message, no filename, no line — is the worker SCRIPT failing to
+      // load, which is a different failure with a different remedy, and it used to be reported as
+      // the literal string "undefined". Say what actually happened instead: a stale shell asking
+      // for a hashed chunk a redeploy has replaced is the usual cause, and a reload fixes it.
+      const message = event.message?.trim()
+        ? event.message
+        : 'the engine script could not be loaded (a page reload usually fixes it)';
       this.kill(
-        `The 3D engine stopped unexpectedly: ${event.message}${where ? ` (${where})` : ''}${detail}`,
+        `The 3D engine stopped unexpectedly: ${message}${where ? ` (${where})` : ''}${detail}`,
       );
     });
 

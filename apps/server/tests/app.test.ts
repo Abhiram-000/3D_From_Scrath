@@ -274,6 +274,44 @@ describe('the served CSP', () => {
   });
 });
 
+/**
+ * Cache policy at the static boundary.
+ *
+ * This had no test at all, which is how a real outage shipped. The SPA shell was served with no
+ * `Cache-Control` header, so a browser cached it heuristically — and the shell NAMES content-hashed
+ * assets. After a redeploy the cached shell kept requesting `sandbox-worker-<oldHash>.js`, which is
+ * honestly a 404, so the worker could not load and the learner saw "The 3D engine stopped
+ * unexpectedly: undefined". The worst part of the timing: that is exactly a tab left open across a
+ * deploy, i.e. someone watching a release go out.
+ */
+describe('the cache policy for the served frontend', () => {
+  it('the SPA shell revalidates, because it names content-hashed assets', async () => {
+    const { app } = appFor({});
+    // The root and every extensionless deep link resolve to the same shell, so all of them must
+    // revalidate — a stale `/viewer` is as broken as a stale `/`.
+    for (const route of ['/', '/viewer', '/some/deep/link']) {
+      const response = await app.request(route);
+      expect(response.status, route).toBe(200);
+      expect(response.headers.get('cache-control'), route).toBe('no-cache');
+    }
+  });
+
+  it('hashed asset requests stay immutable — their names change with their content', async () => {
+    const files = await readdir(WORKERS_DIR).catch(() => [] as string[]);
+    const workers = files.filter(
+      (name) => name.startsWith('sandbox-worker-') && name.endsWith('.js'),
+    );
+    expect(workers.length, 'no built sandbox-worker chunk in apps/web/build').toBeGreaterThan(0);
+    const { app } = appFor({});
+    for (const name of workers) {
+      const response = await app.request(`/_app/immutable/workers/${name}`);
+      expect(response.headers.get('cache-control'), name).toBe(
+        'public, max-age=31536000, immutable',
+      );
+    }
+  });
+});
+
 describe('the write posture', () => {
   const productionEnv = {
     NODE_ENV: 'production',

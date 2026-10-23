@@ -121,6 +121,15 @@ export async function staticSiteMiddleware(context: Context, next: Next): Promis
 
   if (IMMUTABLE_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
     context.header('cache-control', 'public, max-age=31536000, immutable');
+  } else if (filePath === INDEX) {
+    // The SPA shell must revalidate before it is reused, because it NAMES content-hashed assets.
+    // A shell cached across a deploy asks the server for `sandbox-worker-<oldHash>.js`, gets an
+    // honest 404, and the worker cannot load — which reached a learner as "The 3D engine stopped
+    // unexpectedly: undefined" on a tab left open across a redeploy. `no-cache` still stores it; it
+    // only forces a revalidation, so the next navigation picks up the new shell. The two rules are
+    // complementary: the shell is cheap to revalidate, and the assets are safe to cache forever
+    // precisely because their names change with their content.
+    context.header('cache-control', 'no-cache');
   }
 
   // The precompressed copy, when the client can read one. `Vary` is set either way: a cache that
